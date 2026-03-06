@@ -1,0 +1,29 @@
+import type { NodeExecutionResult } from '../../types/pipeline'
+
+const statusColors = {
+  idle: 'bg-gray-100 text-gray-600',
+  running: 'bg-yellow-100 text-yellow-700',
+  success: 'bg-green-100 text-green-700',
+  error: 'bg-red-100 text-red-700',
+}
+
+export default function NodeStatusBadge({ result }: { result: NodeExecutionResult }) {
+  return (
+    <div className="space-y-0.5">
+      <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${statusColors[result.status]}`}>
+        {result.status}
+        {result.execution_time_ms != null && ` (${Math.round(result.execution_time_ms)}ms)`}
+      </span>
+      {result.row_count != null && (
+        <div className="text-gray-500">
+          {result.row_count.toLocaleString()} rows × {result.column_count} cols
+        </div>
+      )}
+      {result.error && (
+        <div className="text-red-600 truncate max-w-[160px]" title={result.error}>
+          {result.error}
+        </div>
+      )}
+    </div>
+  )
+}

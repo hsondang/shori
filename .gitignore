@@ -1,0 +1,11 @@
+data/uploads/
+data/exports/
+data/pipelines/
+__pycache__/
+*.pyc
+.env
+node_modules/
+dist/
+.vite/
+.venv/
+.pytest_cache/
