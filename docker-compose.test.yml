@@ -1,6 +1,6 @@
 services:
   postgres-test:
-    image: postgres:16
+    image: postgres:16-alpine
     container_name: shori-test-postgres
     environment:
       POSTGRES_DB: shori_test
