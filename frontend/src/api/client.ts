@@ -1,5 +1,10 @@
 import axios from 'axios'
-import type { DataPreview, NodeExecutionResult, PipelineDefinition } from '../types/pipeline'
+import type {
+  DataPreview,
+  DatabaseConnectionConfig,
+  NodeExecutionResult,
+  PipelineDefinition,
+} from '../types/pipeline'
 
 const api = axios.create({ baseURL: '/api' })
 
@@ -68,7 +73,7 @@ export async function deletePipeline(id: string): Promise<void> {
 
 export async function testDbConnection(
   dbType: 'oracle' | 'postgres',
-  config: Record<string, unknown>
+  config: DatabaseConnectionConfig
 ): Promise<{ success: boolean; error?: string }> {
   const endpoint = dbType === 'oracle' ? '/oracle/test-connection' : '/postgres/test-connection'
   const { data } = await api.post(endpoint, config)

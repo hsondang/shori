@@ -77,6 +77,7 @@ def pipeline_def(sample_csv_file):
     return {
         "id": "test-pipeline-1",
         "name": "Test Pipeline",
+        "database_connections": [],
         "nodes": [
             {
                 "id": "node-1",

@@ -8,6 +8,18 @@ def _make_pipeline(pid="p1", name="Test Pipeline"):
     return PipelineDefinition(
         id=pid,
         name=name,
+        database_connections=[
+            {
+                "id": "conn-1",
+                "name": "Analytics",
+                "db_type": "postgres",
+                "host": "localhost",
+                "port": 5432,
+                "database": "analytics",
+                "user": "user",
+                "password": "secret",
+            }
+        ],
         nodes=[
             NodeDefinition(
                 id="n1",
@@ -33,8 +45,42 @@ def test_save_and_load_roundtrip(store):
     loaded = store.load(pipeline.id)
     assert loaded.id == pipeline.id
     assert loaded.name == pipeline.name
+    assert len(loaded.database_connections) == 1
+    assert loaded.database_connections[0].name == "Analytics"
     assert len(loaded.nodes) == 1
     assert loaded.nodes[0].type == NodeType.CSV_SOURCE
+
+
+def test_load_legacy_pipeline_without_database_connections(store, tmp_path, monkeypatch):
+    legacy_path = tmp_path / "legacy.json"
+    legacy_path.write_text(
+        """
+        {
+          "id": "legacy",
+          "name": "Legacy Pipeline",
+          "nodes": [
+            {
+              "id": "n1",
+              "type": "csv_source",
+              "table_name": "t",
+              "label": "CSV",
+              "position": {"x": 0, "y": 0},
+              "config": {
+                "file_path": "/tmp/f.csv",
+                "original_filename": "f.csv"
+              }
+            }
+          ],
+          "edges": []
+        }
+        """
+    )
+
+    import app.storage.pipeline_store as ps_mod
+
+    monkeypatch.setattr(ps_mod, "PIPELINE_DIR", tmp_path)
+    loaded = store.load("legacy")
+    assert loaded.database_connections == []
 
 
 def test_load_not_found(store):

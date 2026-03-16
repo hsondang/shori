@@ -29,7 +29,12 @@ const makeProps = (dbType: string, connection: Record<string, unknown>) => ({
   },
   type: 'db_source',
   selected: false,
+  draggable: true,
+  selectable: true,
+  deletable: true,
   isConnectable: true,
+  positionAbsoluteX: 0,
+  positionAbsoluteY: 0,
   zIndex: 0,
   xPos: 0,
   yPos: 0,
@@ -43,6 +48,11 @@ beforeEach(() => {
 
 describe('DatabaseSourceNode — postgres', () => {
   const props = makeProps('postgres', { host: 'localhost', port: 5432, database: 'mydb', user: 'u', password: 'p' })
+
+  it('renders the node label', () => {
+    render(<DatabaseSourceNode {...{ ...props, data: { ...props.data, label: 'Analytics Postgres' } }} />)
+    expect(screen.getByText('Analytics Postgres')).toBeInTheDocument()
+  })
 
   it('renders the connection string', () => {
     render(<DatabaseSourceNode {...props} />)

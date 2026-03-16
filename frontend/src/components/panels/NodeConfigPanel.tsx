@@ -1,6 +1,5 @@
 import { usePipelineStore } from '../../store/pipelineStore'
 import SqlEditor from './SqlEditor'
-import ConnectionForm from './ConnectionForm'
 import { uploadCsv } from '../../api/client'
 import { useCallback, useRef } from 'react'
 
@@ -41,6 +40,33 @@ export default function NodeConfigPanel() {
     updateNodeData(node.id, {
       config: { file_path: result.file_path, original_filename: result.filename },
     })
+  }
+
+  if (node.type === 'db_source') {
+    return (
+      <div className="w-80 border-l border-gray-200 bg-white overflow-y-auto">
+        <div className="p-4 border-b border-gray-200">
+          <div className="flex justify-between items-center">
+            <h3 className="font-semibold text-sm text-gray-800">{(d.label as string) || 'Database Source'}</h3>
+            <button
+              onClick={() => deleteNode(node.id)}
+              className="text-red-500 hover:text-red-700 text-xs"
+            >
+              Delete
+            </button>
+          </div>
+        </div>
+
+        <div className="p-4">
+          <label className="block text-xs text-gray-500 mb-1">SQL Query</label>
+          <SqlEditor
+            value={(config.query as string) || ''}
+            onChange={(sql) => updateNodeData(node.id, { config: { ...config, query: sql } })}
+            upstreamTables={[]}
+          />
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -84,37 +110,6 @@ export default function NodeConfigPanel() {
             >
               {(config.original_filename as string) || 'Click to upload CSV'}
             </button>
-          </div>
-        )}
-
-        {node.type === 'db_source' && (
-          <div className="space-y-3">
-            <label className="block text-xs text-gray-500 mb-1">Database Type</label>
-            <select
-              value={(config.db_type as string) || 'postgres'}
-              onChange={(e) => {
-                const dbType = e.target.value
-                const defaults = dbType === 'oracle'
-                  ? { host: '', port: 1521, service_name: '', user: '', password: '' }
-                  : { host: '', port: 5432, database: '', user: '', password: '' }
-                updateNodeData(node.id, { config: { ...config, db_type: dbType, connection: defaults } })
-              }}
-              className="w-full border border-gray-300 rounded px-2 py-1 text-sm"
-            >
-              <option value="postgres">PostgreSQL</option>
-              <option value="oracle">Oracle</option>
-            </select>
-            <ConnectionForm
-              config={(config.connection as Record<string, unknown>) || {}}
-              onChange={(conn) => updateNodeData(node.id, { config: { ...config, connection: conn } })}
-              dbType={(config.db_type as 'oracle' | 'postgres') || 'postgres'}
-            />
-            <label className="block text-xs text-gray-500 mb-1">SQL Query</label>
-            <SqlEditor
-              value={(config.query as string) || ''}
-              onChange={(sql) => updateNodeData(node.id, { config: { ...config, query: sql } })}
-              upstreamTables={[]}
-            />
           </div>
         )}
 

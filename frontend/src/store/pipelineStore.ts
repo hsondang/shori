@@ -9,8 +9,15 @@ import {
   applyEdgeChanges,
   addEdge,
 } from '@xyflow/react'
-import type { NodeType, NodeExecutionResult, DataPreview } from '../types/pipeline'
+import type {
+  NodeType,
+  NodeExecutionResult,
+  DataPreview,
+  SavedDatabaseConnection,
+  SavedDatabaseConnectionInput,
+} from '../types/pipeline'
 import * as api from '../api/client'
+import { defaultConnectionConfig } from '../lib/databaseConnections'
 
 interface PipelineState {
   // React Flow
@@ -23,6 +30,7 @@ interface PipelineState {
   // Pipeline metadata
   pipelineId: string
   pipelineName: string
+  databaseConnections: SavedDatabaseConnection[]
   setPipelineName: (name: string) => void
 
   // Execution results
@@ -39,6 +47,10 @@ interface PipelineState {
 
   // Actions
   addNode: (type: NodeType, position: { x: number; y: number }) => void
+  addDatabaseConnection: (connection: SavedDatabaseConnectionInput) => string
+  updateDatabaseConnection: (id: string, connection: SavedDatabaseConnectionInput) => void
+  deleteDatabaseConnection: (id: string) => void
+  addDatabaseSourceFromConnection: (connectionId: string, position: { x: number; y: number }) => string | null
   updateNodeData: (nodeId: string, data: Record<string, unknown>) => void
   deleteNode: (nodeId: string) => void
   executePipeline: (force?: boolean) => Promise<void>
@@ -67,7 +79,7 @@ function defaultLabel(type: NodeType): string {
 function defaultConfig(type: NodeType): Record<string, unknown> {
   switch (type) {
     case 'csv_source': return { file_path: '', original_filename: '' }
-    case 'db_source': return { db_type: 'postgres', connection: { host: '', port: 5432, database: '', user: '', password: '' }, query: '' }
+    case 'db_source': return { db_type: 'postgres', connection: defaultConnectionConfig('postgres'), query: '' }
     case 'transform': return { sql: '' }
     case 'export': return { format: 'csv' }
   }
@@ -78,6 +90,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   edges: [],
   pipelineId: crypto.randomUUID(),
   pipelineName: 'Untitled Pipeline',
+  databaseConnections: [],
   nodeResults: {},
   selectedNodeId: null,
   previewData: null,
@@ -116,6 +129,64 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     set({ nodes: [...get().nodes, newNode] })
   },
 
+  addDatabaseConnection: (connection) => {
+    const id = crypto.randomUUID()
+    set({ databaseConnections: [...get().databaseConnections, { ...connection, id } as SavedDatabaseConnection] })
+    return id
+  },
+
+  updateDatabaseConnection: (id, connection) => {
+    set({
+      databaseConnections: get().databaseConnections.map((item) =>
+        item.id === id ? ({ ...connection, id } as SavedDatabaseConnection) : item
+      ),
+    })
+  },
+
+  deleteDatabaseConnection: (id) => {
+    set({
+      databaseConnections: get().databaseConnections.filter((item) => item.id !== id),
+    })
+  },
+
+  addDatabaseSourceFromConnection: (connectionId, position) => {
+    const savedConnection = get().databaseConnections.find((item) => item.id === connectionId)
+    if (!savedConnection) return null
+
+    const id = generateNodeId()
+    const connection = savedConnection.db_type === 'oracle'
+      ? {
+          host: savedConnection.host,
+          port: savedConnection.port,
+          service_name: savedConnection.service_name,
+          user: savedConnection.user,
+          password: savedConnection.password,
+        }
+      : {
+          host: savedConnection.host,
+          port: savedConnection.port,
+          database: savedConnection.database,
+          user: savedConnection.user,
+          password: savedConnection.password,
+        }
+    const newNode: Node = {
+      id,
+      type: 'db_source',
+      position,
+      data: {
+        label: savedConnection.name,
+        tableName: id,
+        config: {
+          db_type: savedConnection.db_type,
+          connection,
+          query: '',
+        },
+      },
+    }
+    set({ nodes: [...get().nodes, newNode] })
+    return id
+  },
+
   updateNodeData: (nodeId, data) => {
     set({
       nodes: get().nodes.map((n) =>
@@ -145,6 +216,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     const pipeline = {
       id: pipelineId,
       name: pipelineName,
+      database_connections: get().databaseConnections,
       nodes: nodes.map((n) => ({
         id: n.id,
         type: n.type as NodeType,
@@ -180,10 +252,11 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   },
 
   savePipeline: async () => {
-    const { nodes, edges, pipelineId, pipelineName } = get()
+    const { nodes, edges, pipelineId, pipelineName, databaseConnections } = get()
     const pipeline = {
       id: pipelineId,
       name: pipelineName,
+      database_connections: databaseConnections,
       nodes: nodes.map((n) => ({
         id: n.id,
         type: n.type as NodeType,
@@ -219,6 +292,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       edges,
       pipelineId: pipeline.id,
       pipelineName: pipeline.name,
+      databaseConnections: pipeline.database_connections || [],
       nodeResults: {},
       selectedNodeId: null,
       previewData: null,
@@ -233,6 +307,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       edges: [],
       pipelineId: crypto.randomUUID(),
       pipelineName: 'Untitled Pipeline',
+      databaseConnections: [],
       nodeResults: {},
       selectedNodeId: null,
       previewData: null,

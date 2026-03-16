@@ -1,10 +1,16 @@
 import { useState } from 'react'
 import { testDbConnection } from '../../api/client'
+import type {
+  DatabaseConnectionConfig,
+  DbType,
+  OracleConnectionConfig,
+  PostgresConnectionConfig,
+} from '../../types/pipeline'
 
 interface ConnectionFormProps {
-  config: Record<string, unknown>
-  onChange: (config: Record<string, unknown>) => void
-  dbType: 'oracle' | 'postgres'
+  config: DatabaseConnectionConfig
+  onChange: (config: DatabaseConnectionConfig) => void
+  dbType: DbType
 }
 
 const dbDefaults = {
@@ -18,8 +24,12 @@ export default function ConnectionForm({ config, onChange, dbType }: ConnectionF
   const defaults = dbDefaults[dbType]
 
   const update = (field: string, value: unknown) => {
-    onChange({ ...config, [field]: value })
+    onChange({ ...(config as unknown as Record<string, unknown>), [field]: value } as unknown as DatabaseConnectionConfig)
   }
+
+  const databaseValue = dbType === 'oracle'
+    ? (config as OracleConnectionConfig).service_name
+    : (config as PostgresConnectionConfig).database
 
   const handleTest = async () => {
     setTesting(true)
@@ -53,7 +63,7 @@ export default function ConnectionForm({ config, onChange, dbType }: ConnectionF
       <input
         type="text"
         placeholder={defaults.dbFieldLabel}
-        value={(config[defaults.dbFieldName] as string) || ''}
+        value={databaseValue || ''}
         onChange={(e) => update(defaults.dbFieldName, e.target.value)}
         className="w-full border border-gray-300 rounded px-2 py-1 text-sm"
       />

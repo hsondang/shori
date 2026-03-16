@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from 'react'
+import { useCallback, useRef } from 'react'
 import {
   ReactFlow,
   Background,
@@ -13,6 +13,7 @@ import DatabaseSourceNode from './nodes/DatabaseSourceNode'
 import TransformNode from './nodes/TransformNode'
 import ExportNode from './nodes/ExportNode'
 import type { NodeType } from '../../types/pipeline'
+import { DATABASE_CONNECTION_MIME, NODE_TYPE_MIME } from '../../lib/dragData'
 
 const nodeTypes = {
   csv_source: CsvSourceNode,
@@ -28,6 +29,7 @@ export default function FlowCanvas() {
   const onEdgesChange = usePipelineStore((s) => s.onEdgesChange)
   const onConnect = usePipelineStore((s) => s.onConnect)
   const addNode = usePipelineStore((s) => s.addNode)
+  const addDatabaseSourceFromConnection = usePipelineStore((s) => s.addDatabaseSourceFromConnection)
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
   const rfInstance = useRef<ReactFlowInstance | null>(null)
 
@@ -39,16 +41,23 @@ export default function FlowCanvas() {
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault()
-      const type = e.dataTransfer.getData('application/shori-node-type') as NodeType
-      if (!type || !rfInstance.current) return
+      if (!rfInstance.current) return
 
       const position = rfInstance.current.screenToFlowPosition({
         x: e.clientX,
         y: e.clientY,
       })
+      const connectionId = e.dataTransfer.getData(DATABASE_CONNECTION_MIME)
+      if (connectionId) {
+        addDatabaseSourceFromConnection(connectionId, position)
+        return
+      }
+
+      const type = e.dataTransfer.getData(NODE_TYPE_MIME) as NodeType
+      if (!type) return
       addNode(type, position)
     },
-    [addNode]
+    [addDatabaseSourceFromConnection, addNode]
   )
 
   const onPaneClick = useCallback(() => {

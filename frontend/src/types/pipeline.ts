@@ -2,6 +2,24 @@ export type NodeType = 'csv_source' | 'db_source' | 'transform' | 'export'
 export type DbType = 'oracle' | 'postgres'
 export type NodeStatus = 'idle' | 'running' | 'success' | 'error'
 
+export interface PostgresConnectionConfig {
+  host: string
+  port: number
+  database: string
+  user: string
+  password: string
+}
+
+export interface OracleConnectionConfig {
+  host: string
+  port: number
+  service_name: string
+  user: string
+  password: string
+}
+
+export type DatabaseConnectionConfig = PostgresConnectionConfig | OracleConnectionConfig
+
 export interface CsvSourceConfig {
   file_path: string
   original_filename: string
@@ -9,9 +27,17 @@ export interface CsvSourceConfig {
 
 export interface DatabaseSourceConfig {
   db_type: DbType
-  connection: Record<string, unknown>
+  connection: DatabaseConnectionConfig
   query: string
 }
+
+export type SavedDatabaseConnection =
+  | ({ id: string; name: string; db_type: 'postgres' } & PostgresConnectionConfig)
+  | ({ id: string; name: string; db_type: 'oracle' } & OracleConnectionConfig)
+
+export type SavedDatabaseConnectionInput =
+  | ({ name: string; db_type: 'postgres' } & PostgresConnectionConfig)
+  | ({ name: string; db_type: 'oracle' } & OracleConnectionConfig)
 
 export interface TransformConfig {
   sql: string
@@ -34,6 +60,7 @@ export interface NodeExecutionResult {
 export interface PipelineDefinition {
   id: string
   name: string
+  database_connections: SavedDatabaseConnection[]
   nodes: Array<{
     id: string
     type: NodeType

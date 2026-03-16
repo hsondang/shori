@@ -2,10 +2,11 @@ import { useState } from 'react'
 import { usePipelineStore } from '../../store/pipelineStore'
 import { listPipelines } from '../../api/client'
 import type { NodeType } from '../../types/pipeline'
+import { NODE_TYPE_MIME } from '../../lib/dragData'
+import DatabaseSourcePicker from './DatabaseSourcePicker'
 
 const nodeTypeOptions: { type: NodeType; label: string; color: string }[] = [
   { type: 'csv_source', label: 'CSV Source', color: 'bg-blue-100 text-blue-700 border-blue-300' },
-  { type: 'db_source', label: 'Database Source', color: 'bg-indigo-100 text-indigo-700 border-indigo-300' },
   { type: 'transform', label: 'Transform', color: 'bg-purple-100 text-purple-700 border-purple-300' },
   { type: 'export', label: 'Export', color: 'bg-green-100 text-green-700 border-green-300' },
 ]
@@ -39,7 +40,7 @@ export default function Toolbar() {
   }
 
   const onDragStart = (e: React.DragEvent, type: NodeType) => {
-    e.dataTransfer.setData('application/shori-node-type', type)
+    e.dataTransfer.setData(NODE_TYPE_MIME, type)
     e.dataTransfer.effectAllowed = 'move'
   }
 
@@ -66,6 +67,7 @@ export default function Toolbar() {
           {opt.label}
         </div>
       ))}
+      <DatabaseSourcePicker />
 
       <div className="h-6 w-px bg-gray-300" />
 

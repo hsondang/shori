@@ -1,17 +1,12 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { usePipelineStore } from '../../../store/pipelineStore'
 import NodeStatusBadge from '../NodeStatusBadge'
+import { getConnectionSummary } from '../../../lib/databaseConnections'
+import type { DatabaseConnectionConfig, DbType } from '../../../types/pipeline'
 
 const dbStyles = {
   oracle: { border: 'border-orange-400', bg: 'bg-orange-400', text: 'text-orange-500', handle: '!bg-orange-400', emoji: '🗄️' },
   postgres: { border: 'border-teal-400', bg: 'bg-teal-400', text: 'text-teal-500', handle: '!bg-teal-400', emoji: '🐘' },
-}
-
-function connectionDisplay(dbType: string, connection: Record<string, unknown>): string {
-  const host = connection.host as string
-  const port = connection.port as number
-  if (dbType === 'oracle') return `${host}:${port}/${connection.service_name as string}`
-  return `${host}:${port}/${connection.database as string}`
 }
 
 export default function DatabaseSourceNode({ id, data }: NodeProps) {
@@ -21,8 +16,8 @@ export default function DatabaseSourceNode({ id, data }: NodeProps) {
   const result = nodeResults[id]
   const d = data as Record<string, unknown>
   const config = d.config as Record<string, unknown>
-  const connection = config.connection as Record<string, unknown> | undefined
-  const dbType = (config.db_type as string) || 'postgres'
+  const connection = config.connection as DatabaseConnectionConfig | undefined
+  const dbType = ((config.db_type as string) || 'postgres') as DbType
   const tableName = d.tableName as string
   const style = dbStyles[dbType as keyof typeof dbStyles] || dbStyles.postgres
 
@@ -39,7 +34,7 @@ export default function DatabaseSourceNode({ id, data }: NodeProps) {
         <div className="text-gray-500 font-mono">{tableName}</div>
         {connection?.host && (
           <div className="text-gray-700 truncate max-w-[160px]">
-            {connectionDisplay(dbType, connection)}
+            {getConnectionSummary(dbType, connection)}
           </div>
         )}
         {result && <NodeStatusBadge result={result} />}
