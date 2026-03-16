@@ -30,6 +30,15 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Oracle connections use `python-oracledb` Thick mode. Install Oracle Instant Client and
+set `ORACLE_CLIENT_LIB_DIR` before starting the backend. If you use `tnsnames.ora` or
+`sqlnet.ora`, also set `ORACLE_CLIENT_CONFIG_DIR`.
+
+```bash
+export ORACLE_CLIENT_LIB_DIR=/path/to/instantclient
+export ORACLE_CLIENT_CONFIG_DIR=/path/to/network/admin  # optional
+```
+
 ### Frontend
 
 ```bash

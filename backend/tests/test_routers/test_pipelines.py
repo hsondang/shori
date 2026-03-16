@@ -27,6 +27,7 @@ async def test_create_and_get(client, pipeline_def):
     data = resp.json()
     assert data["id"] == pipeline_def["id"]
     assert data["name"] == pipeline_def["name"]
+    assert data["database_connections"] == []
     assert len(data["nodes"]) == 1
 
 

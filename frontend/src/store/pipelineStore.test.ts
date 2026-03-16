@@ -2,13 +2,19 @@ import { act } from '@testing-library/react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { usePipelineStore } from './pipelineStore'
 
+const mockExecutePipeline = vi.fn()
+const mockPreviewData = vi.fn()
+const mockSavePipeline = vi.fn()
+const mockLoadPipeline = vi.fn()
+const mockListPipelines = vi.fn()
+
 // Prevent real API calls
 vi.mock('../api/client', () => ({
-  executePipeline: vi.fn(),
-  previewData: vi.fn(),
-  savePipeline: vi.fn(),
-  loadPipeline: vi.fn(),
-  listPipelines: vi.fn(),
+  executePipeline: (...args: unknown[]) => mockExecutePipeline(...args),
+  previewData: (...args: unknown[]) => mockPreviewData(...args),
+  savePipeline: (...args: unknown[]) => mockSavePipeline(...args),
+  loadPipeline: (...args: unknown[]) => mockLoadPipeline(...args),
+  listPipelines: (...args: unknown[]) => mockListPipelines(...args),
 }))
 
 function resetStore() {
@@ -18,7 +24,10 @@ function resetStore() {
 }
 
 describe('pipelineStore', () => {
-  beforeEach(resetStore)
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetStore()
+  })
 
   describe('addNode', () => {
     it('adds a csv_source node with correct default config', () => {
@@ -43,6 +52,37 @@ describe('pipelineStore', () => {
       expect(conn).toHaveProperty('database', '')
     })
 
+    it('adds a db_source node from a saved connection with copied config', () => {
+      let connectionId = ''
+      act(() => {
+        connectionId = usePipelineStore.getState().addDatabaseConnection({
+          name: 'Analytics Postgres',
+          db_type: 'postgres',
+          host: 'localhost',
+          port: 5432,
+          database: 'analytics',
+          user: 'user',
+          password: 'secret',
+        })
+      })
+
+      act(() => usePipelineStore.getState().addDatabaseSourceFromConnection(connectionId, { x: 10, y: 20 }))
+
+      const { nodes } = usePipelineStore.getState()
+      expect(nodes).toHaveLength(1)
+      expect((nodes[0].data as Record<string, unknown>).label).toBe('Analytics Postgres')
+      const config = (nodes[0].data as Record<string, unknown>).config as Record<string, unknown>
+      expect(config).toHaveProperty('db_type', 'postgres')
+      expect(config).toHaveProperty('query', '')
+      expect(config.connection).toEqual({
+        host: 'localhost',
+        port: 5432,
+        database: 'analytics',
+        user: 'user',
+        password: 'secret',
+      })
+    })
+
     it('adds a transform node with empty sql default', () => {
       act(() => usePipelineStore.getState().addNode('transform', { x: 0, y: 0 }))
       const { nodes } = usePipelineStore.getState()
@@ -55,6 +95,47 @@ describe('pipelineStore', () => {
       const { nodes } = usePipelineStore.getState()
       const config = (nodes[0].data as Record<string, unknown>).config as Record<string, unknown>
       expect(config).toHaveProperty('format', 'csv')
+    })
+  })
+
+  describe('databaseConnections', () => {
+    it('adds, updates, and deletes saved database connections', () => {
+      let connectionId = ''
+      act(() => {
+        connectionId = usePipelineStore.getState().addDatabaseConnection({
+          name: 'Warehouse',
+          db_type: 'oracle',
+          host: 'orahost',
+          port: 1521,
+          service_name: 'ORCL',
+          user: 'user',
+          password: 'secret',
+        })
+      })
+
+      expect(usePipelineStore.getState().databaseConnections).toHaveLength(1)
+
+      act(() => {
+        usePipelineStore.getState().updateDatabaseConnection(connectionId, {
+          name: 'Warehouse Prod',
+          db_type: 'oracle',
+          host: 'prod-host',
+          port: 1521,
+          service_name: 'PROD',
+          user: 'admin',
+          password: 'updated',
+        })
+      })
+
+      expect(usePipelineStore.getState().databaseConnections[0]).toMatchObject({
+        id: connectionId,
+        name: 'Warehouse Prod',
+        host: 'prod-host',
+        service_name: 'PROD',
+      })
+
+      act(() => usePipelineStore.getState().deleteDatabaseConnection(connectionId))
+      expect(usePipelineStore.getState().databaseConnections).toEqual([])
     })
   })
 
@@ -116,11 +197,21 @@ describe('pipelineStore', () => {
     it('resets nodes, edges, and nodeResults', () => {
       act(() => {
         usePipelineStore.getState().addNode('csv_source', { x: 0, y: 0 })
+        usePipelineStore.getState().addDatabaseConnection({
+          name: 'Analytics',
+          db_type: 'postgres',
+          host: 'localhost',
+          port: 5432,
+          database: 'analytics',
+          user: 'user',
+          password: 'secret',
+        })
         usePipelineStore.getState().newPipeline()
       })
       const state = usePipelineStore.getState()
       expect(state.nodes).toHaveLength(0)
       expect(state.edges).toHaveLength(0)
+      expect(state.databaseConnections).toEqual([])
       expect(state.nodeResults).toEqual({})
     })
 
@@ -130,6 +221,65 @@ describe('pipelineStore', () => {
         usePipelineStore.getState().newPipeline()
       })
       expect(usePipelineStore.getState().pipelineName).toBe('Untitled Pipeline')
+    })
+  })
+
+  describe('pipeline persistence', () => {
+    it('savePipeline includes database connections', async () => {
+      act(() => {
+        usePipelineStore.getState().addDatabaseConnection({
+          name: 'Analytics',
+          db_type: 'postgres',
+          host: 'localhost',
+          port: 5432,
+          database: 'analytics',
+          user: 'user',
+          password: 'secret',
+        })
+      })
+
+      await act(async () => {
+        await usePipelineStore.getState().savePipeline()
+      })
+
+      expect(mockSavePipeline).toHaveBeenCalledWith(expect.objectContaining({
+        database_connections: [
+          expect.objectContaining({
+            name: 'Analytics',
+            db_type: 'postgres',
+            database: 'analytics',
+          }),
+        ],
+      }))
+    })
+
+    it('loadPipeline restores database connections', async () => {
+      mockLoadPipeline.mockResolvedValueOnce({
+        id: 'pipeline-1',
+        name: 'Loaded Pipeline',
+        database_connections: [
+          {
+            id: 'conn-1',
+            name: 'Analytics',
+            db_type: 'postgres',
+            host: 'localhost',
+            port: 5432,
+            database: 'analytics',
+            user: 'user',
+            password: 'secret',
+          },
+        ],
+        nodes: [],
+        edges: [],
+      })
+
+      await act(async () => {
+        await usePipelineStore.getState().loadPipeline('pipeline-1')
+      })
+
+      expect(usePipelineStore.getState().databaseConnections).toEqual([
+        expect.objectContaining({ id: 'conn-1', name: 'Analytics' }),
+      ])
     })
   })
 })

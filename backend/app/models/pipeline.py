@@ -1,6 +1,7 @@
-from pydantic import BaseModel
+from typing import Annotated, Literal, Optional
+
+from pydantic import BaseModel, Field
 from enum import Enum
-from typing import Optional
 
 
 class NodeType(str, Enum):
@@ -51,6 +52,25 @@ class Position(BaseModel):
     y: float
 
 
+class SavedConnectionBase(BaseModel):
+    id: str
+    name: str
+
+
+class SavedPostgresConnection(SavedConnectionBase, PostgresConnectionConfig):
+    db_type: Literal["postgres"] = "postgres"
+
+
+class SavedOracleConnection(SavedConnectionBase, OracleConnectionConfig):
+    db_type: Literal["oracle"] = "oracle"
+
+
+DatabaseConnectionDefinition = Annotated[
+    SavedPostgresConnection | SavedOracleConnection,
+    Field(discriminator="db_type"),
+]
+
+
 class NodeDefinition(BaseModel):
     id: str
     type: NodeType
@@ -69,6 +89,7 @@ class EdgeDefinition(BaseModel):
 class PipelineDefinition(BaseModel):
     id: str
     name: str
+    database_connections: list[DatabaseConnectionDefinition] = Field(default_factory=list)
     nodes: list[NodeDefinition]
     edges: list[EdgeDefinition]
 
