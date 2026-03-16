@@ -1,39 +1,89 @@
-import oracledb
+import asyncio
+import os
+import threading
+
 import pandas as pd
+import oracledb
 
 
 class OracleService:
-    async def execute_query(self, config: dict) -> pd.DataFrame:
-        conn_config = config["connection"]
+    _client_initialized = False
+    _client_lock = threading.Lock()
+
+    @classmethod
+    def _ensure_thick_mode(cls) -> None:
+        if cls._client_initialized:
+            return
+
+        with cls._client_lock:
+            if cls._client_initialized:
+                return
+
+            init_kwargs = {}
+            lib_dir = os.getenv("ORACLE_CLIENT_LIB_DIR")
+            config_dir = os.getenv("ORACLE_CLIENT_CONFIG_DIR")
+            if lib_dir:
+                init_kwargs["lib_dir"] = lib_dir
+            if config_dir:
+                init_kwargs["config_dir"] = config_dir
+
+            try:
+                oracledb.init_oracle_client(**init_kwargs)
+            except oracledb.ProgrammingError as exc:
+                if "already been initialized" not in str(exc):
+                    raise RuntimeError(
+                        "Oracle Thick mode initialization failed. Install Oracle Instant Client "
+                        "and set ORACLE_CLIENT_LIB_DIR to the client library directory. "
+                        "If you use tnsnames.ora/sqlnet.ora, set ORACLE_CLIENT_CONFIG_DIR too."
+                    ) from exc
+            except Exception as exc:
+                raise RuntimeError(
+                    "Oracle Thick mode initialization failed. Install Oracle Instant Client "
+                    "and set ORACLE_CLIENT_LIB_DIR to the client library directory. "
+                    "If you use tnsnames.ora/sqlnet.ora, set ORACLE_CLIENT_CONFIG_DIR too."
+                ) from exc
+
+            if oracledb.is_thin_mode():
+                raise RuntimeError(
+                    "python-oracledb is still running in Thin mode. Restart the backend and make "
+                    "sure Thick mode is initialized before any Oracle connection is opened."
+                )
+
+            cls._client_initialized = True
+
+    def _connect(self, conn_config: dict):
+        self._ensure_thick_mode()
         dsn = oracledb.makedsn(
             conn_config["host"],
             conn_config["port"],
             service_name=conn_config["service_name"],
         )
-        connection = await oracledb.connect_async(
+        return oracledb.connect(
             user=conn_config["user"],
             password=conn_config["password"],
             dsn=dsn,
         )
+
+    def _execute_query_sync(self, config: dict) -> pd.DataFrame:
+        conn_config = config["connection"]
+        connection = self._connect(conn_config)
+        cursor = connection.cursor()
         try:
-            cursor = connection.cursor()
-            await cursor.execute(config["query"])
+            cursor.execute(config["query"])
             columns = [col[0] for col in cursor.description]
-            rows = await cursor.fetchall()
+            rows = cursor.fetchall()
             return pd.DataFrame(rows, columns=columns)
         finally:
-            await connection.close()
+            cursor.close()
+            connection.close()
+
+    async def execute_query(self, config: dict) -> pd.DataFrame:
+        return await asyncio.to_thread(self._execute_query_sync, config)
+
+    def _test_connection_sync(self, config: dict) -> None:
+        connection = self._connect(config)
+        connection.close()
 
     async def test_connection(self, config: dict) -> bool:
-        dsn = oracledb.makedsn(
-            config["host"],
-            config["port"],
-            service_name=config["service_name"],
-        )
-        connection = await oracledb.connect_async(
-            user=config["user"],
-            password=config["password"],
-            dsn=dsn,
-        )
-        await connection.close()
+        await asyncio.to_thread(self._test_connection_sync, config)
         return True
