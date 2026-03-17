@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { usePipelineStore } from './pipelineStore'
 
 const mockExecutePipeline = vi.fn()
+const mockExecuteNode = vi.fn()
 const mockPreviewData = vi.fn()
 const mockSavePipeline = vi.fn()
 const mockLoadPipeline = vi.fn()
@@ -11,6 +12,7 @@ const mockListPipelines = vi.fn()
 // Prevent real API calls
 vi.mock('../api/client', () => ({
   executePipeline: (...args: unknown[]) => mockExecutePipeline(...args),
+  executeNode: (...args: unknown[]) => mockExecuteNode(...args),
   previewData: (...args: unknown[]) => mockPreviewData(...args),
   savePipeline: (...args: unknown[]) => mockSavePipeline(...args),
   loadPipeline: (...args: unknown[]) => mockLoadPipeline(...args),
@@ -280,6 +282,90 @@ describe('pipelineStore', () => {
       expect(usePipelineStore.getState().databaseConnections).toEqual([
         expect.objectContaining({ id: 'conn-1', name: 'Analytics' }),
       ])
+    })
+  })
+
+  describe('executeSingleNode', () => {
+    it('stores the execution result and loads preview on success', async () => {
+      act(() => {
+        usePipelineStore.getState().addNode('csv_source', { x: 0, y: 0 })
+        usePipelineStore.getState().updateNodeData(usePipelineStore.getState().nodes[0].id, {
+          label: 'Orders CSV',
+          tableName: 'orders_table',
+          config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+        })
+      })
+
+      const node = usePipelineStore.getState().nodes[0]
+      mockExecuteNode.mockResolvedValueOnce({
+        node_id: node.id,
+        status: 'success',
+        row_count: 3,
+        column_count: 2,
+        columns: ['id', 'name'],
+        execution_time_ms: 12,
+      })
+      mockPreviewData.mockResolvedValueOnce({
+        columns: ['id', 'name'],
+        column_types: ['INTEGER', 'VARCHAR'],
+        rows: [[1, 'Alice']],
+        total_rows: 1,
+        offset: 0,
+        limit: 100,
+      })
+
+      await act(async () => {
+        await usePipelineStore.getState().executeSingleNode(node.id, { loadPreviewOnSuccess: true })
+      })
+
+      expect(mockExecuteNode).toHaveBeenCalledWith(expect.objectContaining({
+        id: node.id,
+        label: 'Orders CSV',
+        table_name: 'orders_table',
+      }))
+      expect(mockPreviewData).toHaveBeenCalledWith('orders_table', 0)
+      expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
+        node_id: node.id,
+        status: 'success',
+      }))
+      expect(usePipelineStore.getState().previewData).toEqual(expect.objectContaining({
+        columns: ['id', 'name'],
+      }))
+    })
+
+    it('stores an error result and does not load preview when execution fails', async () => {
+      act(() => {
+        usePipelineStore.getState().addNode('csv_source', { x: 0, y: 0 })
+      })
+
+      const node = usePipelineStore.getState().nodes[0]
+      act(() => {
+        usePipelineStore.setState({
+          previewData: {
+            columns: ['existing'],
+            column_types: ['VARCHAR'],
+            rows: [['value']],
+            total_rows: 1,
+            offset: 0,
+            limit: 100,
+          },
+        })
+      })
+      mockExecuteNode.mockRejectedValueOnce(new Error('boom'))
+
+      await act(async () => {
+        await usePipelineStore.getState().executeSingleNode(node.id, { loadPreviewOnSuccess: true })
+      })
+
+      expect(usePipelineStore.getState().nodeResults[node.id]).toEqual({
+        node_id: node.id,
+        status: 'error',
+        error: 'boom',
+      })
+      expect(mockPreviewData).not.toHaveBeenCalled()
+      expect(usePipelineStore.getState().previewData).toEqual(expect.objectContaining({
+        columns: ['existing'],
+      }))
     })
   })
 })

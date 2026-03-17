@@ -13,6 +13,7 @@ import type {
   NodeType,
   NodeExecutionResult,
   DataPreview,
+  PipelineDefinition,
   SavedDatabaseConnection,
   SavedDatabaseConnectionInput,
 } from '../types/pipeline'
@@ -54,6 +55,7 @@ interface PipelineState {
   updateNodeData: (nodeId: string, data: Record<string, unknown>) => void
   deleteNode: (nodeId: string) => void
   executePipeline: (force?: boolean) => Promise<void>
+  executeSingleNode: (nodeId: string, options?: { loadPreviewOnSuccess?: boolean }) => Promise<void>
   loadPreview: (nodeId: string, tableName: string, offset?: number) => Promise<void>
   savePipeline: () => Promise<void>
   loadPipeline: (id: string) => Promise<void>
@@ -82,6 +84,17 @@ function defaultConfig(type: NodeType): Record<string, unknown> {
     case 'db_source': return { db_type: 'postgres', connection: defaultConnectionConfig('postgres'), query: '' }
     case 'transform': return { sql: '' }
     case 'export': return { format: 'csv' }
+  }
+}
+
+function serializeNode(node: Node): PipelineDefinition['nodes'][number] {
+  return {
+    id: node.id,
+    type: node.type as NodeType,
+    table_name: (node.data as Record<string, unknown>).tableName as string,
+    label: (node.data as Record<string, unknown>).label as string,
+    position: node.position,
+    config: (node.data as Record<string, unknown>).config as Record<string, unknown>,
   }
 }
 
@@ -217,14 +230,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       id: pipelineId,
       name: pipelineName,
       database_connections: get().databaseConnections,
-      nodes: nodes.map((n) => ({
-        id: n.id,
-        type: n.type as NodeType,
-        table_name: (n.data as Record<string, unknown>).tableName as string,
-        label: (n.data as Record<string, unknown>).label as string,
-        position: n.position,
-        config: (n.data as Record<string, unknown>).config as Record<string, unknown>,
-      })),
+      nodes: nodes.map(serializeNode),
       edges: edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
     }
 
@@ -238,6 +244,41 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         errorResults[n.id] = { node_id: n.id, status: 'error', error: message }
       })
       set({ nodeResults: errorResults })
+    }
+  },
+
+  executeSingleNode: async (nodeId, options) => {
+    const node = get().nodes.find((candidate) => candidate.id === nodeId)
+    if (!node) return
+
+    const tableName = (node.data as Record<string, unknown>).tableName as string
+    set({
+      nodeResults: {
+        ...get().nodeResults,
+        [nodeId]: { node_id: nodeId, status: 'running' },
+      },
+    })
+
+    try {
+      const result = await api.executeNode(serializeNode(node))
+      set({
+        nodeResults: {
+          ...get().nodeResults,
+          [nodeId]: result,
+        },
+      })
+
+      if (options?.loadPreviewOnSuccess && result.status === 'success') {
+        await get().loadPreview(nodeId, tableName)
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      set({
+        nodeResults: {
+          ...get().nodeResults,
+          [nodeId]: { node_id: nodeId, status: 'error', error: message },
+        },
+      })
     }
   },
 
@@ -257,14 +298,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       id: pipelineId,
       name: pipelineName,
       database_connections: databaseConnections,
-      nodes: nodes.map((n) => ({
-        id: n.id,
-        type: n.type as NodeType,
-        table_name: (n.data as Record<string, unknown>).tableName as string,
-        label: (n.data as Record<string, unknown>).label as string,
-        position: n.position,
-        config: (n.data as Record<string, unknown>).config as Record<string, unknown>,
-      })),
+      nodes: nodes.map(serializeNode),
       edges: edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
     }
     await api.savePipeline(pipeline)
