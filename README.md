@@ -5,6 +5,7 @@ A visual data pipeline builder for data wrangling. Construct pipelines as node g
 ## Prerequisites
 
 - **Python 3.11+**
+- **uv**
 - **Node.js 18+**
 - **Docker** (optional, for the test PostgreSQL database)
 
@@ -25,9 +26,9 @@ shori/
 
 ```bash
 cd backend
-python3 -m venv .venv
+uv venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 ```
 
 Oracle connections use `python-oracledb` Thick mode. Install Oracle Instant Client and
@@ -129,7 +130,7 @@ Pipelines can be saved and loaded from the toolbar.
 ```bash
 cd backend
 source .venv/bin/activate
-pip install -r requirements-test.txt
+uv pip install -r requirements-test.txt
 ```
 
 **Run all unit tests:**
