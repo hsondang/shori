@@ -231,4 +231,99 @@ describe('NodeConfigPanel', () => {
     expect(usePipelineStore.getState().nodeResults['csv-node']).toEqual(result)
     expect(usePipelineStore.getState().previewData).toEqual(makePreview())
   })
+
+  it('shows transform Run and Preview and invokes the shared store action', async () => {
+    const user = userEvent.setup()
+    const runTransformPreview = vi.fn()
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'src-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders CSV',
+              tableName: 'orders_table',
+              config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+            },
+          },
+          {
+            id: 'tx-node',
+            type: 'transform',
+            position: { x: 200, y: 0 },
+            data: {
+              label: 'Orders Transform',
+              tableName: 'orders_final',
+              config: { sql: 'SELECT * FROM orders_table' },
+            },
+          },
+        ],
+        edges: [{ id: 'edge-1', source: 'src-node', target: 'tx-node' }],
+        selectedNodeId: 'tx-node',
+        runTransformPreview,
+      })
+    })
+
+    render(<NodeConfigPanel />)
+
+    expect(screen.getByRole('button', { name: 'Run and Preview' })).toBeEnabled()
+    expect(screen.getByText(/Missing upstream tables will prompt before running dependencies/i)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Run and Preview' }))
+
+    expect(runTransformPreview).toHaveBeenCalledWith('tx-node')
+  })
+
+  it('disables transform Run and Preview when SQL is blank', () => {
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'tx-node',
+            type: 'transform',
+            position: { x: 200, y: 0 },
+            data: {
+              label: 'Orders Transform',
+              tableName: 'orders_final',
+              config: { sql: '   ' },
+            },
+          },
+        ],
+        selectedNodeId: 'tx-node',
+      })
+    })
+
+    render(<NodeConfigPanel />)
+
+    expect(screen.getByRole('button', { name: 'Run and Preview' })).toBeDisabled()
+  })
+
+  it('shows transform Run and Preview as disabled while running', () => {
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'tx-node',
+            type: 'transform',
+            position: { x: 200, y: 0 },
+            data: {
+              label: 'Orders Transform',
+              tableName: 'orders_final',
+              config: { sql: 'SELECT 1' },
+            },
+          },
+        ],
+        selectedNodeId: 'tx-node',
+        nodeResults: {
+          'tx-node': { node_id: 'tx-node', status: 'running' },
+        },
+      })
+    })
+
+    render(<NodeConfigPanel />)
+
+    expect(screen.getByRole('button', { name: 'Running...' })).toBeDisabled()
+  })
 })

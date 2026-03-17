@@ -41,6 +41,20 @@ export async function previewData(
   return data
 }
 
+export async function getTableSchema(
+  tableName: string
+): Promise<{ table_name: string; columns: string[]; column_types: string[]; total_rows: number } | null> {
+  try {
+    const { data } = await api.get(`/data/schema/${tableName}`)
+    return data
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 404) {
+      return null
+    }
+    throw error
+  }
+}
+
 export async function exportData(tableName: string): Promise<void> {
   const { data } = await api.get(`/data/export/${tableName}`, {
     responseType: 'blob',

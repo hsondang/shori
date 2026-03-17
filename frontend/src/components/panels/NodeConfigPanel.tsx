@@ -10,6 +10,7 @@ export default function NodeConfigPanel() {
   const updateNodeData = usePipelineStore((s) => s.updateNodeData)
   const deleteNode = usePipelineStore((s) => s.deleteNode)
   const executeSingleNode = usePipelineStore((s) => s.executeSingleNode)
+  const runTransformPreview = usePipelineStore((s) => s.runTransformPreview)
   const nodeResults = usePipelineStore((s) => s.nodeResults)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isCsvEditing, setIsCsvEditing] = useState(false)
@@ -22,6 +23,7 @@ export default function NodeConfigPanel() {
   const config = (d.config as Record<string, unknown> | undefined) ?? {}
   const tableName = (d.tableName as string | undefined) ?? ''
   const nodeResult = nodeId ? nodeResults[nodeId] : undefined
+  const transformSql = ((config.sql as string | undefined) ?? '').trim()
   const isCsvNode = node?.type === 'csv_source'
   const csvLabel = isCsvNode ? ((d.label as string) || '') : ''
   const labelInputId = nodeId ? `${nodeId}-label` : 'node-label'
@@ -287,6 +289,31 @@ export default function NodeConfigPanel() {
               onChange={(sql) => updateNodeData(node.id, { config: { ...config, sql } })}
               upstreamTables={upstreamTableNames()}
             />
+            <div className="mt-4">
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-xs text-gray-500">Run Node</label>
+                {nodeResult && (
+                  <span className="text-xs text-gray-400">
+                    {nodeResult.status === 'running' ? 'Running...' : `Status: ${nodeResult.status}`}
+                  </span>
+                )}
+              </div>
+              <p className="mb-3 text-xs text-gray-500">
+                Execute this transform and open its preview. Missing upstream tables will prompt before running dependencies.
+              </p>
+              <button
+                type="button"
+                onClick={() => void runTransformPreview(node.id)}
+                disabled={!transformSql || nodeResult?.status === 'running'}
+                className={`w-full rounded px-3 py-2 text-sm font-medium transition ${
+                  !transformSql || nodeResult?.status === 'running'
+                    ? 'bg-gray-100 text-gray-400'
+                    : 'bg-purple-500 text-white hover:bg-purple-600'
+                }`}
+              >
+                {nodeResult?.status === 'running' ? 'Running...' : 'Run and Preview'}
+              </button>
+            </div>
           </div>
         )}
 

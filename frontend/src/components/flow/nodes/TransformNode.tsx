@@ -7,12 +7,14 @@ export default function TransformNode({ id, data }: NodeProps) {
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
   const openNodeError = usePipelineStore((s) => s.openNodeError)
   const loadPreview = usePipelineStore((s) => s.loadPreview)
+  const runTransformPreview = usePipelineStore((s) => s.runTransformPreview)
   const result = nodeResults[id]
   const hasError = result?.status === 'error'
   const d = data as Record<string, unknown>
   const config = d.config as Record<string, string>
   const tableName = d.tableName as string
   const sqlPreview = config.sql ? config.sql.substring(0, 50) + (config.sql.length > 50 ? '...' : '') : 'No SQL defined'
+  const canRunPreview = Boolean(config.sql?.trim()) && result?.status !== 'running'
 
   return (
     <div
@@ -41,6 +43,18 @@ export default function TransformNode({ id, data }: NodeProps) {
             onViewError={result.status === 'error' ? () => openNodeError(id) : undefined}
           />
         )}
+        <button
+          type="button"
+          className={`text-xs text-left ${canRunPreview ? 'text-purple-500 hover:underline' : 'text-gray-400 cursor-not-allowed'}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (!canRunPreview) return
+            void runTransformPreview(id)
+          }}
+          disabled={!canRunPreview}
+        >
+          {result?.status === 'running' ? 'Running...' : 'Run and Preview'}
+        </button>
         {result?.status === 'success' && (
           <button
             className="text-purple-500 hover:underline text-xs"

@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act } from 'react'
+import userEvent from '@testing-library/user-event'
 import TransformNode from './TransformNode'
 import { usePipelineStore } from '../../../store/pipelineStore'
 
@@ -12,8 +13,13 @@ vi.mock('@xyflow/react', () => ({
 }))
 
 vi.mock('../../../api/client', () => ({
+  executeNode: vi.fn(),
   executePipeline: vi.fn(),
   previewData: vi.fn(),
+  getTableSchema: vi.fn(),
+  savePipeline: vi.fn(),
+  loadPipeline: vi.fn(),
+  listPipelines: vi.fn(),
 }))
 
 const SHORT_SQL = 'SELECT * FROM orders'
@@ -40,7 +46,10 @@ function makeProps(sql: string) {
 
 beforeEach(() => {
   act(() => usePipelineStore.getState().newPipeline())
-  act(() => usePipelineStore.setState({ nodeResults: {} }))
+  act(() => usePipelineStore.setState({
+    nodeResults: {},
+    runTransformPreview: vi.fn(),
+  }))
 })
 
 describe('TransformNode', () => {
@@ -69,5 +78,37 @@ describe('TransformNode', () => {
   it('renders the table name', () => {
     render(<TransformNode {...makeProps(SHORT_SQL)} />)
     expect(screen.getByText('tx_table')).toBeInTheDocument()
+  })
+
+  it('renders Run and Preview for transform nodes', () => {
+    render(<TransformNode {...makeProps(SHORT_SQL)} />)
+    expect(screen.getByRole('button', { name: 'Run and Preview' })).toBeInTheDocument()
+  })
+
+  it('invokes the shared transform preview action', async () => {
+    const user = userEvent.setup()
+    const runTransformPreview = vi.fn()
+    act(() => usePipelineStore.setState({ runTransformPreview }))
+
+    render(<TransformNode {...makeProps(SHORT_SQL)} />)
+
+    await user.click(screen.getByRole('button', { name: 'Run and Preview' }))
+
+    expect(runTransformPreview).toHaveBeenCalledWith('tx-1')
+  })
+
+  it('keeps Preview data gated on successful execution', () => {
+    const { rerender } = render(<TransformNode {...makeProps(SHORT_SQL)} />)
+    expect(screen.queryByRole('button', { name: 'Preview data' })).not.toBeInTheDocument()
+
+    act(() => usePipelineStore.setState({
+      nodeResults: {
+        'tx-1': { node_id: 'tx-1', status: 'success', row_count: 2, column_count: 1 },
+      },
+    }))
+
+    rerender(<TransformNode {...makeProps(SHORT_SQL)} />)
+
+    expect(screen.getByRole('button', { name: 'Preview data' })).toBeInTheDocument()
   })
 })

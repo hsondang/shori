@@ -5,6 +5,7 @@ import { usePipelineStore } from './pipelineStore'
 const mockExecutePipeline = vi.fn()
 const mockExecuteNode = vi.fn()
 const mockPreviewData = vi.fn()
+const mockGetTableSchema = vi.fn()
 const mockSavePipeline = vi.fn()
 const mockLoadPipeline = vi.fn()
 const mockListPipelines = vi.fn()
@@ -14,6 +15,7 @@ vi.mock('../api/client', () => ({
   executePipeline: (...args: unknown[]) => mockExecutePipeline(...args),
   executeNode: (...args: unknown[]) => mockExecuteNode(...args),
   previewData: (...args: unknown[]) => mockPreviewData(...args),
+  getTableSchema: (...args: unknown[]) => mockGetTableSchema(...args),
   savePipeline: (...args: unknown[]) => mockSavePipeline(...args),
   loadPipeline: (...args: unknown[]) => mockLoadPipeline(...args),
   listPipelines: (...args: unknown[]) => mockListPipelines(...args),
@@ -367,6 +369,211 @@ describe('pipelineStore', () => {
       expect(usePipelineStore.getState().previewData).toEqual(expect.objectContaining({
         columns: ['existing'],
       }))
+    })
+  })
+
+  describe('runTransformPreview', () => {
+    beforeEach(() => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true)
+    })
+
+    it('runs only the selected transform when upstream tables are already materialized', async () => {
+      act(() => {
+        usePipelineStore.setState({
+          nodes: [
+            {
+              id: 'src-node',
+              type: 'csv_source',
+              position: { x: 0, y: 0 },
+              data: {
+                label: 'Orders CSV',
+                tableName: 'orders_table',
+                config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+              },
+            },
+            {
+              id: 'tx-node',
+              type: 'transform',
+              position: { x: 200, y: 0 },
+              data: {
+                label: 'Orders Transform',
+                tableName: 'orders_filtered',
+                config: { sql: 'SELECT * FROM orders_table WHERE id > 1' },
+              },
+            },
+          ],
+          edges: [{ id: 'edge-1', source: 'src-node', target: 'tx-node' }],
+        })
+      })
+
+      mockGetTableSchema.mockResolvedValueOnce({
+        table_name: 'orders_table',
+        columns: ['id'],
+        column_types: ['INTEGER'],
+        total_rows: 5,
+      })
+      mockExecuteNode.mockResolvedValueOnce({
+        node_id: 'tx-node',
+        status: 'success',
+        row_count: 4,
+        column_count: 1,
+        columns: ['id'],
+      })
+      mockPreviewData.mockResolvedValueOnce({
+        columns: ['id'],
+        column_types: ['INTEGER'],
+        rows: [[2], [3]],
+        total_rows: 4,
+        offset: 0,
+        limit: 100,
+      })
+
+      await act(async () => {
+        await usePipelineStore.getState().runTransformPreview('tx-node')
+      })
+
+      expect(mockGetTableSchema).toHaveBeenCalledWith('orders_table')
+      expect(mockExecuteNode).toHaveBeenCalledWith(expect.objectContaining({
+        id: 'tx-node',
+        table_name: 'orders_filtered',
+      }))
+      expect(mockExecutePipeline).not.toHaveBeenCalled()
+      expect(mockPreviewData).toHaveBeenCalledWith('orders_filtered', 0)
+    })
+
+    it('runs the minimal missing upstream chain after confirmation and preserves unrelated node results', async () => {
+      act(() => {
+        usePipelineStore.setState({
+          nodes: [
+            {
+              id: 'src-node',
+              type: 'csv_source',
+              position: { x: 0, y: 0 },
+              data: {
+                label: 'Orders CSV',
+                tableName: 'orders_table',
+                config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+              },
+            },
+            {
+              id: 'mid-node',
+              type: 'transform',
+              position: { x: 200, y: 0 },
+              data: {
+                label: 'Orders Mid',
+                tableName: 'orders_mid',
+                config: { sql: 'SELECT * FROM orders_table' },
+              },
+            },
+            {
+              id: 'tx-node',
+              type: 'transform',
+              position: { x: 400, y: 0 },
+              data: {
+                label: 'Orders Final',
+                tableName: 'orders_final',
+                config: { sql: 'SELECT * FROM orders_mid WHERE id > 1' },
+              },
+            },
+          ],
+          edges: [
+            { id: 'edge-1', source: 'src-node', target: 'mid-node' },
+            { id: 'edge-2', source: 'mid-node', target: 'tx-node' },
+          ],
+          nodeResults: {
+            other: { node_id: 'other', status: 'success', row_count: 10, column_count: 2 },
+          },
+        })
+      })
+
+      mockGetTableSchema.mockImplementation(async (tableName: string) => {
+        if (tableName === 'orders_table') {
+          return {
+            table_name: 'orders_table',
+            columns: ['id'],
+            column_types: ['INTEGER'],
+            total_rows: 5,
+          }
+        }
+        if (tableName === 'orders_mid') {
+          return null
+        }
+        return null
+      })
+      mockExecutePipeline.mockResolvedValueOnce({
+        'mid-node': { node_id: 'mid-node', status: 'success', row_count: 5, column_count: 1, columns: ['id'] },
+        'tx-node': { node_id: 'tx-node', status: 'success', row_count: 4, column_count: 1, columns: ['id'] },
+      })
+      mockPreviewData.mockResolvedValueOnce({
+        columns: ['id'],
+        column_types: ['INTEGER'],
+        rows: [[2], [3]],
+        total_rows: 4,
+        offset: 0,
+        limit: 100,
+      })
+
+      await act(async () => {
+        await usePipelineStore.getState().runTransformPreview('tx-node')
+      })
+
+      expect(window.confirm).toHaveBeenCalled()
+      expect(mockExecutePipeline).toHaveBeenCalledWith(expect.objectContaining({
+        nodes: [
+          expect.objectContaining({ id: 'mid-node' }),
+          expect.objectContaining({ id: 'tx-node' }),
+        ],
+        edges: [
+          { id: 'edge-2', source: 'mid-node', target: 'tx-node' },
+        ],
+      }), true)
+      expect(mockExecuteNode).not.toHaveBeenCalled()
+      expect(mockPreviewData).toHaveBeenCalledWith('orders_final', 0)
+      expect(usePipelineStore.getState().nodeResults.other).toEqual(
+        expect.objectContaining({ node_id: 'other', status: 'success' })
+      )
+    })
+
+    it('does not execute or load preview when the user cancels missing upstream execution', async () => {
+      vi.mocked(window.confirm).mockReturnValueOnce(false)
+
+      act(() => {
+        usePipelineStore.setState({
+          nodes: [
+            {
+              id: 'src-node',
+              type: 'csv_source',
+              position: { x: 0, y: 0 },
+              data: {
+                label: 'Orders CSV',
+                tableName: 'orders_table',
+                config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+              },
+            },
+            {
+              id: 'tx-node',
+              type: 'transform',
+              position: { x: 200, y: 0 },
+              data: {
+                label: 'Orders Final',
+                tableName: 'orders_final',
+                config: { sql: 'SELECT * FROM orders_table WHERE id > 1' },
+              },
+            },
+          ],
+          edges: [{ id: 'edge-1', source: 'src-node', target: 'tx-node' }],
+        })
+      })
+
+      mockGetTableSchema.mockResolvedValueOnce(null)
+
+      await act(async () => {
+        await usePipelineStore.getState().runTransformPreview('tx-node')
+      })
+
+      expect(mockExecutePipeline).not.toHaveBeenCalled()
+      expect(mockExecuteNode).not.toHaveBeenCalled()
+      expect(mockPreviewData).not.toHaveBeenCalled()
     })
   })
 
