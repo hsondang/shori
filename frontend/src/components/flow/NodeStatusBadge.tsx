@@ -7,7 +7,13 @@ const statusColors = {
   error: 'bg-red-100 text-red-700',
 }
 
-export default function NodeStatusBadge({ result }: { result: NodeExecutionResult }) {
+export default function NodeStatusBadge({
+  result,
+  onViewError,
+}: {
+  result: NodeExecutionResult
+  onViewError?: () => void
+}) {
   return (
     <div className="space-y-0.5">
       <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${statusColors[result.status]}`}>
@@ -20,9 +26,15 @@ export default function NodeStatusBadge({ result }: { result: NodeExecutionResul
         </div>
       )}
       {result.error && (
-        <div className="text-red-600 truncate max-w-[160px]" title={result.error}>
-          {result.error}
-        </div>
+        onViewError ? (
+          <button
+            type="button"
+            onClick={onViewError}
+            className="text-left text-red-700 font-semibold hover:underline"
+          >
+            View error
+          </button>
+        ) : null
       )}
     </div>
   )

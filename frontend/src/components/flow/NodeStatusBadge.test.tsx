@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react'
-import { describe, it, expect } from 'vitest'
+import userEvent from '@testing-library/user-event'
+import { describe, it, expect, vi } from 'vitest'
 import NodeStatusBadge from './NodeStatusBadge'
 import type { NodeExecutionResult } from '../../types/pipeline'
 
@@ -28,7 +29,22 @@ describe('NodeStatusBadge', () => {
   it('shows error status text', () => {
     badge({ status: 'error', error: 'Something broke' })
     expect(screen.getByText(/error/)).toBeInTheDocument()
-    expect(screen.getByText('Something broke')).toBeInTheDocument()
+    expect(screen.queryByText('Something broke')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /view error/i })).not.toBeInTheDocument()
+  })
+
+  it('shows a view error action when a handler is provided', async () => {
+    const user = userEvent.setup()
+    const onViewError = vi.fn()
+    render(
+      <NodeStatusBadge
+        result={{ node_id: 'n1', status: 'error', error: 'Something broke' }}
+        onViewError={onViewError}
+      />
+    )
+
+    await user.click(screen.getByRole('button', { name: /view error/i }))
+    expect(onViewError).toHaveBeenCalledTimes(1)
   })
 
   it('shows row count when status is success', () => {

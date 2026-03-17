@@ -1,5 +1,6 @@
 import { ReactFlowProvider } from '@xyflow/react'
 import FlowCanvas from './components/flow/FlowCanvas'
+import NodeErrorDialog from './components/flow/NodeErrorDialog'
 import Toolbar from './components/toolbar/Toolbar'
 import NodeConfigPanel from './components/panels/NodeConfigPanel'
 import DataPreviewPanel from './components/panels/DataPreviewPanel'
@@ -16,6 +17,7 @@ export default function App() {
           <NodeConfigPanel />
         </div>
         <DataPreviewPanel />
+        <NodeErrorDialog />
       </div>
     </ReactFlowProvider>
   )

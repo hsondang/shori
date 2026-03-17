@@ -12,8 +12,10 @@ const dbStyles = {
 export default function DatabaseSourceNode({ id, data }: NodeProps) {
   const nodeResults = usePipelineStore((s) => s.nodeResults)
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
+  const openNodeError = usePipelineStore((s) => s.openNodeError)
   const loadPreview = usePipelineStore((s) => s.loadPreview)
   const result = nodeResults[id]
+  const hasError = result?.status === 'error'
   const d = data as Record<string, unknown>
   const config = d.config as Record<string, unknown>
   const connection = config.connection as DatabaseConnectionConfig | undefined
@@ -23,10 +25,18 @@ export default function DatabaseSourceNode({ id, data }: NodeProps) {
 
   return (
     <div
-      className={`bg-white border-2 ${style.border} rounded-lg shadow-md min-w-[180px] cursor-pointer`}
+      className={`bg-white border-2 rounded-lg min-w-[180px] cursor-pointer ${
+        hasError
+          ? 'border-red-500 shadow-lg shadow-red-100 ring-2 ring-red-200/80'
+          : `${style.border} shadow-md`
+      }`}
       onClick={() => setSelectedNodeId(id)}
     >
-      <div className={`${style.bg} text-white px-3 py-1.5 rounded-t-md text-sm font-semibold flex items-center gap-2`}>
+      <div
+        className={`text-white px-3 py-1.5 rounded-t-md text-sm flex items-center gap-2 ${
+          hasError ? 'bg-red-500 font-bold' : `${style.bg} font-semibold`
+        }`}
+      >
         <span>{style.emoji}</span>
         <span>{(d.label as string) || 'Database Source'}</span>
       </div>
@@ -37,7 +47,12 @@ export default function DatabaseSourceNode({ id, data }: NodeProps) {
             {getConnectionSummary(dbType, connection)}
           </div>
         )}
-        {result && <NodeStatusBadge result={result} />}
+        {result && (
+          <NodeStatusBadge
+            result={result}
+            onViewError={result.status === 'error' ? () => openNodeError(id) : undefined}
+          />
+        )}
         {result?.status === 'success' && (
           <button
             className={`${style.text} hover:underline text-xs`}

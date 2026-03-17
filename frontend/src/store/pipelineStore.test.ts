@@ -215,6 +215,7 @@ describe('pipelineStore', () => {
       expect(state.edges).toHaveLength(0)
       expect(state.databaseConnections).toEqual([])
       expect(state.nodeResults).toEqual({})
+      expect(state.errorDialogNodeId).toBeNull()
     })
 
     it('resets pipeline name to Untitled Pipeline', () => {
@@ -366,6 +367,26 @@ describe('pipelineStore', () => {
       expect(usePipelineStore.getState().previewData).toEqual(expect.objectContaining({
         columns: ['existing'],
       }))
+    })
+  })
+
+  describe('node error dialog', () => {
+    it('opens and closes the error dialog for a node', () => {
+      act(() => {
+        usePipelineStore.getState().addNode('csv_source', { x: 0, y: 0 })
+      })
+
+      const node = usePipelineStore.getState().nodes[0]
+
+      act(() => {
+        usePipelineStore.getState().openNodeError(node.id)
+      })
+      expect(usePipelineStore.getState().errorDialogNodeId).toBe(node.id)
+
+      act(() => {
+        usePipelineStore.getState().closeNodeError()
+      })
+      expect(usePipelineStore.getState().errorDialogNodeId).toBeNull()
     })
   })
 })

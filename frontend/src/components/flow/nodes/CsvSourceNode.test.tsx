@@ -1,7 +1,9 @@
 import { render, screen } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act } from 'react'
+import userEvent from '@testing-library/user-event'
 import CsvSourceNode from './CsvSourceNode'
+import NodeErrorDialog from '../NodeErrorDialog'
 import { usePipelineStore } from '../../../store/pipelineStore'
 
 vi.mock('@xyflow/react', () => ({
@@ -44,7 +46,17 @@ const defaultProps = {
 
 beforeEach(() => {
   act(() => usePipelineStore.getState().newPipeline())
-  act(() => usePipelineStore.setState({ nodeResults: {} }))
+  act(() => usePipelineStore.setState({
+    nodeResults: {},
+    nodes: [
+      {
+        id: NODE_ID,
+        type: 'csv_source',
+        position: { x: 0, y: 0 },
+        data: defaultProps.data,
+      },
+    ],
+  }))
 })
 
 describe('CsvSourceNode', () => {
@@ -74,5 +86,33 @@ describe('CsvSourceNode', () => {
   it('has a source handle on the right', () => {
     render(<CsvSourceNode {...defaultProps} />)
     expect(screen.getByTestId('handle-source-right')).toBeInTheDocument()
+  })
+
+  it('uses the error styling and opens the error dialog', async () => {
+    const user = userEvent.setup()
+    act(() => usePipelineStore.setState({
+      nodeResults: {
+        [NODE_ID]: {
+          node_id: NODE_ID,
+          status: 'error',
+          error: 'Invalid Input Error: CSV Error on Line 2, expected 4 columns but found 1',
+        },
+      },
+    }))
+
+    const { container } = render(
+      <>
+        <CsvSourceNode {...defaultProps} />
+        <NodeErrorDialog />
+      </>
+    )
+
+    expect(container.firstChild).toHaveClass('border-red-500')
+    expect(screen.getByText('CSV Source').parentElement).toHaveClass('font-bold')
+
+    await user.click(screen.getByRole('button', { name: /view error/i }))
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByText(/expected 4 columns but found 1/i)).toBeInTheDocument()
   })
 })

@@ -5,18 +5,28 @@ import NodeStatusBadge from '../NodeStatusBadge'
 export default function CsvSourceNode({ id, data }: NodeProps) {
   const nodeResults = usePipelineStore((s) => s.nodeResults)
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
+  const openNodeError = usePipelineStore((s) => s.openNodeError)
   const loadPreview = usePipelineStore((s) => s.loadPreview)
   const result = nodeResults[id]
+  const hasError = result?.status === 'error'
   const d = data as Record<string, unknown>
   const config = d.config as Record<string, string>
   const tableName = d.tableName as string
 
   return (
     <div
-      className="bg-white border-2 border-blue-400 rounded-lg shadow-md min-w-[180px] cursor-pointer"
+      className={`bg-white border-2 rounded-lg min-w-[180px] cursor-pointer ${
+        hasError
+          ? 'border-red-500 shadow-lg shadow-red-100 ring-2 ring-red-200/80'
+          : 'border-blue-400 shadow-md'
+      }`}
       onClick={() => setSelectedNodeId(id)}
     >
-      <div className="bg-blue-400 text-white px-3 py-1.5 rounded-t-md text-sm font-semibold flex items-center gap-2">
+      <div
+        className={`text-white px-3 py-1.5 rounded-t-md text-sm flex items-center gap-2 ${
+          hasError ? 'bg-red-500 font-bold' : 'bg-blue-400 font-semibold'
+        }`}
+      >
         <span>📄</span>
         <span>{(d.label as string) || 'CSV Source'}</span>
       </div>
@@ -25,7 +35,12 @@ export default function CsvSourceNode({ id, data }: NodeProps) {
         {config.original_filename && (
           <div className="text-gray-700 truncate max-w-[160px]">{config.original_filename}</div>
         )}
-        {result && <NodeStatusBadge result={result} />}
+        {result && (
+          <NodeStatusBadge
+            result={result}
+            onViewError={result.status === 'error' ? () => openNodeError(id) : undefined}
+          />
+        )}
         {result?.status === 'success' && (
           <button
             className="text-blue-500 hover:underline text-xs"

@@ -36,10 +36,13 @@ interface PipelineState {
 
   // Execution results
   nodeResults: Record<string, NodeExecutionResult>
+  errorDialogNodeId: string | null
 
   // Selected node
   selectedNodeId: string | null
   setSelectedNodeId: (id: string | null) => void
+  openNodeError: (nodeId: string) => void
+  closeNodeError: () => void
 
   // Data preview
   previewData: DataPreview | null
@@ -105,6 +108,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   pipelineName: 'Untitled Pipeline',
   databaseConnections: [],
   nodeResults: {},
+  errorDialogNodeId: null,
   selectedNodeId: null,
   previewData: null,
   previewNodeId: null,
@@ -125,6 +129,8 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   },
 
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
+  openNodeError: (nodeId) => set({ errorDialogNodeId: nodeId }),
+  closeNodeError: () => set({ errorDialogNodeId: null }),
 
   addNode: (type, position) => {
     const id = generateNodeId()
@@ -213,6 +219,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       nodes: get().nodes.filter((n) => n.id !== nodeId),
       edges: get().edges.filter((e) => e.source !== nodeId && e.target !== nodeId),
       selectedNodeId: get().selectedNodeId === nodeId ? null : get().selectedNodeId,
+      errorDialogNodeId: get().errorDialogNodeId === nodeId ? null : get().errorDialogNodeId,
     })
   },
 
@@ -224,7 +231,10 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     nodes.forEach((n) => {
       runningResults[n.id] = { node_id: n.id, status: 'running' }
     })
-    set({ nodeResults: runningResults })
+    set({
+      nodeResults: runningResults,
+      errorDialogNodeId: null,
+    })
 
     const pipeline = {
       id: pipelineId,
@@ -243,7 +253,10 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       nodes.forEach((n) => {
         errorResults[n.id] = { node_id: n.id, status: 'error', error: message }
       })
-      set({ nodeResults: errorResults })
+      set({
+        nodeResults: errorResults,
+        errorDialogNodeId: null,
+      })
     }
   },
 
@@ -257,6 +270,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         ...get().nodeResults,
         [nodeId]: { node_id: nodeId, status: 'running' },
       },
+      errorDialogNodeId: get().errorDialogNodeId === nodeId ? null : get().errorDialogNodeId,
     })
 
     try {
@@ -266,6 +280,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
           ...get().nodeResults,
           [nodeId]: result,
         },
+        errorDialogNodeId: get().errorDialogNodeId === nodeId && result.status !== 'error'
+          ? null
+          : get().errorDialogNodeId,
       })
 
       if (options?.loadPreviewOnSuccess && result.status === 'success') {
@@ -278,6 +295,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
           ...get().nodeResults,
           [nodeId]: { node_id: nodeId, status: 'error', error: message },
         },
+        errorDialogNodeId: null,
       })
     }
   },
@@ -328,6 +346,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       pipelineName: pipeline.name,
       databaseConnections: pipeline.database_connections || [],
       nodeResults: {},
+      errorDialogNodeId: null,
       selectedNodeId: null,
       previewData: null,
       previewNodeId: null,
@@ -343,6 +362,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       pipelineName: 'Untitled Pipeline',
       databaseConnections: [],
       nodeResults: {},
+      errorDialogNodeId: null,
       selectedNodeId: null,
       previewData: null,
       previewNodeId: null,
