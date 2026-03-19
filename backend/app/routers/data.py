@@ -42,3 +42,11 @@ def get_schema(table_name: str, request: Request):
         "column_types": preview["column_types"],
         "total_rows": preview["total_rows"],
     }
+
+
+@router.delete("/table/{table_name}")
+def delete_table(table_name: str, request: Request):
+    db = request.app.state.duckdb
+    existed = db.table_exists(table_name)
+    db.drop_table(table_name)
+    return {"deleted": existed}

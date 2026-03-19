@@ -110,6 +110,11 @@ function getNodeConfig(node: Node): Record<string, unknown> {
   return (node.data as Record<string, unknown>).config as Record<string, unknown>
 }
 
+function dropMaterializedTable(tableName: string | undefined) {
+  if (!tableName) return
+  void api.deleteTable(tableName).catch(() => {})
+}
+
 function collectAncestorNodeIds(nodeId: string, edges: Edge[]): string[] {
   const parentsByTarget = new Map<string, string[]>()
   edges.forEach((edge) => {
@@ -237,19 +242,55 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   },
 
   updateNodeData: (nodeId, data) => {
-    set({
-      nodes: get().nodes.map((n) =>
-        n.id === nodeId ? { ...n, data: { ...n.data, ...data } } : n
-      ),
+    const currentNode = get().nodes.find((candidate) => candidate.id === nodeId)
+    if (!currentNode) return
+
+    const previousTableName = getTableName(currentNode)
+    const nextTableName = typeof data.tableName === 'string' ? data.tableName : previousTableName
+    const tableNameChanged = previousTableName !== nextTableName
+
+    if (tableNameChanged) {
+      dropMaterializedTable(previousTableName)
+    }
+
+    set((state) => {
+      const nodeResults = { ...state.nodeResults }
+      if (tableNameChanged) {
+        delete nodeResults[nodeId]
+      }
+
+      return {
+        nodes: state.nodes.map((n) =>
+          n.id === nodeId ? { ...n, data: { ...n.data, ...data } } : n
+        ),
+        nodeResults,
+        ...(tableNameChanged && state.previewNodeId === nodeId
+          ? { previewData: null, previewNodeId: null, previewLoading: false }
+          : {}),
+      }
     })
   },
 
   deleteNode: (nodeId) => {
-    set({
-      nodes: get().nodes.filter((n) => n.id !== nodeId),
-      edges: get().edges.filter((e) => e.source !== nodeId && e.target !== nodeId),
-      selectedNodeId: get().selectedNodeId === nodeId ? null : get().selectedNodeId,
-      errorDialogNodeId: get().errorDialogNodeId === nodeId ? null : get().errorDialogNodeId,
+    const node = get().nodes.find((candidate) => candidate.id === nodeId)
+    if (node) {
+      dropMaterializedTable(getTableName(node))
+    }
+
+    set((state) => {
+      const nodeResults = { ...state.nodeResults }
+      delete nodeResults[nodeId]
+
+      return {
+        nodes: state.nodes.filter((n) => n.id !== nodeId),
+        edges: state.edges.filter((e) => e.source !== nodeId && e.target !== nodeId),
+        nodeResults,
+        selectedNodeId: state.selectedNodeId === nodeId ? null : state.selectedNodeId,
+        errorDialogNodeId: state.errorDialogNodeId === nodeId ? null : state.errorDialogNodeId,
+        ...(state.previewNodeId === nodeId
+          ? { previewData: null, previewNodeId: null, previewLoading: false }
+          : {}),
+      }
     })
   },
 

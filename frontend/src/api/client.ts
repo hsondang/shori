@@ -55,6 +55,11 @@ export async function getTableSchema(
   }
 }
 
+export async function deleteTable(tableName: string): Promise<{ deleted: boolean }> {
+  const { data } = await api.delete(`/data/table/${tableName}`)
+  return data
+}
+
 export async function exportData(tableName: string): Promise<void> {
   const { data } = await api.get(`/data/export/${tableName}`, {
     responseType: 'blob',

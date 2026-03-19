@@ -9,6 +9,7 @@ import type { DataPreview, NodeExecutionResult } from '../../types/pipeline'
 const mockUploadCsv = vi.fn()
 const mockExecuteNode = vi.fn()
 const mockPreviewData = vi.fn()
+const mockDeleteTable = vi.fn()
 
 vi.mock('@monaco-editor/react', () => ({
   default: ({ value, onChange }: { value: string; onChange?: (value: string) => void }) => (
@@ -21,6 +22,7 @@ vi.mock('../../api/client', () => ({
   executePipeline: vi.fn(),
   executeNode: (...args: unknown[]) => mockExecuteNode(...args),
   previewData: (...args: unknown[]) => mockPreviewData(...args),
+  deleteTable: (...args: unknown[]) => mockDeleteTable(...args),
   savePipeline: vi.fn(),
   loadPipeline: vi.fn(),
   listPipelines: vi.fn(),

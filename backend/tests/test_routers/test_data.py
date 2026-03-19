@@ -75,3 +75,20 @@ async def test_export_returns_csv(populated_client):
     content = resp.text
     assert "id" in content
     assert "Alice" in content
+
+
+@pytest.mark.asyncio
+async def test_delete_table_removes_materialized_table(populated_client):
+    delete_resp = await populated_client.delete("/api/data/table/my_table")
+    assert delete_resp.status_code == 200
+    assert delete_resp.json() == {"deleted": True}
+
+    preview_resp = await populated_client.get("/api/data/preview/my_table")
+    assert preview_resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_table_is_idempotent(client):
+    resp = await client.delete("/api/data/table/nonexistent_table")
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": False}

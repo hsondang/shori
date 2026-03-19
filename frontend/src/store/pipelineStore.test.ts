@@ -6,6 +6,7 @@ const mockExecutePipeline = vi.fn()
 const mockExecuteNode = vi.fn()
 const mockPreviewData = vi.fn()
 const mockGetTableSchema = vi.fn()
+const mockDeleteTable = vi.fn()
 const mockSavePipeline = vi.fn()
 const mockLoadPipeline = vi.fn()
 const mockListPipelines = vi.fn()
@@ -16,6 +17,7 @@ vi.mock('../api/client', () => ({
   executeNode: (...args: unknown[]) => mockExecuteNode(...args),
   previewData: (...args: unknown[]) => mockPreviewData(...args),
   getTableSchema: (...args: unknown[]) => mockGetTableSchema(...args),
+  deleteTable: (...args: unknown[]) => mockDeleteTable(...args),
   savePipeline: (...args: unknown[]) => mockSavePipeline(...args),
   loadPipeline: (...args: unknown[]) => mockLoadPipeline(...args),
   listPipelines: (...args: unknown[]) => mockListPipelines(...args),
@@ -156,6 +158,45 @@ describe('pipelineStore', () => {
       // config should still be present
       expect((updated.data as Record<string, unknown>).config).toBeDefined()
     })
+
+    it('drops the previous materialized table and clears stale state when table name changes', () => {
+      act(() => {
+        usePipelineStore.setState({
+          nodes: [{
+            id: 'csv-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders CSV',
+              tableName: 'orders_table',
+              config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+            },
+          }],
+          nodeResults: {
+            'csv-node': { node_id: 'csv-node', status: 'success', row_count: 5, column_count: 2 },
+          },
+          previewNodeId: 'csv-node',
+          previewLoading: true,
+          previewData: {
+            columns: ['id'],
+            column_types: ['INTEGER'],
+            rows: [[1]],
+            total_rows: 1,
+            offset: 0,
+            limit: 100,
+          },
+        })
+      })
+
+      act(() => usePipelineStore.getState().updateNodeData('csv-node', { tableName: 'orders_new' }))
+
+      expect(mockDeleteTable).toHaveBeenCalledWith('orders_table')
+      expect((usePipelineStore.getState().nodes[0].data as Record<string, unknown>).tableName).toBe('orders_new')
+      expect(usePipelineStore.getState().nodeResults['csv-node']).toBeUndefined()
+      expect(usePipelineStore.getState().previewNodeId).toBeNull()
+      expect(usePipelineStore.getState().previewData).toBeNull()
+      expect(usePipelineStore.getState().previewLoading).toBe(false)
+    })
   })
 
   describe('deleteNode', () => {
@@ -178,6 +219,49 @@ describe('pipelineStore', () => {
 
       act(() => usePipelineStore.getState().deleteNode(src.id))
       expect(usePipelineStore.getState().edges).toHaveLength(0)
+    })
+
+    it('drops the materialized table and clears stale state for the deleted node', () => {
+      act(() => {
+        usePipelineStore.setState({
+          nodes: [{
+            id: 'csv-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders CSV',
+              tableName: 'orders_table',
+              config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+            },
+          }],
+          selectedNodeId: 'csv-node',
+          errorDialogNodeId: 'csv-node',
+          nodeResults: {
+            'csv-node': { node_id: 'csv-node', status: 'success', row_count: 5, column_count: 2 },
+          },
+          previewNodeId: 'csv-node',
+          previewLoading: true,
+          previewData: {
+            columns: ['id'],
+            column_types: ['INTEGER'],
+            rows: [[1]],
+            total_rows: 1,
+            offset: 0,
+            limit: 100,
+          },
+        })
+      })
+
+      act(() => usePipelineStore.getState().deleteNode('csv-node'))
+
+      expect(mockDeleteTable).toHaveBeenCalledWith('orders_table')
+      expect(usePipelineStore.getState().nodes).toHaveLength(0)
+      expect(usePipelineStore.getState().nodeResults['csv-node']).toBeUndefined()
+      expect(usePipelineStore.getState().selectedNodeId).toBeNull()
+      expect(usePipelineStore.getState().errorDialogNodeId).toBeNull()
+      expect(usePipelineStore.getState().previewNodeId).toBeNull()
+      expect(usePipelineStore.getState().previewData).toBeNull()
+      expect(usePipelineStore.getState().previewLoading).toBe(false)
     })
   })
 
