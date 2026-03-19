@@ -1,5 +1,6 @@
 import axios from 'axios'
 import type {
+  CsvPreprocessingConfig,
   DataPreview,
   DatabaseConnectionConfig,
   NodeExecutionResult,
@@ -38,6 +39,37 @@ export async function previewData(
   const { data } = await api.get(`/data/preview/${tableName}`, {
     params: { offset, limit },
   })
+  return data
+}
+
+export async function previewCsvSource(
+  filePath: string,
+  limit = 100
+): Promise<DataPreview> {
+  const { data } = await api.post('/data/preview/csv-source', {
+    file_path: filePath,
+    limit,
+  })
+  return data
+}
+
+export async function previewPreprocessedCsvSource(
+  nodeId: string,
+  filePath: string,
+  preprocessing: CsvPreprocessingConfig,
+  limit = 100
+): Promise<DataPreview> {
+  const { data } = await api.post('/data/preview/csv-source/preprocessed', {
+    node_id: nodeId,
+    file_path: filePath,
+    preprocessing,
+    limit,
+  })
+  return data
+}
+
+export async function deletePreprocessedCsvArtifact(nodeId: string): Promise<{ deleted: boolean }> {
+  const { data } = await api.delete(`/data/preview/csv-source/preprocessed/${nodeId}`)
   return data
 }
 

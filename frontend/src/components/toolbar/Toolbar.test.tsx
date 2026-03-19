@@ -8,17 +8,23 @@ import { usePipelineStore } from '../../store/pipelineStore'
 const mockListPipelines = vi.fn()
 const mockExecutePipeline = vi.fn()
 const mockPreviewData = vi.fn()
+const mockPreviewCsvSource = vi.fn()
+const mockPreviewPreprocessedCsvSource = vi.fn()
 const mockSavePipeline = vi.fn()
 const mockLoadPipeline = vi.fn()
 const mockTestDbConnection = vi.fn()
+const mockDeletePreprocessedCsvArtifact = vi.fn((..._args: any[]) => Promise.resolve({ deleted: true }))
 
 vi.mock('../../api/client', () => ({
   listPipelines: (...args: unknown[]) => mockListPipelines(...args),
   executePipeline: (...args: unknown[]) => mockExecutePipeline(...args),
   previewData: (...args: unknown[]) => mockPreviewData(...args),
+  previewCsvSource: (...args: unknown[]) => mockPreviewCsvSource(...args),
+  previewPreprocessedCsvSource: (...args: unknown[]) => mockPreviewPreprocessedCsvSource(...args),
   savePipeline: (...args: unknown[]) => mockSavePipeline(...args),
   loadPipeline: (...args: unknown[]) => mockLoadPipeline(...args),
   testDbConnection: (...args: unknown[]) => mockTestDbConnection(...args),
+  deletePreprocessedCsvArtifact: (...args: unknown[]) => mockDeletePreprocessedCsvArtifact(...args),
 }))
 
 describe('Toolbar', () => {

@@ -16,6 +16,9 @@ vi.mock('@xyflow/react', () => ({
 vi.mock('../../../api/client', () => ({
   executePipeline: vi.fn(),
   previewData: vi.fn(),
+  previewCsvSource: vi.fn(),
+  previewPreprocessedCsvSource: vi.fn(),
+  deletePreprocessedCsvArtifact: vi.fn((..._args: any[]) => Promise.resolve({ deleted: true })),
   savePipeline: vi.fn(),
   loadPipeline: vi.fn(),
   listPipelines: vi.fn(),
@@ -70,17 +73,20 @@ describe('CsvSourceNode', () => {
     expect(screen.getByText('my_csv_table')).toBeInTheDocument()
   })
 
-  it('does not show Preview data button when not yet executed', () => {
-    render(<CsvSourceNode {...defaultProps} />)
-    expect(screen.queryByText(/preview data/i)).not.toBeInTheDocument()
-  })
-
-  it('shows Preview data button when status is success', () => {
-    act(() => usePipelineStore.setState({
-      nodeResults: { [NODE_ID]: { node_id: NODE_ID, status: 'success', row_count: 5, column_count: 3 } },
-    }))
+  it('shows Preview data button once a file has been uploaded', () => {
     render(<CsvSourceNode {...defaultProps} />)
     expect(screen.getByText(/preview data/i)).toBeInTheDocument()
+  })
+
+  it('invokes the raw csv preview action', async () => {
+    const user = userEvent.setup()
+    const loadCsvPreview = vi.fn()
+    act(() => usePipelineStore.setState({ loadCsvPreview }))
+    render(<CsvSourceNode {...defaultProps} />)
+
+    await user.click(screen.getByRole('button', { name: /preview data/i }))
+
+    expect(loadCsvPreview).toHaveBeenCalledWith(NODE_ID, '/tmp/f.csv')
   })
 
   it('has a source handle on the right', () => {

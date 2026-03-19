@@ -15,10 +15,79 @@ async def test_preview_not_found(client):
 
 
 @pytest.mark.asyncio
+async def test_csv_source_preview_not_found(client):
+    resp = await client.post("/api/data/preview/csv-source", json={"file_path": "/tmp/missing.csv"})
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_csv_source_preview_returns_first_rows(client, office365_csv_file):
+    resp = await client.post("/api/data/preview/csv-source", json={"file_path": office365_csv_file, "limit": 3})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["kind"] == "csv_text"
+    assert data["csv_stage"] == "raw"
+    assert data["rows"] == [
+        ["Created by: user x"],
+        ["Created Time: 2026-03-13 17:03:20"],
+        ["id", "name", "value"],
+    ]
+    assert data["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_preprocessed_csv_source_preview_returns_reviewed_rows(client, office365_csv_file):
+    resp = await client.post(
+        "/api/data/preview/csv-source/preprocessed",
+        json={
+            "node_id": "node-1",
+            "file_path": office365_csv_file,
+            "preprocessing": {
+                "enabled": True,
+                "runtime": "python",
+                "script": "import sys; from pathlib import Path; lines = Path(sys.argv[1]).read_text().splitlines()[2:]; sys.stdout.write('\\n'.join(lines))",
+            },
+            "limit": 3,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["kind"] == "csv_text"
+    assert data["csv_stage"] == "preprocessed"
+    assert data["artifact_ready"] is True
+    assert data["rows"] == [
+        ["id", "name", "value"],
+        ["1", "Alice", "10.5"],
+        ["2", "Bob", "20.0"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_delete_preprocessed_csv_artifact(client, office365_csv_file):
+    await client.post(
+        "/api/data/preview/csv-source/preprocessed",
+        json={
+            "node_id": "node-1",
+            "file_path": office365_csv_file,
+            "preprocessing": {
+                "enabled": True,
+                "runtime": "bash",
+                "script": "tail -n +3 \"$1\"",
+            },
+        },
+    )
+
+    resp = await client.delete("/api/data/preview/csv-source/preprocessed/node-1")
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": True}
+
+
+@pytest.mark.asyncio
 async def test_preview_returns_rows(populated_client):
     resp = await populated_client.get("/api/data/preview/my_table")
     assert resp.status_code == 200
     data = resp.json()
+    assert data["kind"] == "table"
     assert data["total_rows"] == 5
     assert "id" in data["columns"]
     assert len(data["rows"]) == 5

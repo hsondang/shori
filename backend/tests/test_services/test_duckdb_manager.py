@@ -61,6 +61,7 @@ def test_drop_table_nonexistent(duckdb_mgr):
 def test_preview_limit_offset(duckdb_mgr, sample_csv_file):
     duckdb_mgr.register_csv("paged", sample_csv_file)
     result = duckdb_mgr.preview("paged", offset=1, limit=2)
+    assert result["kind"] == "table"
     assert len(result["rows"]) == 2
     assert result["total_rows"] == 5
     assert result["offset"] == 1
@@ -71,6 +72,7 @@ def test_preview_empty_table(duckdb_mgr):
     df = pd.DataFrame({"a": pd.Series([], dtype=int), "b": pd.Series([], dtype=str)})
     duckdb_mgr.register_dataframe("empty_t", df)
     result = duckdb_mgr.preview("empty_t")
+    assert result["kind"] == "table"
     assert result["rows"] == []
     assert result["total_rows"] == 0
     assert "a" in result["columns"]

@@ -2,6 +2,8 @@ import { usePipelineStore } from '../../store/pipelineStore'
 import SqlEditor from './SqlEditor'
 import { uploadCsv } from '../../api/client'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { CsvPreprocessingConfig, CsvSourceConfig } from '../../types/pipeline'
+import { getCsvPreprocessFingerprint } from '../../lib/csvPreprocessing'
 
 export default function NodeConfigPanel() {
   const selectedNodeId = usePipelineStore((s) => s.selectedNodeId)
@@ -11,6 +13,9 @@ export default function NodeConfigPanel() {
   const deleteNode = usePipelineStore((s) => s.deleteNode)
   const executeSingleNode = usePipelineStore((s) => s.executeSingleNode)
   const runTransformPreview = usePipelineStore((s) => s.runTransformPreview)
+  const loadCsvPreview = usePipelineStore((s) => s.loadCsvPreview)
+  const loadPreprocessedCsvPreview = usePipelineStore((s) => s.loadPreprocessedCsvPreview)
+  const csvPreprocessArtifacts = usePipelineStore((s) => s.csvPreprocessArtifacts)
   const nodeResults = usePipelineStore((s) => s.nodeResults)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isCsvEditing, setIsCsvEditing] = useState(false)
@@ -21,13 +26,34 @@ export default function NodeConfigPanel() {
   const nodeId = node?.id ?? null
   const d = (node?.data as Record<string, unknown> | undefined) ?? {}
   const config = (d.config as Record<string, unknown> | undefined) ?? {}
+  const isCsvNode = node?.type === 'csv_source'
+  const csvConfig = (isCsvNode ? config : null) as CsvSourceConfig | null
+  const csvPreprocessing: CsvPreprocessingConfig = csvConfig?.preprocessing ?? {
+    enabled: false,
+    runtime: 'python',
+    script: '',
+  }
   const tableName = (d.tableName as string | undefined) ?? ''
   const nodeResult = nodeId ? nodeResults[nodeId] : undefined
   const transformSql = ((config.sql as string | undefined) ?? '').trim()
-  const isCsvNode = node?.type === 'csv_source'
   const csvLabel = isCsvNode ? ((d.label as string) || '') : ''
   const labelInputId = nodeId ? `${nodeId}-label` : 'node-label'
   const tableNameInputId = nodeId ? `${nodeId}-table-name` : 'node-table-name'
+  const preprocessingEditorId = nodeId ? `${nodeId}-preprocessing-script` : 'preprocessing-script'
+  const canPreviewCsv = Boolean(csvConfig?.file_path) && nodeResult?.status !== 'running'
+  const preprocessFingerprint = getCsvPreprocessFingerprint(csvConfig)
+  const hasReviewedPreprocess = Boolean(
+    nodeId
+    && preprocessFingerprint
+    && csvPreprocessArtifacts[nodeId] === preprocessFingerprint
+  )
+  const canRunPreprocess = Boolean(csvConfig?.file_path)
+    && csvPreprocessing.enabled
+    && Boolean(csvPreprocessing.script.trim())
+    && nodeResult?.status !== 'running'
+  const canLoadCsv = Boolean(csvConfig?.file_path)
+    && nodeResult?.status !== 'running'
+    && (!csvPreprocessing.enabled || hasReviewedPreprocess)
 
   const upstreamTableNames = useCallback(() => {
     if (!selectedNodeId) return []
@@ -61,8 +87,29 @@ export default function NodeConfigPanel() {
     const file = e.target.files?.[0]
     if (!file || !nodeId) return
     const result = await uploadCsv(file)
+    const existingConfig = (d.config as CsvSourceConfig | undefined) ?? {
+      file_path: '',
+      original_filename: '',
+      preprocessing: csvPreprocessing,
+    }
     updateNodeData(nodeId, {
-      config: { file_path: result.file_path, original_filename: result.filename },
+      config: {
+        ...existingConfig,
+        file_path: result.file_path,
+        original_filename: result.filename,
+        preprocessing: existingConfig.preprocessing ?? csvPreprocessing,
+      },
+    })
+  }
+
+  const updateCsvConfig = (patch: Partial<CsvSourceConfig>) => {
+    if (!nodeId || !csvConfig) return
+    updateNodeData(nodeId, {
+      config: {
+        ...csvConfig,
+        ...patch,
+        preprocessing: patch.preprocessing ?? csvPreprocessing,
+      },
     })
   }
 
@@ -237,8 +284,69 @@ export default function NodeConfigPanel() {
                 onClick={() => fileInputRef.current?.click()}
                 className="w-full border-2 border-dashed border-gray-300 rounded-lg p-4 text-sm text-gray-500 hover:border-blue-400 hover:text-blue-500 transition"
               >
-                {(config.original_filename as string) || 'Click to upload CSV'}
+                {csvConfig?.original_filename || 'Click to upload CSV'}
               </button>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-xs text-gray-500">Preprocessing</label>
+                <label className="flex items-center gap-2 text-xs text-gray-500">
+                  <input
+                    type="checkbox"
+                    checked={csvPreprocessing.enabled}
+                    onChange={(e) => updateCsvConfig({
+                      preprocessing: {
+                        ...csvPreprocessing,
+                        enabled: e.target.checked,
+                      },
+                    })}
+                  />
+                  Enable
+                </label>
+              </div>
+              <p className="mb-3 text-xs text-gray-500">
+                When enabled, the script receives the uploaded CSV path as the first argument and via <code>SHORI_INPUT_CSV</code>. It must emit a cleaned CSV to stdout.
+              </p>
+              <div className="space-y-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Runtime</label>
+                  <select
+                    value={csvPreprocessing.runtime}
+                    onChange={(e) => updateCsvConfig({
+                      preprocessing: {
+                        ...csvPreprocessing,
+                        runtime: e.target.value as CsvPreprocessingConfig['runtime'],
+                      },
+                    })}
+                    disabled={!csvPreprocessing.enabled}
+                    className="w-full border border-gray-300 rounded px-2 py-1 text-sm disabled:bg-gray-100 disabled:text-gray-400"
+                  >
+                    <option value="python">Python</option>
+                    <option value="bash">Bash</option>
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor={preprocessingEditorId} className="block text-xs text-gray-500 mb-1">Script</label>
+                  <textarea
+                    id={preprocessingEditorId}
+                    value={csvPreprocessing.script}
+                    onChange={(e) => updateCsvConfig({
+                      preprocessing: {
+                        ...csvPreprocessing,
+                        script: e.target.value,
+                      },
+                    })}
+                    disabled={!csvPreprocessing.enabled}
+                    rows={8}
+                    spellCheck={false}
+                    className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm font-mono disabled:bg-gray-100 disabled:text-gray-400"
+                    placeholder={csvPreprocessing.runtime === 'bash'
+                      ? 'tail -n +3 "$1"'
+                      : 'import sys\nfrom pathlib import Path\nlines = Path(sys.argv[1]).read_text().splitlines()[2:]\nsys.stdout.write("\\n".join(lines))'}
+                  />
+                </div>
+              </div>
             </div>
 
             <div>
@@ -251,20 +359,61 @@ export default function NodeConfigPanel() {
                 )}
               </div>
               <p className="mb-3 text-xs text-gray-500">
-                Execute this CSV source and open the data preview on success.
+                Preview the uploaded CSV before materializing it, then load it into DuckDB once the preprocessing is ready.
               </p>
-              <button
-                type="button"
-                onClick={() => void executeSingleNode(node.id, { loadPreviewOnSuccess: true })}
-                disabled={!config.file_path || nodeResult?.status === 'running'}
-                className={`w-full rounded px-3 py-2 text-sm font-medium transition ${
-                  !config.file_path || nodeResult?.status === 'running'
-                    ? 'bg-gray-100 text-gray-400'
-                    : 'bg-blue-500 text-white hover:bg-blue-600'
-                }`}
-              >
-                {nodeResult?.status === 'running' ? 'Running...' : 'Run and Preview'}
-              </button>
+              <div className="grid grid-cols-3 gap-3">
+                <button
+                  type="button"
+                  onClick={() => csvConfig?.file_path && void loadCsvPreview(node.id, csvConfig.file_path)}
+                  disabled={!canPreviewCsv}
+                  className={`rounded px-3 py-2 text-sm font-medium transition ${
+                    canPreviewCsv
+                      ? 'border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'
+                      : 'bg-gray-100 text-gray-400'
+                  }`}
+                >
+                  Preview data
+                </button>
+                <button
+                  type="button"
+                  onClick={() => csvConfig?.file_path && void loadPreprocessedCsvPreview(node.id, csvConfig.file_path, csvPreprocessing)}
+                  disabled={!canRunPreprocess}
+                  className={`rounded px-3 py-2 text-sm font-medium transition ${
+                    canRunPreprocess
+                      ? 'border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                      : 'bg-gray-100 text-gray-400'
+                  }`}
+                >
+                  Preprocess
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void executeSingleNode(node.id, { loadPreviewOnSuccess: true })}
+                  disabled={!canLoadCsv}
+                  className={`rounded px-3 py-2 text-sm font-medium transition ${
+                    canLoadCsv
+                      ? 'bg-blue-500 text-white hover:bg-blue-600'
+                      : 'bg-gray-100 text-gray-400'
+                  }`}
+                >
+                  {nodeResult?.status === 'running' ? 'Running...' : 'Load data'}
+                </button>
+              </div>
+              {csvPreprocessing.enabled && !csvPreprocessing.script.trim() && (
+                <p className="mt-2 text-xs text-amber-600">
+                  Add a preprocessing script before running Preprocess.
+                </p>
+              )}
+              {csvPreprocessing.enabled && csvPreprocessing.script.trim() && !hasReviewedPreprocess && (
+                <p className="mt-2 text-xs text-amber-600">
+                  Run Preprocess and review the output before loading data.
+                </p>
+              )}
+              {csvPreprocessing.enabled && hasReviewedPreprocess && (
+                <p className="mt-2 text-xs text-emerald-600">
+                  Reviewed preprocess output is ready to load into DuckDB.
+                </p>
+              )}
             </div>
           </div>
         )}
