@@ -94,6 +94,13 @@ class PipelineDefinition(BaseModel):
     edges: list[EdgeDefinition]
 
 
+class ProjectSummary(BaseModel):
+    id: str
+    name: str
+    created_at: str
+    updated_at: str
+
+
 class NodeExecutionResult(BaseModel):
     node_id: str
     status: NodeStatus

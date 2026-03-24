@@ -5,6 +5,7 @@ import type {
   DatabaseConnectionConfig,
   NodeExecutionResult,
   PipelineDefinition,
+  ProjectSummary,
 } from '../types/pipeline'
 
 const api = axios.create({ baseURL: '/api' })
@@ -113,7 +114,7 @@ export async function loadPipeline(id: string): Promise<PipelineDefinition> {
   return data
 }
 
-export async function listPipelines(): Promise<Array<{ id: string; name: string }>> {
+export async function listPipelines(): Promise<ProjectSummary[]> {
   const { data } = await api.get('/pipelines')
   return data
 }

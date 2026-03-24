@@ -1,24 +1,26 @@
 import { ReactFlowProvider } from '@xyflow/react'
-import FlowCanvas from './components/flow/FlowCanvas'
-import NodeErrorDialog from './components/flow/NodeErrorDialog'
-import Toolbar from './components/toolbar/Toolbar'
-import NodeConfigPanel from './components/panels/NodeConfigPanel'
-import DataPreviewPanel from './components/panels/DataPreviewPanel'
+import { Route, Routes } from 'react-router-dom'
+import ProjectSidebar from './components/projects/ProjectSidebar'
+import ProjectHome from './components/projects/ProjectHome'
+import PipelineEditorPage from './components/projects/PipelineEditorPage'
 
 export default function App() {
   return (
-    <ReactFlowProvider>
-      <div className="h-full flex flex-col">
-        <Toolbar />
-        <div className="flex-1 flex overflow-hidden">
-          <div className="flex-1">
-            <FlowCanvas />
-          </div>
-          <NodeConfigPanel />
-        </div>
-        <DataPreviewPanel />
-        <NodeErrorDialog />
-      </div>
-    </ReactFlowProvider>
+    <div className="h-full flex bg-stone-100">
+      <ProjectSidebar />
+      <main className="min-w-0 flex-1">
+        <Routes>
+          <Route path="/" element={<ProjectHome />} />
+          <Route
+            path="/projects/:projectId"
+            element={(
+              <ReactFlowProvider>
+                <PipelineEditorPage />
+              </ReactFlowProvider>
+            )}
+          />
+        </Routes>
+      </main>
+    </div>
   )
 }

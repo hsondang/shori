@@ -17,16 +17,18 @@ def tmp_dirs(monkeypatch, tmp_path):
     pipeline_dir = tmp_path / "pipelines"
     upload_dir = tmp_path / "uploads"
     export_dir = tmp_path / "exports"
+    project_db_path = tmp_path / "projects.sqlite3"
     for d in [pipeline_dir, upload_dir, export_dir]:
         d.mkdir()
 
     monkeypatch.setattr(config_module, "PIPELINE_DIR", pipeline_dir)
     monkeypatch.setattr(config_module, "UPLOAD_DIR", upload_dir)
     monkeypatch.setattr(config_module, "EXPORT_DIR", export_dir)
+    monkeypatch.setattr(config_module, "PROJECT_DB_PATH", project_db_path)
 
-    # Also patch the storage module that has already imported PIPELINE_DIR
+    # Also patch the storage module that has already imported config values.
     import app.storage.pipeline_store as ps_mod
-    monkeypatch.setattr(ps_mod, "PIPELINE_DIR", pipeline_dir)
+    monkeypatch.setattr(ps_mod, "PROJECT_DB_PATH", project_db_path)
 
     # Patch the upload router's csv_service reference
     import app.services.csv_service as csv_mod

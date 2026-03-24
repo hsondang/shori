@@ -83,6 +83,13 @@ export interface PipelineDefinition {
   }>
 }
 
+export interface ProjectSummary {
+  id: string
+  name: string
+  created_at: string
+  updated_at: string
+}
+
 export interface TablePreviewData {
   kind: 'table'
   columns: string[]

@@ -401,6 +401,7 @@ describe('pipelineStore', () => {
           }),
         ],
       }))
+      expect(usePipelineStore.getState().hasUnsavedChanges).toBe(false)
     })
 
     it('loadPipeline restores database connections', async () => {
@@ -430,6 +431,35 @@ describe('pipelineStore', () => {
       expect(usePipelineStore.getState().databaseConnections).toEqual([
         expect.objectContaining({ id: 'conn-1', name: 'Analytics' }),
       ])
+      expect(usePipelineStore.getState().hasUnsavedChanges).toBe(false)
+    })
+
+    it('marks the pipeline dirty after metadata changes and clears dirty state after save', async () => {
+      act(() => {
+        usePipelineStore.getState().setPipelineName('Renamed Pipeline')
+      })
+
+      expect(usePipelineStore.getState().hasUnsavedChanges).toBe(true)
+
+      await act(async () => {
+        await usePipelineStore.getState().savePipeline()
+      })
+
+      expect(usePipelineStore.getState().hasUnsavedChanges).toBe(false)
+    })
+
+    it('confirms discard only when there are unsaved changes', () => {
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+      expect(usePipelineStore.getState().confirmDiscardChanges('Warehouse')).toBe(true)
+      expect(confirmSpy).not.toHaveBeenCalled()
+
+      act(() => {
+        usePipelineStore.getState().setPipelineName('Changed')
+      })
+
+      expect(usePipelineStore.getState().confirmDiscardChanges('Warehouse')).toBe(true)
+      expect(confirmSpy).toHaveBeenCalledWith('You have unsaved changes. Discard them and open "Warehouse"?')
     })
   })
 
