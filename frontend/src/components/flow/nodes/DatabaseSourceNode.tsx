@@ -13,7 +13,7 @@ export default function DatabaseSourceNode({ id, data }: NodeProps) {
   const nodeResults = usePipelineStore((s) => s.nodeResults)
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
   const openNodeError = usePipelineStore((s) => s.openNodeError)
-  const loadPreview = usePipelineStore((s) => s.loadPreview)
+  const loadTablePreview = usePipelineStore((s) => s.loadTablePreview)
   const result = nodeResults[id]
   const hasError = result?.status === 'error'
   const d = data as Record<string, unknown>
@@ -56,7 +56,7 @@ export default function DatabaseSourceNode({ id, data }: NodeProps) {
         {result?.status === 'success' && (
           <button
             className={`${style.text} hover:underline text-xs`}
-            onClick={(e) => { e.stopPropagation(); loadPreview(id, tableName) }}
+            onClick={(e) => { e.stopPropagation(); loadTablePreview(id, tableName) }}
           >
             Preview data
           </button>

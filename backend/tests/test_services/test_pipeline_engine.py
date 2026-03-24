@@ -32,8 +32,8 @@ def _make_pipeline(nodes, edges=None):
 
 
 @pytest.fixture
-def engine(duckdb_mgr):
-    return PipelineEngine(duckdb_mgr)
+def engine(duckdb_mgr, csv_artifact_store):
+    return PipelineEngine(duckdb_mgr, csv_artifact_store)
 
 
 # --- Topological sort ---
@@ -90,6 +90,70 @@ async def test_execute_csv_source(engine, sample_csv_file):
 
 
 @pytest.mark.asyncio
+async def test_execute_csv_source_with_python_preprocessing_requires_review(engine, office365_csv_file):
+    node = _make_node("n1", NodeType.CSV_SOURCE, "csv_pre_py", {
+        "file_path": office365_csv_file,
+        "original_filename": "office365.csv",
+        "preprocessing": {
+            "enabled": True,
+            "runtime": "python",
+            "script": "import sys; from pathlib import Path; lines = Path(sys.argv[1]).read_text().splitlines()[2:]; sys.stdout.write('\\n'.join(lines))",
+        },
+    })
+    result = await engine.execute_single_node(node)
+    assert result.status == NodeStatus.ERROR
+    assert "Click Preprocess" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_execute_csv_source_with_reviewed_python_preprocessing(engine, office365_csv_file):
+    node = _make_node("n1", NodeType.CSV_SOURCE, "csv_pre_sh", {
+        "file_path": office365_csv_file,
+        "original_filename": "office365.csv",
+        "preprocessing": {
+            "enabled": True,
+            "runtime": "python",
+            "script": "import sys; from pathlib import Path; lines = Path(sys.argv[1]).read_text().splitlines()[2:]; sys.stdout.write('\\n'.join(lines))",
+        },
+    })
+    from app.services.csv_service import preview_preprocessed_csv_text
+    preview_preprocessed_csv_text(
+        engine.csv_artifact_store,
+        "n1",
+        office365_csv_file,
+        node.config["preprocessing"],
+    )
+    result = await engine.execute_single_node(node)
+    assert result.status == NodeStatus.SUCCESS
+    assert result.row_count == 2
+    assert result.column_count == 3
+
+
+@pytest.mark.asyncio
+async def test_execute_csv_source_with_reviewed_bash_preprocessing(engine, office365_csv_file):
+    node = _make_node("n1", NodeType.CSV_SOURCE, "csv_pre_sh", {
+        "file_path": office365_csv_file,
+        "original_filename": "office365.csv",
+        "preprocessing": {
+            "enabled": True,
+            "runtime": "bash",
+            "script": "tail -n +3 \"$1\"",
+        },
+    })
+    from app.services.csv_service import preview_preprocessed_csv_text
+    preview_preprocessed_csv_text(
+        engine.csv_artifact_store,
+        "n1",
+        office365_csv_file,
+        node.config["preprocessing"],
+    )
+    result = await engine.execute_single_node(node)
+    assert result.status == NodeStatus.SUCCESS
+    assert result.row_count == 2
+    assert result.column_count == 3
+
+
+@pytest.mark.asyncio
 async def test_execute_transform(engine, sample_csv_file):
     src = _make_node("src", NodeType.CSV_SOURCE, "src_t", {
         "file_path": sample_csv_file,
@@ -103,6 +167,57 @@ async def test_execute_transform(engine, sample_csv_file):
     result = await engine.execute_single_node(transform)
     assert result.status == NodeStatus.SUCCESS
     assert result.row_count == 2
+
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_requires_reviewed_preprocess_for_csv_sources(engine, office365_csv_file):
+    source = _make_node("src", NodeType.CSV_SOURCE, "src_preprocessed", {
+        "file_path": office365_csv_file,
+        "original_filename": "office365.csv",
+        "preprocessing": {
+            "enabled": True,
+            "runtime": "python",
+            "script": "import sys; from pathlib import Path; lines = Path(sys.argv[1]).read_text().splitlines()[2:]; sys.stdout.write('\\n'.join(lines))",
+        },
+    })
+    transform = _make_node("tx", NodeType.TRANSFORM, "tx_preprocessed", {
+        "sql": "SELECT * FROM src_preprocessed WHERE id = 1"
+    })
+
+    results = await engine.execute_pipeline(_make_pipeline([source, transform], [("src", "tx")]), force_refresh=True)
+
+    assert results["src"].status == NodeStatus.ERROR
+    assert "Click Preprocess" in (results["src"].error or "")
+
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_uses_reviewed_preprocess_for_csv_sources(engine, office365_csv_file):
+    from app.services.csv_service import preview_preprocessed_csv_text
+
+    source = _make_node("src", NodeType.CSV_SOURCE, "src_preprocessed", {
+        "file_path": office365_csv_file,
+        "original_filename": "office365.csv",
+        "preprocessing": {
+            "enabled": True,
+            "runtime": "python",
+            "script": "import sys; from pathlib import Path; lines = Path(sys.argv[1]).read_text().splitlines()[2:]; sys.stdout.write('\\n'.join(lines))",
+        },
+    })
+    preview_preprocessed_csv_text(
+        engine.csv_artifact_store,
+        "src",
+        office365_csv_file,
+        source.config["preprocessing"],
+    )
+    transform = _make_node("tx", NodeType.TRANSFORM, "tx_preprocessed", {
+        "sql": "SELECT * FROM src_preprocessed WHERE id = 1"
+    })
+
+    results = await engine.execute_pipeline(_make_pipeline([source, transform], [("src", "tx")]), force_refresh=True)
+
+    assert results["src"].status == NodeStatus.SUCCESS
+    assert results["tx"].status == NodeStatus.SUCCESS
+    assert results["tx"].row_count == 1
 
 
 @pytest.mark.asyncio

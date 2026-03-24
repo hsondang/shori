@@ -17,6 +17,8 @@ async def test_create_and_list(client, pipeline_def):
     assert len(items) == 1
     assert items[0]["id"] == pipeline_def["id"]
     assert items[0]["name"] == pipeline_def["name"]
+    assert items[0]["created_at"]
+    assert items[0]["updated_at"]
 
 
 @pytest.mark.asyncio
@@ -40,6 +42,7 @@ async def test_get_not_found(client):
 @pytest.mark.asyncio
 async def test_update(client, pipeline_def):
     await client.post("/api/pipelines", json=pipeline_def)
+    first_list = (await client.get("/api/pipelines")).json()
     updated = {**pipeline_def, "name": "Updated Name"}
     resp = await client.put(f"/api/pipelines/{pipeline_def['id']}", json=updated)
     assert resp.status_code == 200
@@ -47,6 +50,19 @@ async def test_update(client, pipeline_def):
 
     get_resp = await client.get(f"/api/pipelines/{pipeline_def['id']}")
     assert get_resp.json()["name"] == "Updated Name"
+    second_list = (await client.get("/api/pipelines")).json()
+    assert second_list[0]["created_at"] == first_list[0]["created_at"]
+    assert second_list[0]["updated_at"] >= first_list[0]["updated_at"]
+
+
+@pytest.mark.asyncio
+async def test_post_upserts_existing_pipeline(client, pipeline_def):
+    await client.post("/api/pipelines", json=pipeline_def)
+    resp = await client.post("/api/pipelines", json={**pipeline_def, "name": "Renamed Via Post"})
+    assert resp.status_code == 200
+
+    get_resp = await client.get(f"/api/pipelines/{pipeline_def['id']}")
+    assert get_resp.json()["name"] == "Renamed Via Post"
 
 
 @pytest.mark.asyncio

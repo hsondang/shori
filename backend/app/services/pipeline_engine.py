@@ -8,14 +8,20 @@ from app.models.pipeline import (
     NodeType,
     PipelineDefinition,
 )
+from app.services.csv_service import CsvPreprocessArtifactStore, register_csv_source
 from app.services.duckdb_manager import DuckDBManager
 from app.services.oracle_service import OracleService
 from app.services.postgres_service import PostgresService
 
 
 class PipelineEngine:
-    def __init__(self, duckdb_manager: DuckDBManager):
+    def __init__(
+        self,
+        duckdb_manager: DuckDBManager,
+        csv_artifact_store: CsvPreprocessArtifactStore,
+    ):
         self.duckdb = duckdb_manager
+        self.csv_artifact_store = csv_artifact_store
         self.oracle = OracleService()
         self.postgres = PostgresService()
         self.node_results: dict[str, NodeExecutionResult] = {}
@@ -72,8 +78,12 @@ class PipelineEngine:
         start = time.time()
         try:
             if node.type == NodeType.CSV_SOURCE:
-                stats = self.duckdb.register_csv(
-                    node.table_name, node.config["file_path"]
+                stats = register_csv_source(
+                    self.duckdb,
+                    node.id,
+                    node.table_name,
+                    node.config,
+                    self.csv_artifact_store,
                 )
             elif node.type == NodeType.DB_SOURCE:
                 db_type = node.config.get("db_type", "postgres")

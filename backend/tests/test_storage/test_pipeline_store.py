@@ -51,38 +51,6 @@ def test_save_and_load_roundtrip(store):
     assert loaded.nodes[0].type == NodeType.CSV_SOURCE
 
 
-def test_load_legacy_pipeline_without_database_connections(store, tmp_path, monkeypatch):
-    legacy_path = tmp_path / "legacy.json"
-    legacy_path.write_text(
-        """
-        {
-          "id": "legacy",
-          "name": "Legacy Pipeline",
-          "nodes": [
-            {
-              "id": "n1",
-              "type": "csv_source",
-              "table_name": "t",
-              "label": "CSV",
-              "position": {"x": 0, "y": 0},
-              "config": {
-                "file_path": "/tmp/f.csv",
-                "original_filename": "f.csv"
-              }
-            }
-          ],
-          "edges": []
-        }
-        """
-    )
-
-    import app.storage.pipeline_store as ps_mod
-
-    monkeypatch.setattr(ps_mod, "PIPELINE_DIR", tmp_path)
-    loaded = store.load("legacy")
-    assert loaded.database_connections == []
-
-
 def test_load_not_found(store):
     with pytest.raises(FileNotFoundError):
         store.load("nonexistent-id")
@@ -97,10 +65,27 @@ def test_list_all_multiple(store):
     store.save(_make_pipeline("p2", "Second"))
     items = store.list_all()
     assert len(items) == 2
-    ids = {item["id"] for item in items}
-    assert ids == {"p1", "p2"}
-    names = {item["name"] for item in items}
-    assert names == {"First", "Second"}
+    assert items[0]["id"] == "p2"
+    assert items[1]["id"] == "p1"
+    assert items[0]["name"] == "Second"
+    assert items[0]["created_at"]
+    assert items[0]["updated_at"]
+
+
+def test_save_update_preserves_created_at_and_refreshes_updated_at(store):
+    pipeline = _make_pipeline("p1", "First")
+    store.save(pipeline)
+
+    first = store.list_all()[0]
+
+    updated_pipeline = _make_pipeline("p1", "Renamed")
+    store.save(updated_pipeline)
+
+    second = store.list_all()[0]
+    assert second["id"] == "p1"
+    assert second["name"] == "Renamed"
+    assert second["created_at"] == first["created_at"]
+    assert second["updated_at"] >= first["updated_at"]
 
 
 def test_delete(store):

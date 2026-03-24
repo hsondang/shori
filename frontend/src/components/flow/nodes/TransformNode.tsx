@@ -6,7 +6,7 @@ export default function TransformNode({ id, data }: NodeProps) {
   const nodeResults = usePipelineStore((s) => s.nodeResults)
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
   const openNodeError = usePipelineStore((s) => s.openNodeError)
-  const loadPreview = usePipelineStore((s) => s.loadPreview)
+  const loadTablePreview = usePipelineStore((s) => s.loadTablePreview)
   const runTransformPreview = usePipelineStore((s) => s.runTransformPreview)
   const result = nodeResults[id]
   const hasError = result?.status === 'error'
@@ -58,7 +58,7 @@ export default function TransformNode({ id, data }: NodeProps) {
         {result?.status === 'success' && (
           <button
             className="text-purple-500 hover:underline text-xs"
-            onClick={(e) => { e.stopPropagation(); loadPreview(id, tableName) }}
+            onClick={(e) => { e.stopPropagation(); loadTablePreview(id, tableName) }}
           >
             Preview data
           </button>

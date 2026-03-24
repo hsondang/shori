@@ -7,6 +7,7 @@ from httpx import ASGITransport, AsyncClient
 
 import app.config as config_module
 from app.main import app
+from app.services.csv_service import CsvPreprocessArtifactStore
 from app.services.duckdb_manager import DuckDBManager
 
 
@@ -16,16 +17,18 @@ def tmp_dirs(monkeypatch, tmp_path):
     pipeline_dir = tmp_path / "pipelines"
     upload_dir = tmp_path / "uploads"
     export_dir = tmp_path / "exports"
+    project_db_path = tmp_path / "projects.sqlite3"
     for d in [pipeline_dir, upload_dir, export_dir]:
         d.mkdir()
 
     monkeypatch.setattr(config_module, "PIPELINE_DIR", pipeline_dir)
     monkeypatch.setattr(config_module, "UPLOAD_DIR", upload_dir)
     monkeypatch.setattr(config_module, "EXPORT_DIR", export_dir)
+    monkeypatch.setattr(config_module, "PROJECT_DB_PATH", project_db_path)
 
-    # Also patch the storage module that has already imported PIPELINE_DIR
+    # Also patch the storage module that has already imported config values.
     import app.storage.pipeline_store as ps_mod
-    monkeypatch.setattr(ps_mod, "PIPELINE_DIR", pipeline_dir)
+    monkeypatch.setattr(ps_mod, "PROJECT_DB_PATH", project_db_path)
 
     # Patch the upload router's csv_service reference
     import app.services.csv_service as csv_mod
@@ -43,7 +46,9 @@ async def client():
     ) as ac:
         # Manually initialise app state so DuckDB is available without full lifespan
         app.state.duckdb = DuckDBManager()
+        app.state.csv_preprocess_artifacts = CsvPreprocessArtifactStore()
         yield ac
+        app.state.csv_preprocess_artifacts.close()
         app.state.duckdb.close()
 
 
@@ -52,6 +57,13 @@ def duckdb_mgr():
     mgr = DuckDBManager()
     yield mgr
     mgr.close()
+
+
+@pytest.fixture
+def csv_artifact_store():
+    store = CsvPreprocessArtifactStore()
+    yield store
+    store.close()
 
 
 @pytest.fixture
@@ -68,6 +80,22 @@ def sample_csv_file(tmp_path) -> str:
             [4, "Dave", 40.0],
             [5, "Eve", 50.25],
         ])
+    return str(path)
+
+
+@pytest.fixture
+def office365_csv_file(tmp_path) -> str:
+    path = tmp_path / "office365.csv"
+    path.write_text(
+        "\n".join([
+            "Created by: user x",
+            "Created Time: 2026-03-13 17:03:20",
+            "id,name,value",
+            "1,Alice,10.5",
+            "2,Bob,20.0",
+        ]),
+        encoding="utf-8",
+    )
     return str(path)
 
 

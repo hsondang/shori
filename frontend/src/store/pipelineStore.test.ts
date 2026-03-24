@@ -5,21 +5,54 @@ import { usePipelineStore } from './pipelineStore'
 const mockExecutePipeline = vi.fn()
 const mockExecuteNode = vi.fn()
 const mockPreviewData = vi.fn()
+const mockPreviewCsvSource = vi.fn()
+const mockPreviewPreprocessedCsvSource = vi.fn()
 const mockGetTableSchema = vi.fn()
+const mockDeleteTable = vi.fn((..._args: any[]) => Promise.resolve({ deleted: true }))
+const mockDeletePreprocessedCsvArtifact = vi.fn((..._args: any[]) => Promise.resolve({ deleted: true }))
 const mockSavePipeline = vi.fn()
 const mockLoadPipeline = vi.fn()
 const mockListPipelines = vi.fn()
 
 // Prevent real API calls
 vi.mock('../api/client', () => ({
-  executePipeline: (...args: unknown[]) => mockExecutePipeline(...args),
-  executeNode: (...args: unknown[]) => mockExecuteNode(...args),
-  previewData: (...args: unknown[]) => mockPreviewData(...args),
-  getTableSchema: (...args: unknown[]) => mockGetTableSchema(...args),
-  savePipeline: (...args: unknown[]) => mockSavePipeline(...args),
-  loadPipeline: (...args: unknown[]) => mockLoadPipeline(...args),
-  listPipelines: (...args: unknown[]) => mockListPipelines(...args),
+  executePipeline: (...args: any[]) => mockExecutePipeline(...args),
+  executeNode: (...args: any[]) => mockExecuteNode(...args),
+  previewData: (...args: any[]) => mockPreviewData(...args),
+  previewCsvSource: (...args: any[]) => mockPreviewCsvSource(...args),
+  previewPreprocessedCsvSource: (...args: any[]) => mockPreviewPreprocessedCsvSource(...args),
+  getTableSchema: (...args: any[]) => mockGetTableSchema(...args),
+  deleteTable: (...args: any[]) => mockDeleteTable(...args),
+  deletePreprocessedCsvArtifact: (...args: any[]) => mockDeletePreprocessedCsvArtifact(...args),
+  savePipeline: (...args: any[]) => mockSavePipeline(...args),
+  loadPipeline: (...args: any[]) => mockLoadPipeline(...args),
+  listPipelines: (...args: any[]) => mockListPipelines(...args),
 }))
+
+function makeTablePreview(overrides: Record<string, unknown> = {}) {
+  return {
+    kind: 'table' as const,
+    columns: ['id', 'name'],
+    column_types: ['INTEGER', 'VARCHAR'],
+    rows: [[1, 'Alice']],
+    total_rows: 1,
+    offset: 0,
+    limit: 100,
+    ...overrides,
+  }
+}
+
+function makeCsvTextPreview(overrides: Record<string, unknown> = {}) {
+  return {
+    kind: 'csv_text' as const,
+    csv_stage: 'raw' as const,
+    rows: [['id', 'name'], ['1', 'Alice']],
+    limit: 100,
+    truncated: false,
+    artifact_ready: false,
+    ...overrides,
+  }
+}
 
 function resetStore() {
   act(() => {
@@ -42,6 +75,7 @@ describe('pipelineStore', () => {
       const config = (nodes[0].data as Record<string, unknown>).config as Record<string, unknown>
       expect(config).toHaveProperty('file_path', '')
       expect(config).toHaveProperty('original_filename', '')
+      expect(config).toHaveProperty('preprocessing')
     })
 
     it('adds a db_source node with connection and query defaults', () => {
@@ -156,6 +190,81 @@ describe('pipelineStore', () => {
       // config should still be present
       expect((updated.data as Record<string, unknown>).config).toBeDefined()
     })
+
+    it('drops the previous materialized table and clears stale state when table name changes', () => {
+      act(() => {
+        usePipelineStore.setState({
+          nodes: [{
+            id: 'csv-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders CSV',
+              tableName: 'orders_table',
+              config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+            },
+          }],
+          nodeResults: {
+            'csv-node': { node_id: 'csv-node', status: 'success', row_count: 5, column_count: 2 },
+          },
+          previewNodeId: 'csv-node',
+          previewLoading: true,
+          previewData: makeTablePreview({ columns: ['id'], column_types: ['INTEGER'], rows: [[1]] }),
+        })
+      })
+
+      act(() => usePipelineStore.getState().updateNodeData('csv-node', { tableName: 'orders_new' }))
+
+      expect(mockDeleteTable).toHaveBeenCalledWith('orders_table')
+      expect((usePipelineStore.getState().nodes[0].data as Record<string, unknown>).tableName).toBe('orders_new')
+      expect(usePipelineStore.getState().nodeResults['csv-node']).toBeUndefined()
+      expect(usePipelineStore.getState().previewNodeId).toBeNull()
+      expect(usePipelineStore.getState().previewData).toBeNull()
+      expect(usePipelineStore.getState().previewLoading).toBe(false)
+    })
+
+    it('invalidates reviewed preprocess artifacts when csv preprocessing inputs change', () => {
+      act(() => {
+        usePipelineStore.setState({
+          nodes: [{
+            id: 'csv-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders CSV',
+              tableName: 'orders_table',
+              config: {
+                file_path: '/tmp/orders.csv',
+                original_filename: 'orders.csv',
+                preprocessing: { enabled: true, runtime: 'python', script: 'print(1)' },
+              },
+            },
+          }],
+          nodeResults: {
+            'csv-node': { node_id: 'csv-node', status: 'success', row_count: 5, column_count: 2 },
+          },
+          csvPreprocessArtifacts: {
+            'csv-node': JSON.stringify({
+              file_path: '/tmp/orders.csv',
+              runtime: 'python',
+              script: 'print(1)',
+            }),
+          },
+        })
+      })
+
+      act(() => usePipelineStore.getState().updateNodeData('csv-node', {
+        config: {
+          file_path: '/tmp/orders.csv',
+          original_filename: 'orders.csv',
+          preprocessing: { enabled: true, runtime: 'python', script: 'print(2)' },
+        },
+      }))
+
+      expect(mockDeletePreprocessedCsvArtifact).toHaveBeenCalledWith('csv-node')
+      expect(usePipelineStore.getState().csvPreprocessArtifacts['csv-node']).toBeUndefined()
+      expect(usePipelineStore.getState().nodeResults['csv-node']).toBeUndefined()
+    })
   })
 
   describe('deleteNode', () => {
@@ -178,6 +287,42 @@ describe('pipelineStore', () => {
 
       act(() => usePipelineStore.getState().deleteNode(src.id))
       expect(usePipelineStore.getState().edges).toHaveLength(0)
+    })
+
+    it('drops the materialized table and clears stale state for the deleted node', () => {
+      act(() => {
+        usePipelineStore.setState({
+          nodes: [{
+            id: 'csv-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders CSV',
+              tableName: 'orders_table',
+              config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+            },
+          }],
+          selectedNodeId: 'csv-node',
+          errorDialogNodeId: 'csv-node',
+          nodeResults: {
+            'csv-node': { node_id: 'csv-node', status: 'success', row_count: 5, column_count: 2 },
+          },
+          previewNodeId: 'csv-node',
+          previewLoading: true,
+          previewData: makeTablePreview({ columns: ['id'], column_types: ['INTEGER'], rows: [[1]] }),
+        })
+      })
+
+      act(() => usePipelineStore.getState().deleteNode('csv-node'))
+
+      expect(mockDeleteTable).toHaveBeenCalledWith('orders_table')
+      expect(usePipelineStore.getState().nodes).toHaveLength(0)
+      expect(usePipelineStore.getState().nodeResults['csv-node']).toBeUndefined()
+      expect(usePipelineStore.getState().selectedNodeId).toBeNull()
+      expect(usePipelineStore.getState().errorDialogNodeId).toBeNull()
+      expect(usePipelineStore.getState().previewNodeId).toBeNull()
+      expect(usePipelineStore.getState().previewData).toBeNull()
+      expect(usePipelineStore.getState().previewLoading).toBe(false)
     })
   })
 
@@ -256,6 +401,7 @@ describe('pipelineStore', () => {
           }),
         ],
       }))
+      expect(usePipelineStore.getState().hasUnsavedChanges).toBe(false)
     })
 
     it('loadPipeline restores database connections', async () => {
@@ -285,6 +431,35 @@ describe('pipelineStore', () => {
       expect(usePipelineStore.getState().databaseConnections).toEqual([
         expect.objectContaining({ id: 'conn-1', name: 'Analytics' }),
       ])
+      expect(usePipelineStore.getState().hasUnsavedChanges).toBe(false)
+    })
+
+    it('marks the pipeline dirty after metadata changes and clears dirty state after save', async () => {
+      act(() => {
+        usePipelineStore.getState().setPipelineName('Renamed Pipeline')
+      })
+
+      expect(usePipelineStore.getState().hasUnsavedChanges).toBe(true)
+
+      await act(async () => {
+        await usePipelineStore.getState().savePipeline()
+      })
+
+      expect(usePipelineStore.getState().hasUnsavedChanges).toBe(false)
+    })
+
+    it('confirms discard only when there are unsaved changes', () => {
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+      expect(usePipelineStore.getState().confirmDiscardChanges('Warehouse')).toBe(true)
+      expect(confirmSpy).not.toHaveBeenCalled()
+
+      act(() => {
+        usePipelineStore.getState().setPipelineName('Changed')
+      })
+
+      expect(usePipelineStore.getState().confirmDiscardChanges('Warehouse')).toBe(true)
+      expect(confirmSpy).toHaveBeenCalledWith('You have unsaved changes. Discard them and open "Warehouse"?')
     })
   })
 
@@ -309,6 +484,7 @@ describe('pipelineStore', () => {
         execution_time_ms: 12,
       })
       mockPreviewData.mockResolvedValueOnce({
+        kind: 'table',
         columns: ['id', 'name'],
         column_types: ['INTEGER', 'VARCHAR'],
         rows: [[1, 'Alice']],
@@ -344,14 +520,7 @@ describe('pipelineStore', () => {
       const node = usePipelineStore.getState().nodes[0]
       act(() => {
         usePipelineStore.setState({
-          previewData: {
-            columns: ['existing'],
-            column_types: ['VARCHAR'],
-            rows: [['value']],
-            total_rows: 1,
-            offset: 0,
-            limit: 100,
-          },
+          previewData: makeTablePreview({ columns: ['existing'], column_types: ['VARCHAR'], rows: [['value']] }),
         })
       })
       mockExecuteNode.mockRejectedValueOnce(new Error('boom'))
@@ -369,6 +538,88 @@ describe('pipelineStore', () => {
       expect(usePipelineStore.getState().previewData).toEqual(expect.objectContaining({
         columns: ['existing'],
       }))
+    })
+  })
+
+  describe('loadCsvPreview', () => {
+    it('loads raw csv preview into the shared preview state', async () => {
+      act(() => {
+        usePipelineStore.setState({
+          nodes: [{
+            id: 'csv-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders CSV',
+              tableName: 'orders_table',
+              config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+            },
+          }],
+        })
+      })
+
+      mockPreviewCsvSource.mockResolvedValueOnce(makeCsvTextPreview())
+
+      await act(async () => {
+        await usePipelineStore.getState().loadCsvPreview('csv-node', '/tmp/orders.csv')
+      })
+
+      expect(mockPreviewCsvSource).toHaveBeenCalledWith('/tmp/orders.csv')
+      expect(usePipelineStore.getState().previewData).toEqual(makeCsvTextPreview())
+      expect(usePipelineStore.getState().previewNodeId).toBe('csv-node')
+    })
+  })
+
+  describe('loadPreprocessedCsvPreview', () => {
+    it('stores reviewed preprocess readiness after preview succeeds', async () => {
+      act(() => {
+        usePipelineStore.setState({
+          nodes: [{
+            id: 'csv-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders CSV',
+              tableName: 'orders_table',
+              config: {
+                file_path: '/tmp/orders.csv',
+                original_filename: 'orders.csv',
+                preprocessing: { enabled: true, runtime: 'python', script: 'print(1)' },
+              },
+            },
+          }],
+        })
+      })
+
+      mockPreviewPreprocessedCsvSource.mockResolvedValueOnce(makeCsvTextPreview({
+        csv_stage: 'preprocessed',
+        artifact_ready: true,
+      }))
+
+      await act(async () => {
+        await usePipelineStore.getState().loadPreprocessedCsvPreview(
+          'csv-node',
+          '/tmp/orders.csv',
+          { enabled: true, runtime: 'python', script: 'print(1)' },
+        )
+      })
+
+      expect(mockPreviewPreprocessedCsvSource).toHaveBeenCalledWith(
+        'csv-node',
+        '/tmp/orders.csv',
+        { enabled: true, runtime: 'python', script: 'print(1)' },
+      )
+      expect(usePipelineStore.getState().previewData).toEqual(makeCsvTextPreview({
+        csv_stage: 'preprocessed',
+        artifact_ready: true,
+      }))
+      expect(usePipelineStore.getState().csvPreprocessArtifacts['csv-node']).toBe(
+        JSON.stringify({
+          file_path: '/tmp/orders.csv',
+          runtime: 'python',
+          script: 'print(1)',
+        })
+      )
     })
   })
 
@@ -420,6 +671,7 @@ describe('pipelineStore', () => {
         columns: ['id'],
       })
       mockPreviewData.mockResolvedValueOnce({
+        kind: 'table',
         columns: ['id'],
         column_types: ['INTEGER'],
         rows: [[2], [3]],
@@ -505,6 +757,7 @@ describe('pipelineStore', () => {
         'tx-node': { node_id: 'tx-node', status: 'success', row_count: 4, column_count: 1, columns: ['id'] },
       })
       mockPreviewData.mockResolvedValueOnce({
+        kind: 'table',
         columns: ['id'],
         column_types: ['INTEGER'],
         rows: [[2], [3]],

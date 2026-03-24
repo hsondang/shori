@@ -14,6 +14,7 @@ vi.mock('@xyflow/react', () => ({
 
 vi.mock('../../../api/client', () => ({
   exportData: vi.fn(),
+  deletePreprocessedCsvArtifact: vi.fn((..._args: any[]) => Promise.resolve({ deleted: true })),
 }))
 
 const EXPORT_NODE_ID = 'exp-1'

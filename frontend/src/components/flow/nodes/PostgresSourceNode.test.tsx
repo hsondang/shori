@@ -14,6 +14,9 @@ vi.mock('@xyflow/react', () => ({
 vi.mock('../../../api/client', () => ({
   executePipeline: vi.fn(),
   previewData: vi.fn(),
+  previewCsvSource: vi.fn(),
+  previewPreprocessedCsvSource: vi.fn(),
+  deletePreprocessedCsvArtifact: vi.fn((..._args: any[]) => Promise.resolve({ deleted: true })),
 }))
 
 const makeProps = (dbType: string, connection: Record<string, unknown>) => ({

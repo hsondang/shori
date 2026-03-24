@@ -1,16 +1,17 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { usePipelineStore } from '../../../store/pipelineStore'
 import NodeStatusBadge from '../NodeStatusBadge'
+import type { CsvSourceConfig } from '../../../types/pipeline'
 
 export default function CsvSourceNode({ id, data }: NodeProps) {
   const nodeResults = usePipelineStore((s) => s.nodeResults)
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
   const openNodeError = usePipelineStore((s) => s.openNodeError)
-  const loadPreview = usePipelineStore((s) => s.loadPreview)
+  const loadCsvPreview = usePipelineStore((s) => s.loadCsvPreview)
   const result = nodeResults[id]
   const hasError = result?.status === 'error'
   const d = data as Record<string, unknown>
-  const config = d.config as Record<string, string>
+  const config = d.config as CsvSourceConfig
   const tableName = d.tableName as string
 
   return (
@@ -41,10 +42,10 @@ export default function CsvSourceNode({ id, data }: NodeProps) {
             onViewError={result.status === 'error' ? () => openNodeError(id) : undefined}
           />
         )}
-        {result?.status === 'success' && (
+        {config.file_path && (
           <button
             className="text-blue-500 hover:underline text-xs"
-            onClick={(e) => { e.stopPropagation(); loadPreview(id, tableName) }}
+            onClick={(e) => { e.stopPropagation(); loadCsvPreview(id, config.file_path) }}
           >
             Preview data
           </button>

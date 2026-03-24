@@ -23,6 +23,13 @@ export type DatabaseConnectionConfig = PostgresConnectionConfig | OracleConnecti
 export interface CsvSourceConfig {
   file_path: string
   original_filename: string
+  preprocessing?: CsvPreprocessingConfig
+}
+
+export interface CsvPreprocessingConfig {
+  enabled: boolean
+  runtime: 'python' | 'bash'
+  script: string
 }
 
 export interface DatabaseSourceConfig {
@@ -76,7 +83,15 @@ export interface PipelineDefinition {
   }>
 }
 
-export interface DataPreview {
+export interface ProjectSummary {
+  id: string
+  name: string
+  created_at: string
+  updated_at: string
+}
+
+export interface TablePreviewData {
+  kind: 'table'
   columns: string[]
   column_types: string[]
   rows: unknown[][]
@@ -84,3 +99,14 @@ export interface DataPreview {
   offset: number
   limit: number
 }
+
+export interface CsvTextPreviewData {
+  kind: 'csv_text'
+  csv_stage: 'raw' | 'preprocessed'
+  rows: string[][]
+  limit: number
+  truncated: boolean
+  artifact_ready: boolean
+}
+
+export type DataPreview = TablePreviewData | CsvTextPreviewData

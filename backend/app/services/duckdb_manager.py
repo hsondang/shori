@@ -49,6 +49,7 @@ class DuckDBManager:
             ).fetchone()[0]
 
             return {
+                "kind": "table",
                 "columns": columns,
                 "column_types": col_types,
                 "rows": [list(r) for r in rows],

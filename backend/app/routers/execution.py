@@ -9,7 +9,10 @@ store = PipelineStore()
 
 
 def _get_engine(request: Request) -> PipelineEngine:
-    return PipelineEngine(request.app.state.duckdb)
+    return PipelineEngine(
+        request.app.state.duckdb,
+        request.app.state.csv_preprocess_artifacts,
+    )
 
 
 @router.post("/pipeline/{pipeline_id}")

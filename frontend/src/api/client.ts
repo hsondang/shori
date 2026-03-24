@@ -1,9 +1,11 @@
 import axios from 'axios'
 import type {
+  CsvPreprocessingConfig,
   DataPreview,
   DatabaseConnectionConfig,
   NodeExecutionResult,
   PipelineDefinition,
+  ProjectSummary,
 } from '../types/pipeline'
 
 const api = axios.create({ baseURL: '/api' })
@@ -41,6 +43,37 @@ export async function previewData(
   return data
 }
 
+export async function previewCsvSource(
+  filePath: string,
+  limit = 100
+): Promise<DataPreview> {
+  const { data } = await api.post('/data/preview/csv-source', {
+    file_path: filePath,
+    limit,
+  })
+  return data
+}
+
+export async function previewPreprocessedCsvSource(
+  nodeId: string,
+  filePath: string,
+  preprocessing: CsvPreprocessingConfig,
+  limit = 100
+): Promise<DataPreview> {
+  const { data } = await api.post('/data/preview/csv-source/preprocessed', {
+    node_id: nodeId,
+    file_path: filePath,
+    preprocessing,
+    limit,
+  })
+  return data
+}
+
+export async function deletePreprocessedCsvArtifact(nodeId: string): Promise<{ deleted: boolean }> {
+  const { data } = await api.delete(`/data/preview/csv-source/preprocessed/${nodeId}`)
+  return data
+}
+
 export async function getTableSchema(
   tableName: string
 ): Promise<{ table_name: string; columns: string[]; column_types: string[]; total_rows: number } | null> {
@@ -53,6 +86,11 @@ export async function getTableSchema(
     }
     throw error
   }
+}
+
+export async function deleteTable(tableName: string): Promise<{ deleted: boolean }> {
+  const { data } = await api.delete(`/data/table/${tableName}`)
+  return data
 }
 
 export async function exportData(tableName: string): Promise<void> {
@@ -76,7 +114,7 @@ export async function loadPipeline(id: string): Promise<PipelineDefinition> {
   return data
 }
 
-export async function listPipelines(): Promise<Array<{ id: string; name: string }>> {
+export async function listPipelines(): Promise<ProjectSummary[]> {
   const { data } = await api.get('/pipelines')
   return data
 }

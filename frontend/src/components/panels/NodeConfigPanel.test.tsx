@@ -4,11 +4,15 @@ import { act } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import NodeConfigPanel from './NodeConfigPanel'
 import { usePipelineStore } from '../../store/pipelineStore'
-import type { DataPreview, NodeExecutionResult } from '../../types/pipeline'
+import type { NodeExecutionResult, TablePreviewData } from '../../types/pipeline'
 
 const mockUploadCsv = vi.fn()
 const mockExecuteNode = vi.fn()
 const mockPreviewData = vi.fn()
+const mockPreviewCsvSource = vi.fn()
+const mockPreviewPreprocessedCsvSource = vi.fn()
+const mockDeleteTable = vi.fn((..._args: any[]) => Promise.resolve({ deleted: true }))
+const mockDeletePreprocessedCsvArtifact = vi.fn((..._args: any[]) => Promise.resolve({ deleted: true }))
 
 vi.mock('@monaco-editor/react', () => ({
   default: ({ value, onChange }: { value: string; onChange?: (value: string) => void }) => (
@@ -17,17 +21,22 @@ vi.mock('@monaco-editor/react', () => ({
 }))
 
 vi.mock('../../api/client', () => ({
-  uploadCsv: (...args: unknown[]) => mockUploadCsv(...args),
+  uploadCsv: (...args: any[]) => mockUploadCsv(...args),
   executePipeline: vi.fn(),
-  executeNode: (...args: unknown[]) => mockExecuteNode(...args),
-  previewData: (...args: unknown[]) => mockPreviewData(...args),
+  executeNode: (...args: any[]) => mockExecuteNode(...args),
+  previewData: (...args: any[]) => mockPreviewData(...args),
+  previewCsvSource: (...args: any[]) => mockPreviewCsvSource(...args),
+  previewPreprocessedCsvSource: (...args: any[]) => mockPreviewPreprocessedCsvSource(...args),
+  deleteTable: (...args: any[]) => mockDeleteTable(...args),
+  deletePreprocessedCsvArtifact: (...args: any[]) => mockDeletePreprocessedCsvArtifact(...args),
   savePipeline: vi.fn(),
   loadPipeline: vi.fn(),
   listPipelines: vi.fn(),
 }))
 
-function makePreview(overrides: Partial<DataPreview> = {}): DataPreview {
+function makePreview(overrides: Partial<TablePreviewData> = {}): TablePreviewData {
   return {
+    kind: 'table',
     columns: ['id', 'name'],
     column_types: ['INTEGER', 'VARCHAR'],
     rows: [[1, 'Alice']],
@@ -182,10 +191,101 @@ describe('NodeConfigPanel', () => {
 
     render(<NodeConfigPanel />)
 
-    expect(screen.getByRole('button', { name: 'Run and Preview' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Preview data' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Load data' })).toBeDisabled()
   })
 
-  it('executes the csv node and loads preview data on success', async () => {
+  it('previews the raw csv without executing the node', async () => {
+    const user = userEvent.setup()
+    mockPreviewCsvSource.mockResolvedValueOnce({
+      kind: 'csv_text',
+      csv_stage: 'raw',
+      rows: [['id', 'name'], ['1', 'Alice']],
+      limit: 100,
+      truncated: false,
+      artifact_ready: false,
+    })
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'csv-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders CSV',
+              tableName: 'orders_table',
+              config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+            },
+          },
+        ],
+        selectedNodeId: 'csv-node',
+      })
+    })
+
+    render(<NodeConfigPanel />)
+
+    await user.click(screen.getByRole('button', { name: 'Preview data' }))
+
+    await waitFor(() => {
+      expect(mockPreviewCsvSource).toHaveBeenCalledWith('/tmp/orders.csv')
+    })
+    expect(mockExecuteNode).not.toHaveBeenCalled()
+  })
+
+  it('runs Preprocess and enables Load data after review', async () => {
+    const user = userEvent.setup()
+    mockPreviewPreprocessedCsvSource.mockResolvedValueOnce({
+      kind: 'csv_text',
+      csv_stage: 'preprocessed',
+      rows: [['id', 'name'], ['1', 'Alice']],
+      limit: 100,
+      truncated: false,
+      artifact_ready: true,
+    })
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'csv-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders CSV',
+              tableName: 'orders_table',
+              config: {
+                file_path: '/tmp/orders.csv',
+                original_filename: 'orders.csv',
+                preprocessing: { enabled: true, runtime: 'python', script: 'print(1)' },
+              },
+            },
+          },
+        ],
+        selectedNodeId: 'csv-node',
+      })
+    })
+
+    render(<NodeConfigPanel />)
+
+    expect(screen.getByRole('button', { name: 'Load data' })).toBeDisabled()
+
+    await user.click(screen.getByRole('button', { name: 'Preprocess' }))
+
+    await waitFor(() => {
+      expect(mockPreviewPreprocessedCsvSource).toHaveBeenCalledWith(
+        'csv-node',
+        '/tmp/orders.csv',
+        { enabled: true, runtime: 'python', script: 'print(1)' },
+      )
+    })
+
+    expect(screen.getByRole('button', { name: 'Load data' })).toBeEnabled()
+    expect(screen.getByText(/Reviewed preprocess output is ready to load/i)).toBeInTheDocument()
+  })
+
+  it('executes the csv node and loads table preview data on success', async () => {
     const user = userEvent.setup()
     const result: NodeExecutionResult = {
       node_id: 'csv-node',
@@ -218,7 +318,7 @@ describe('NodeConfigPanel', () => {
 
     render(<NodeConfigPanel />)
 
-    await user.click(screen.getByRole('button', { name: 'Run and Preview' }))
+    await user.click(screen.getByRole('button', { name: 'Load data' }))
 
     await waitFor(() => {
       expect(mockExecuteNode).toHaveBeenCalledWith(expect.objectContaining({
@@ -230,6 +330,83 @@ describe('NodeConfigPanel', () => {
 
     expect(usePipelineStore.getState().nodeResults['csv-node']).toEqual(result)
     expect(usePipelineStore.getState().previewData).toEqual(makePreview())
+  })
+
+  it('disables Load data when preprocessing is enabled without a script', async () => {
+    const user = userEvent.setup()
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'csv-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders CSV',
+              tableName: 'orders_table',
+              config: {
+                file_path: '/tmp/orders.csv',
+                original_filename: 'orders.csv',
+                preprocessing: { enabled: false, runtime: 'python', script: '' },
+              },
+            },
+          },
+        ],
+        selectedNodeId: 'csv-node',
+      })
+    })
+
+    render(<NodeConfigPanel />)
+
+    await user.click(screen.getByRole('checkbox'))
+
+    expect(screen.getByRole('button', { name: 'Load data' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Preprocess' })).toBeDisabled()
+    expect(screen.getByText(/Add a preprocessing script/i)).toBeInTheDocument()
+  })
+
+  it('clears reviewed preprocess readiness when the script changes', async () => {
+    const user = userEvent.setup()
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'csv-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders CSV',
+              tableName: 'orders_table',
+              config: {
+                file_path: '/tmp/orders.csv',
+                original_filename: 'orders.csv',
+                preprocessing: { enabled: true, runtime: 'python', script: 'print(1)' },
+              },
+            },
+          },
+        ],
+        selectedNodeId: 'csv-node',
+        csvPreprocessArtifacts: {
+          'csv-node': JSON.stringify({
+            file_path: '/tmp/orders.csv',
+            runtime: 'python',
+            script: 'print(1)',
+          }),
+        },
+      })
+    })
+
+    render(<NodeConfigPanel />)
+
+    expect(screen.getByRole('button', { name: 'Load data' })).toBeEnabled()
+
+    await user.clear(screen.getByLabelText('Script'))
+    await user.type(screen.getByLabelText('Script'), 'print(2)')
+
+    expect(screen.getByRole('button', { name: 'Load data' })).toBeDisabled()
+    expect(screen.getByText(/Run Preprocess and review the output before loading data/i)).toBeInTheDocument()
   })
 
   it('shows transform Run and Preview and invokes the shared store action', async () => {

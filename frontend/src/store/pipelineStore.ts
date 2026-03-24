@@ -10,6 +10,8 @@ import {
   addEdge,
 } from '@xyflow/react'
 import type {
+  CsvPreprocessingConfig,
+  CsvSourceConfig,
   NodeType,
   NodeExecutionResult,
   DataPreview,
@@ -18,7 +20,12 @@ import type {
   SavedDatabaseConnectionInput,
 } from '../types/pipeline'
 import * as api from '../api/client'
+import { getCsvPreprocessFingerprint } from '../lib/csvPreprocessing'
 import { defaultConnectionConfig } from '../lib/databaseConnections'
+import {
+  createBlankPipelineDefinition,
+  snapshotPipelineDefinition,
+} from '../lib/pipelineDefinitions'
 
 interface PipelineState {
   // React Flow
@@ -32,6 +39,9 @@ interface PipelineState {
   pipelineId: string
   pipelineName: string
   databaseConnections: SavedDatabaseConnection[]
+  savedPipelineSnapshot: string
+  hasUnsavedChanges: boolean
+  projectListRevision: number
   setPipelineName: (name: string) => void
 
   // Execution results
@@ -48,6 +58,7 @@ interface PipelineState {
   previewData: DataPreview | null
   previewNodeId: string | null
   previewLoading: boolean
+  csvPreprocessArtifacts: Record<string, string>
 
   // Actions
   addNode: (type: NodeType, position: { x: number; y: number }) => void
@@ -60,13 +71,18 @@ interface PipelineState {
   executePipeline: (force?: boolean) => Promise<void>
   executeSingleNode: (nodeId: string, options?: { loadPreviewOnSuccess?: boolean }) => Promise<void>
   runTransformPreview: (nodeId: string) => Promise<void>
-  loadPreview: (nodeId: string, tableName: string, offset?: number) => Promise<void>
+  loadCsvPreview: (nodeId: string, filePath: string) => Promise<void>
+  loadPreprocessedCsvPreview: (nodeId: string, filePath: string, preprocessing: CsvPreprocessingConfig) => Promise<void>
+  loadTablePreview: (nodeId: string, tableName: string, offset?: number) => Promise<void>
   savePipeline: () => Promise<void>
   loadPipeline: (id: string) => Promise<void>
   newPipeline: () => void
+  markProjectCatalogChanged: () => void
+  confirmDiscardChanges: (nextProjectName?: string) => boolean
 }
 
 let nodeCounter = 0
+const initialPipeline = createBlankPipelineDefinition()
 
 function generateNodeId(): string {
   nodeCounter++
@@ -84,7 +100,15 @@ function defaultLabel(type: NodeType): string {
 
 function defaultConfig(type: NodeType): Record<string, unknown> {
   switch (type) {
-    case 'csv_source': return { file_path: '', original_filename: '' }
+    case 'csv_source': return {
+      file_path: '',
+      original_filename: '',
+      preprocessing: {
+        enabled: false,
+        runtime: 'python',
+        script: '',
+      },
+    }
     case 'db_source': return { db_type: 'postgres', connection: defaultConnectionConfig('postgres'), query: '' }
     case 'transform': return { sql: '' }
     case 'export': return { format: 'csv' }
@@ -102,12 +126,83 @@ function serializeNode(node: Node): PipelineDefinition['nodes'][number] {
   }
 }
 
+function buildPipelineDefinitionFromState(state: Pick<PipelineState, 'nodes' | 'edges' | 'pipelineId' | 'pipelineName' | 'databaseConnections'>): PipelineDefinition {
+  return {
+    id: state.pipelineId,
+    name: state.pipelineName,
+    database_connections: state.databaseConnections,
+    nodes: state.nodes.map(serializeNode),
+    edges: state.edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
+  }
+}
+
+function hydratePipelineState(pipeline: PipelineDefinition) {
+  const nodes: Node[] = pipeline.nodes.map((n) => ({
+    id: n.id,
+    type: n.type,
+    position: n.position,
+    data: {
+      label: n.label,
+      tableName: n.table_name,
+      config: n.config,
+    },
+  }))
+  const edges: Edge[] = pipeline.edges.map((e) => ({
+    id: e.id,
+    source: e.source,
+    target: e.target,
+  }))
+  return {
+    nodes,
+    edges,
+    pipelineId: pipeline.id,
+    pipelineName: pipeline.name,
+    databaseConnections: pipeline.database_connections || [],
+    nodeResults: {},
+    errorDialogNodeId: null,
+    selectedNodeId: null,
+    previewData: null,
+    previewNodeId: null,
+    previewLoading: false,
+    csvPreprocessArtifacts: {},
+    savedPipelineSnapshot: snapshotPipelineDefinition(pipeline),
+    hasUnsavedChanges: false,
+  }
+}
+
 function getTableName(node: Node): string {
   return (node.data as Record<string, unknown>).tableName as string
 }
 
 function getNodeConfig(node: Node): Record<string, unknown> {
   return (node.data as Record<string, unknown>).config as Record<string, unknown>
+}
+
+function dropMaterializedTable(tableName: string | undefined) {
+  if (!tableName) return
+  void api.deleteTable(tableName).catch(() => {})
+}
+
+function invalidateCsvPreprocessArtifact(nodeId: string | undefined) {
+  if (!nodeId) return
+  void api.deletePreprocessedCsvArtifact(nodeId).catch(() => {})
+}
+
+function getCsvConfig(node: Node): CsvSourceConfig | null {
+  if (node.type !== 'csv_source') return null
+  return getNodeConfig(node) as unknown as CsvSourceConfig
+}
+
+function hasCsvLoadInputsChanged(
+  node: Node,
+  nextConfig?: Record<string, unknown>,
+): boolean {
+  if (node.type !== 'csv_source' || !nextConfig) return false
+  const currentConfig = getCsvConfig(node)
+  const mergedConfig = { ...(currentConfig ?? {}), ...nextConfig } as CsvSourceConfig
+
+  return currentConfig?.file_path !== mergedConfig.file_path
+    || getCsvPreprocessFingerprint(currentConfig) !== getCsvPreprocessFingerprint(mergedConfig)
 }
 
 function collectAncestorNodeIds(nodeId: string, edges: Edge[]): string[] {
@@ -134,28 +229,50 @@ function collectAncestorNodeIds(nodeId: string, edges: Edge[]): string[] {
 export const usePipelineStore = create<PipelineState>((set, get) => ({
   nodes: [],
   edges: [],
-  pipelineId: crypto.randomUUID(),
-  pipelineName: 'Untitled Pipeline',
+  pipelineId: initialPipeline.id,
+  pipelineName: initialPipeline.name,
   databaseConnections: [],
+  savedPipelineSnapshot: snapshotPipelineDefinition(initialPipeline),
+  hasUnsavedChanges: false,
+  projectListRevision: 0,
   nodeResults: {},
   errorDialogNodeId: null,
   selectedNodeId: null,
   previewData: null,
   previewNodeId: null,
   previewLoading: false,
+  csvPreprocessArtifacts: {},
 
-  setPipelineName: (name) => set({ pipelineName: name }),
+  setPipelineName: (name) => {
+    set({ pipelineName: name })
+    const state = get()
+    set({
+      hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
+    })
+  },
 
   onNodesChange: (changes) => {
     set({ nodes: applyNodeChanges(changes, get().nodes) })
+    const state = get()
+    set({
+      hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
+    })
   },
 
   onEdgesChange: (changes) => {
     set({ edges: applyEdgeChanges(changes, get().edges) })
+    const state = get()
+    set({
+      hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
+    })
   },
 
   onConnect: (connection) => {
     set({ edges: addEdge({ ...connection, id: `edge_${Date.now()}` }, get().edges) })
+    const state = get()
+    set({
+      hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
+    })
   },
 
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
@@ -176,11 +293,19 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       },
     }
     set({ nodes: [...get().nodes, newNode] })
+    const state = get()
+    set({
+      hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
+    })
   },
 
   addDatabaseConnection: (connection) => {
     const id = crypto.randomUUID()
     set({ databaseConnections: [...get().databaseConnections, { ...connection, id } as SavedDatabaseConnection] })
+    const state = get()
+    set({
+      hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
+    })
     return id
   },
 
@@ -190,11 +315,19 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         item.id === id ? ({ ...connection, id } as SavedDatabaseConnection) : item
       ),
     })
+    const state = get()
+    set({
+      hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
+    })
   },
 
   deleteDatabaseConnection: (id) => {
     set({
       databaseConnections: get().databaseConnections.filter((item) => item.id !== id),
+    })
+    const state = get()
+    set({
+      hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
     })
   },
 
@@ -233,23 +366,87 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       },
     }
     set({ nodes: [...get().nodes, newNode] })
+    const state = get()
+    set({
+      hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
+    })
     return id
   },
 
   updateNodeData: (nodeId, data) => {
+    const currentNode = get().nodes.find((candidate) => candidate.id === nodeId)
+    if (!currentNode) return
+
+    const previousTableName = getTableName(currentNode)
+    const nextTableName = typeof data.tableName === 'string' ? data.tableName : previousTableName
+    const tableNameChanged = previousTableName !== nextTableName
+    const csvLoadInputsChanged = hasCsvLoadInputsChanged(currentNode, data.config as Record<string, unknown> | undefined)
+    const shouldInvalidateExecution = tableNameChanged || csvLoadInputsChanged
+
+    if (shouldInvalidateExecution) {
+      dropMaterializedTable(previousTableName)
+    }
+    if (csvLoadInputsChanged) {
+      invalidateCsvPreprocessArtifact(nodeId)
+    }
+
+    set((state) => {
+      const nodeResults = { ...state.nodeResults }
+      const csvPreprocessArtifacts = { ...state.csvPreprocessArtifacts }
+      if (shouldInvalidateExecution) {
+        delete nodeResults[nodeId]
+      }
+      if (csvLoadInputsChanged) {
+        delete csvPreprocessArtifacts[nodeId]
+      }
+
+      return {
+        nodes: state.nodes.map((n) =>
+          n.id === nodeId ? { ...n, data: { ...n.data, ...data } } : n
+        ),
+        nodeResults,
+        csvPreprocessArtifacts,
+        ...((shouldInvalidateExecution || csvLoadInputsChanged) && state.previewNodeId === nodeId
+          ? { previewData: null, previewNodeId: null, previewLoading: false }
+          : {}),
+      }
+    })
+    const state = get()
     set({
-      nodes: get().nodes.map((n) =>
-        n.id === nodeId ? { ...n, data: { ...n.data, ...data } } : n
-      ),
+      hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
     })
   },
 
   deleteNode: (nodeId) => {
+    const node = get().nodes.find((candidate) => candidate.id === nodeId)
+    if (node) {
+      dropMaterializedTable(getTableName(node))
+      if (node.type === 'csv_source') {
+        invalidateCsvPreprocessArtifact(nodeId)
+      }
+    }
+
+    set((state) => {
+      const nodeResults = { ...state.nodeResults }
+      const csvPreprocessArtifacts = { ...state.csvPreprocessArtifacts }
+      delete nodeResults[nodeId]
+      delete csvPreprocessArtifacts[nodeId]
+
+      return {
+        nodes: state.nodes.filter((n) => n.id !== nodeId),
+        edges: state.edges.filter((e) => e.source !== nodeId && e.target !== nodeId),
+        nodeResults,
+        csvPreprocessArtifacts,
+        selectedNodeId: state.selectedNodeId === nodeId ? null : state.selectedNodeId,
+        errorDialogNodeId: state.errorDialogNodeId === nodeId ? null : state.errorDialogNodeId,
+        ...(state.previewNodeId === nodeId
+          ? { previewData: null, previewNodeId: null, previewLoading: false }
+          : {}),
+      }
+    })
+    const state = get()
     set({
-      nodes: get().nodes.filter((n) => n.id !== nodeId),
-      edges: get().edges.filter((e) => e.source !== nodeId && e.target !== nodeId),
-      selectedNodeId: get().selectedNodeId === nodeId ? null : get().selectedNodeId,
-      errorDialogNodeId: get().errorDialogNodeId === nodeId ? null : get().errorDialogNodeId,
+      hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
     })
   },
 
@@ -316,7 +513,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       })
 
       if (options?.loadPreviewOnSuccess && result.status === 'success') {
-        await get().loadPreview(nodeId, tableName)
+        await get().loadTablePreview(nodeId, tableName)
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unknown error'
@@ -395,7 +592,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         })
 
         if (results[nodeId]?.status === 'success') {
-          await get().loadPreview(nodeId, tableName)
+          await get().loadTablePreview(nodeId, tableName)
         }
         return
       }
@@ -413,7 +610,46 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     }
   },
 
-  loadPreview: async (nodeId, tableName, offset = 0) => {
+  loadCsvPreview: async (nodeId, filePath) => {
+    set({ previewLoading: true, previewNodeId: nodeId })
+    try {
+      const data = await api.previewCsvSource(filePath)
+      set({ previewData: data, previewLoading: false })
+    } catch {
+      set({ previewData: null, previewLoading: false })
+    }
+  },
+
+  loadPreprocessedCsvPreview: async (nodeId, filePath, preprocessing) => {
+    set({ previewLoading: true, previewNodeId: nodeId })
+    const fingerprint = getCsvPreprocessFingerprint({
+      file_path: filePath,
+      original_filename: '',
+      preprocessing,
+    })
+    try {
+      const data = await api.previewPreprocessedCsvSource(nodeId, filePath, preprocessing)
+      set((state) => ({
+        previewData: data,
+        previewLoading: false,
+        csvPreprocessArtifacts: fingerprint
+          ? { ...state.csvPreprocessArtifacts, [nodeId]: fingerprint }
+          : state.csvPreprocessArtifacts,
+      }))
+    } catch {
+      set((state) => {
+        const csvPreprocessArtifacts = { ...state.csvPreprocessArtifacts }
+        delete csvPreprocessArtifacts[nodeId]
+        return {
+          previewData: null,
+          previewLoading: false,
+          csvPreprocessArtifacts,
+        }
+      })
+    }
+  },
+
+  loadTablePreview: async (nodeId, tableName, offset = 0) => {
     set({ previewLoading: true, previewNodeId: nodeId })
     try {
       const data = await api.previewData(tableName, offset)
@@ -424,61 +660,40 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   },
 
   savePipeline: async () => {
-    const { nodes, edges, pipelineId, pipelineName, databaseConnections } = get()
-    const pipeline = {
-      id: pipelineId,
-      name: pipelineName,
-      database_connections: databaseConnections,
-      nodes: nodes.map(serializeNode),
-      edges: edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
-    }
+    const pipeline = buildPipelineDefinitionFromState(get())
     await api.savePipeline(pipeline)
+    set((state) => ({
+      savedPipelineSnapshot: snapshotPipelineDefinition(pipeline),
+      hasUnsavedChanges: false,
+      projectListRevision: state.projectListRevision + 1,
+    }))
   },
 
   loadPipeline: async (id) => {
+    get().nodes
+      .filter((node) => node.type === 'csv_source')
+      .forEach((node) => invalidateCsvPreprocessArtifact(node.id))
+
     const pipeline = await api.loadPipeline(id)
-    const nodes: Node[] = pipeline.nodes.map((n) => ({
-      id: n.id,
-      type: n.type,
-      position: n.position,
-      data: {
-        label: n.label,
-        tableName: n.table_name,
-        config: n.config,
-      },
-    }))
-    const edges: Edge[] = pipeline.edges.map((e) => ({
-      id: e.id,
-      source: e.source,
-      target: e.target,
-    }))
-    set({
-      nodes,
-      edges,
-      pipelineId: pipeline.id,
-      pipelineName: pipeline.name,
-      databaseConnections: pipeline.database_connections || [],
-      nodeResults: {},
-      errorDialogNodeId: null,
-      selectedNodeId: null,
-      previewData: null,
-      previewNodeId: null,
-    })
+    set(hydratePipelineState(pipeline))
   },
 
   newPipeline: () => {
+    get().nodes
+      .filter((node) => node.type === 'csv_source')
+      .forEach((node) => invalidateCsvPreprocessArtifact(node.id))
+
     nodeCounter = 0
-    set({
-      nodes: [],
-      edges: [],
-      pipelineId: crypto.randomUUID(),
-      pipelineName: 'Untitled Pipeline',
-      databaseConnections: [],
-      nodeResults: {},
-      errorDialogNodeId: null,
-      selectedNodeId: null,
-      previewData: null,
-      previewNodeId: null,
-    })
+    set(hydratePipelineState(createBlankPipelineDefinition()))
+  },
+
+  markProjectCatalogChanged: () => {
+    set((state) => ({ projectListRevision: state.projectListRevision + 1 }))
+  },
+
+  confirmDiscardChanges: (nextProjectName) => {
+    if (!get().hasUnsavedChanges) return true
+    const suffix = nextProjectName ? ` and open "${nextProjectName}"` : ''
+    return window.confirm(`You have unsaved changes. Discard them${suffix}?`)
   },
 }))
