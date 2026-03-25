@@ -568,6 +568,25 @@ describe('pipelineStore', () => {
       expect(usePipelineStore.getState().previewData).toEqual(makeCsvTextPreview())
       expect(usePipelineStore.getState().previewNodeId).toBe('csv-node')
     })
+
+    it('stores the backend preview error message when the request fails', async () => {
+      mockPreviewCsvSource.mockRejectedValueOnce({
+        response: {
+          data: {
+            detail: 'Unable to preview CSV: unsupported encoding',
+          },
+        },
+      })
+
+      await act(async () => {
+        await usePipelineStore.getState().loadCsvPreview('csv-node', '/tmp/orders.csv')
+      })
+
+      expect(usePipelineStore.getState().previewData).toBeNull()
+      expect(usePipelineStore.getState().previewError).toBe(
+        'Unable to preview CSV: unsupported encoding'
+      )
+    })
   })
 
   describe('loadPreprocessedCsvPreview', () => {

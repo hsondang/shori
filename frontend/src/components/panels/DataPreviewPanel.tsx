@@ -15,6 +15,7 @@ export default function DataPreviewPanel() {
   const previewData = usePipelineStore((s) => s.previewData)
   const previewNodeId = usePipelineStore((s) => s.previewNodeId)
   const previewLoading = usePipelineStore((s) => s.previewLoading)
+  const previewError = usePipelineStore((s) => s.previewError)
   const nodes = usePipelineStore((s) => s.nodes)
   const loadTablePreview = usePipelineStore((s) => s.loadTablePreview)
 
@@ -24,14 +25,6 @@ export default function DataPreviewPanel() {
   const config = (previewNodeData.config as Record<string, unknown> | undefined) ?? {}
   const filename = typeof config.original_filename === 'string' ? config.original_filename : null
 
-  if (!previewData && !previewLoading) {
-    return (
-      <div className="h-48 border-t border-gray-200 bg-white flex items-center justify-center text-gray-400 text-sm">
-        Click "Preview data" on a node to see its contents
-      </div>
-    )
-  }
-
   if (previewLoading) {
     return (
       <div className="h-48 border-t border-gray-200 bg-white flex items-center justify-center text-gray-400 text-sm">
@@ -40,7 +33,21 @@ export default function DataPreviewPanel() {
     )
   }
 
-  if (!previewData) return null
+  if (previewError) {
+    return (
+      <div className="h-48 border-t border-red-200 bg-red-50 flex items-center justify-center px-4 text-sm text-red-700">
+        {previewError}
+      </div>
+    )
+  }
+
+  if (!previewData) {
+    return (
+      <div className="h-48 border-t border-gray-200 bg-white flex items-center justify-center text-gray-400 text-sm">
+        Click "Preview data" on a node to see its contents
+      </div>
+    )
+  }
 
   if (previewData.kind === 'csv_text') {
     const isPreprocessed = previewData.csv_stage === 'preprocessed'

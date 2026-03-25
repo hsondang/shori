@@ -19,6 +19,7 @@ from app.config import UPLOAD_DIR
 PREPROCESS_TIMEOUT_SECONDS = 60
 CSV_PREVIEW_LIMIT = 100
 CSV_PREVIEW_SAMPLE_SIZE = 4096
+CSV_PREVIEW_ENCODINGS = ("utf-8-sig", "utf-8", "cp1252", "iso-8859-1")
 
 
 @dataclass
@@ -88,23 +89,7 @@ def preview_csv_text(
     if not path.exists():
         raise FileNotFoundError(f"CSV file '{file_path}' not found")
 
-    with path.open("r", encoding="utf-8-sig", newline="") as handle:
-        sample = handle.read(CSV_PREVIEW_SAMPLE_SIZE)
-        handle.seek(0)
-
-        try:
-            dialect = csv.Sniffer().sniff(sample)
-        except csv.Error:
-            dialect = csv.excel
-
-        reader = csv.reader(handle, dialect)
-        rows: list[list[str]] = []
-        truncated = False
-        for index, row in enumerate(reader):
-            if index >= limit:
-                truncated = True
-                break
-            rows.append(row)
+    rows, truncated = _read_preview_rows(path, limit)
 
     return {
         "kind": "csv_text",
@@ -208,6 +193,55 @@ def preprocessing_fingerprint(file_path: str, preprocessing: object | None) -> s
         sort_keys=True,
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _read_preview_rows(path: Path, limit: int) -> tuple[list[list[str]], bool]:
+    last_error: csv.Error | ValueError | None = None
+
+    for encoding in CSV_PREVIEW_ENCODINGS:
+        try:
+            with path.open("r", encoding=encoding, newline="") as handle:
+                sample = handle.read(CSV_PREVIEW_SAMPLE_SIZE)
+                dialects: list[type[csv.Dialect] | csv.Dialect] = [csv.excel]
+
+                try:
+                    dialects.insert(0, csv.Sniffer().sniff(sample))
+                except csv.Error:
+                    pass
+
+                for dialect in dialects:
+                    try:
+                        return _collect_preview_rows(handle, dialect, limit)
+                    except (csv.Error, ValueError) as exc:
+                        last_error = exc
+                        continue
+        except UnicodeDecodeError:
+            continue
+
+    if last_error is not None:
+        raise last_error
+
+    raise ValueError(
+        "CSV file could not be decoded using the supported encodings: "
+        + ", ".join(CSV_PREVIEW_ENCODINGS)
+    )
+
+
+def _collect_preview_rows(
+    handle,
+    dialect: type[csv.Dialect] | csv.Dialect,
+    limit: int,
+) -> tuple[list[list[str]], bool]:
+    handle.seek(0)
+    reader = csv.reader(handle, dialect)
+    rows: list[list[str]] = []
+    truncated = False
+    for index, row in enumerate(reader):
+        if index >= limit:
+            truncated = True
+            break
+        rows.append(row)
+    return rows, truncated
 
 
 def _materialization_file_path(config: Mapping[str, object]) -> str:

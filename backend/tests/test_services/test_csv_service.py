@@ -20,6 +20,18 @@ def test_preview_csv_text_returns_first_parsed_rows(office365_csv_file):
     assert preview["artifact_ready"] is False
 
 
+def test_preview_csv_text_falls_back_to_legacy_csv_encodings(tmp_path):
+    csv_file = tmp_path / "legacy.csv"
+    csv_file.write_bytes("Código,Nome\n1,João\n".encode("cp1252"))
+
+    preview = csv_service.preview_csv_text(str(csv_file), limit=2)
+
+    assert preview["rows"] == [
+        ["Código", "Nome"],
+        ["1", "João"],
+    ]
+
+
 def test_preview_preprocessed_csv_text_stores_artifact(csv_artifact_store, office365_csv_file):
     preprocessing = {
         "enabled": True,

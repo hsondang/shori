@@ -58,6 +58,7 @@ interface PipelineState {
   previewData: DataPreview | null
   previewNodeId: string | null
   previewLoading: boolean
+  previewError: string | null
   csvPreprocessArtifacts: Record<string, string>
 
   // Actions
@@ -164,6 +165,7 @@ function hydratePipelineState(pipeline: PipelineDefinition) {
     previewData: null,
     previewNodeId: null,
     previewLoading: false,
+    previewError: null,
     csvPreprocessArtifacts: {},
     savedPipelineSnapshot: snapshotPipelineDefinition(pipeline),
     hasUnsavedChanges: false,
@@ -176,6 +178,20 @@ function getTableName(node: Node): string {
 
 function getNodeConfig(node: Node): Record<string, unknown> {
   return (node.data as Record<string, unknown>).config as Record<string, unknown>
+}
+
+function getRequestErrorMessage(error: unknown, fallback: string): string {
+  if (typeof error === 'object' && error !== null) {
+    const response = 'response' in error ? error.response : undefined
+    if (typeof response === 'object' && response !== null) {
+      const data = 'data' in response ? response.data : undefined
+      if (typeof data === 'object' && data !== null && 'detail' in data && typeof data.detail === 'string') {
+        return data.detail
+      }
+    }
+  }
+
+  return error instanceof Error ? error.message : fallback
 }
 
 function dropMaterializedTable(tableName: string | undefined) {
@@ -241,6 +257,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   previewData: null,
   previewNodeId: null,
   previewLoading: false,
+  previewError: null,
   csvPreprocessArtifacts: {},
 
   setPipelineName: (name) => {
@@ -407,7 +424,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         nodeResults,
         csvPreprocessArtifacts,
         ...((shouldInvalidateExecution || csvLoadInputsChanged) && state.previewNodeId === nodeId
-          ? { previewData: null, previewNodeId: null, previewLoading: false }
+          ? { previewData: null, previewNodeId: null, previewLoading: false, previewError: null }
           : {}),
       }
     })
@@ -440,7 +457,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         selectedNodeId: state.selectedNodeId === nodeId ? null : state.selectedNodeId,
         errorDialogNodeId: state.errorDialogNodeId === nodeId ? null : state.errorDialogNodeId,
         ...(state.previewNodeId === nodeId
-          ? { previewData: null, previewNodeId: null, previewLoading: false }
+          ? { previewData: null, previewNodeId: null, previewLoading: false, previewError: null }
           : {}),
       }
     })
@@ -611,17 +628,21 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   },
 
   loadCsvPreview: async (nodeId, filePath) => {
-    set({ previewLoading: true, previewNodeId: nodeId })
+    set({ previewLoading: true, previewNodeId: nodeId, previewError: null })
     try {
       const data = await api.previewCsvSource(filePath)
-      set({ previewData: data, previewLoading: false })
-    } catch {
-      set({ previewData: null, previewLoading: false })
+      set({ previewData: data, previewLoading: false, previewError: null })
+    } catch (err) {
+      set({
+        previewData: null,
+        previewLoading: false,
+        previewError: getRequestErrorMessage(err, 'Unable to preview CSV'),
+      })
     }
   },
 
   loadPreprocessedCsvPreview: async (nodeId, filePath, preprocessing) => {
-    set({ previewLoading: true, previewNodeId: nodeId })
+    set({ previewLoading: true, previewNodeId: nodeId, previewError: null })
     const fingerprint = getCsvPreprocessFingerprint({
       file_path: filePath,
       original_filename: '',
@@ -632,17 +653,19 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       set((state) => ({
         previewData: data,
         previewLoading: false,
+        previewError: null,
         csvPreprocessArtifacts: fingerprint
           ? { ...state.csvPreprocessArtifacts, [nodeId]: fingerprint }
           : state.csvPreprocessArtifacts,
       }))
-    } catch {
+    } catch (err) {
       set((state) => {
         const csvPreprocessArtifacts = { ...state.csvPreprocessArtifacts }
         delete csvPreprocessArtifacts[nodeId]
         return {
           previewData: null,
           previewLoading: false,
+          previewError: getRequestErrorMessage(err, 'Unable to preview CSV'),
           csvPreprocessArtifacts,
         }
       })
@@ -650,12 +673,16 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   },
 
   loadTablePreview: async (nodeId, tableName, offset = 0) => {
-    set({ previewLoading: true, previewNodeId: nodeId })
+    set({ previewLoading: true, previewNodeId: nodeId, previewError: null })
     try {
       const data = await api.previewData(tableName, offset)
-      set({ previewData: data, previewLoading: false })
-    } catch {
-      set({ previewData: null, previewLoading: false })
+      set({ previewData: data, previewLoading: false, previewError: null })
+    } catch (err) {
+      set({
+        previewData: null,
+        previewLoading: false,
+        previewError: getRequestErrorMessage(err, 'Unable to preview data'),
+      })
     }
   },
 

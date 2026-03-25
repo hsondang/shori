@@ -42,12 +42,18 @@ function makeCsvPreview(overrides: Partial<CsvTextPreviewData> = {}): CsvTextPre
   }
 }
 
-function seedStore(preview: TablePreviewData | CsvTextPreviewData | null, nodeId = 'n1', tableName = 'my_table') {
+function seedStore(
+  preview: TablePreviewData | CsvTextPreviewData | null,
+  nodeId = 'n1',
+  tableName = 'my_table',
+  previewError: string | null = null,
+) {
   act(() => {
     usePipelineStore.setState({
       previewData: preview,
       previewNodeId: nodeId,
       previewLoading: false,
+      previewError,
       nodes: preview ? [{
         id: nodeId,
         type: 'csv_source',
@@ -67,6 +73,12 @@ describe('DataPreviewPanel', () => {
     seedStore(null)
     render(<DataPreviewPanel />)
     expect(screen.getByText(/Preview data/i)).toBeInTheDocument()
+  })
+
+  it('renders preview errors from the store', () => {
+    seedStore(null, 'n1', 'my_table', 'Unable to preview CSV: invalid delimiter')
+    render(<DataPreviewPanel />)
+    expect(screen.getByText(/Unable to preview CSV: invalid delimiter/i)).toBeInTheDocument()
   })
 
   it('renders column headers for table previews', () => {
