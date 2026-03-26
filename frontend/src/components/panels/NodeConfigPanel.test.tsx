@@ -504,12 +504,70 @@ describe('NodeConfigPanel', () => {
 
     render(<NodeConfigPanel />)
 
+    expect(screen.getByRole('button', { name: 'Edit mode' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Run and Preview' })).toBeEnabled()
     expect(screen.getByText(/Missing upstream tables will prompt before running dependencies/i)).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Run and Preview' }))
 
     expect(runTransformPreview).toHaveBeenCalledWith('tx-node')
+  })
+
+  it('expands the transform editor in edit mode and resets it when the selection changes', async () => {
+    const user = userEvent.setup()
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'tx-node',
+            type: 'transform',
+            position: { x: 200, y: 0 },
+            data: {
+              label: 'Orders Transform',
+              tableName: 'orders_final',
+              config: { sql: 'SELECT * FROM orders_table' },
+            },
+          },
+        ],
+        selectedNodeId: 'tx-node',
+      })
+    })
+
+    render(<NodeConfigPanel />)
+
+    await user.click(screen.getByRole('button', { name: 'Edit mode' }))
+    expect(screen.getByTestId('transform-edit-overlay')).toBeInTheDocument()
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'db-node',
+            type: 'db_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Analytics Postgres',
+              tableName: 'db_table',
+              config: {
+                db_type: 'postgres',
+                connection: {
+                  host: 'localhost',
+                  port: 5432,
+                  database: 'analytics',
+                  user: 'user',
+                  password: 'secret',
+                },
+                query: 'SELECT 1',
+              },
+            },
+          },
+        ],
+        selectedNodeId: 'db-node',
+      })
+    })
+
+    expect(screen.queryByTestId('transform-edit-overlay')).not.toBeInTheDocument()
   })
 
   it('disables transform Run and Preview when SQL is blank', () => {

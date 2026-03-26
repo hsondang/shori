@@ -2,6 +2,7 @@ import { usePipelineStore } from '../../store/pipelineStore'
 import SqlEditor from './SqlEditor'
 import { uploadCsv } from '../../api/client'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import type {
   CsvPreprocessingConfig,
   CsvSourceConfig,
@@ -26,6 +27,7 @@ export default function NodeConfigPanel() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isCsvEditing, setIsCsvEditing] = useState(false)
   const [isDbEditMode, setIsDbEditMode] = useState(false)
+  const [isTransformEditMode, setIsTransformEditMode] = useState(false)
   const [csvDraft, setCsvDraft] = useState({ label: '', tableName: '' })
   const [csvSnapshot, setCsvSnapshot] = useState({ label: '', tableName: '' })
 
@@ -46,6 +48,7 @@ export default function NodeConfigPanel() {
   const dbQuery = ((config.query as string | undefined) ?? '')
   const dbType = ((config.db_type as string | undefined) ?? 'postgres') as DbType
   const dbConnection = config.connection as DatabaseConnectionConfig | undefined
+  const transformQuery = (config.sql as string | undefined) ?? ''
   const csvLabel = isCsvNode ? ((d.label as string) || '') : ''
   const labelInputId = nodeId ? `${nodeId}-label` : 'node-label'
   const tableNameInputId = nodeId ? `${nodeId}-table-name` : 'node-table-name'
@@ -72,10 +75,12 @@ export default function NodeConfigPanel() {
       .filter((n) => upstreamIds.includes(n.id))
       .map((n) => (n.data as Record<string, unknown>).tableName as string)
   }, [selectedNodeId, edges, nodes])
+  const availableUpstreamTables = node?.type === 'transform' ? upstreamTableNames() : []
 
   useEffect(() => {
     setIsCsvEditing(false)
     setIsDbEditMode(false)
+    setIsTransformEditMode(false)
   }, [nodeId])
 
   useEffect(() => {
@@ -147,20 +152,49 @@ export default function NodeConfigPanel() {
     setIsCsvEditing(false)
   }
 
-  const renderDbPanel = (expanded: boolean) => {
-    const canExecute = Boolean(dbQuery.trim()) && nodeResult?.status !== 'running'
+  const renderQueryPanel = ({
+    expanded,
+    setExpanded,
+    title,
+    defaultLabel,
+    queryValue,
+    onQueryChange,
+    canExecute,
+    actionLabel,
+    enabledButtonClassName,
+    overlayTestId,
+    description,
+    metadata,
+    extraEditorContent,
+    onExecute,
+  }: {
+    expanded: boolean
+    setExpanded: React.Dispatch<React.SetStateAction<boolean>>
+    title: string
+    defaultLabel: string
+    queryValue: string
+    onQueryChange: (query: string) => void
+    canExecute: boolean
+    actionLabel: string
+    enabledButtonClassName: string
+    overlayTestId: string
+    description: string
+    metadata: ReactNode
+    extraEditorContent?: ReactNode
+    onExecute: () => void
+  }) => {
     const panelClassName = expanded
       ? 'fixed bottom-0 right-0 top-[57px] z-50 flex w-full flex-col border-l border-gray-200 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.24)] md:w-1/2'
       : 'flex h-full w-80 flex-col border-l border-gray-200 bg-white'
 
     return (
-      <div className={panelClassName} data-testid={expanded ? 'db-edit-overlay' : undefined}>
+      <div className={panelClassName} data-testid={expanded ? overlayTestId : undefined}>
         <div className="border-b border-gray-200 px-4 py-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-gray-400">Database Source</div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-gray-400">{title}</div>
               <h3 className="mt-2 truncate text-base font-semibold text-gray-900">
-                {(d.label as string) || 'Database Source'}
+                {(d.label as string) || defaultLabel}
               </h3>
             </div>
             <button
@@ -181,15 +215,15 @@ export default function NodeConfigPanel() {
               </div>
               <button
                 type="button"
-                aria-pressed={isDbEditMode}
-                onClick={() => setIsDbEditMode((current) => !current)}
+                aria-pressed={expanded}
+                onClick={() => setExpanded((current) => !current)}
                 className={`relative inline-flex h-7 w-14 shrink-0 items-center rounded-full px-1 transition ${
-                  isDbEditMode ? 'bg-stone-900' : 'bg-stone-300'
+                  expanded ? 'bg-stone-900' : 'bg-stone-300'
                 }`}
               >
                 <span
                   className={`h-5 w-5 rounded-full bg-white shadow-sm transition ${
-                    isDbEditMode ? 'translate-x-7' : 'translate-x-0'
+                    expanded ? 'translate-x-7' : 'translate-x-0'
                   }`}
                 />
                 <span className="sr-only">Edit mode</span>
@@ -197,25 +231,11 @@ export default function NodeConfigPanel() {
             </div>
           </div>
 
-          <div className="mt-4 space-y-2">
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Table</div>
-              <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
-                {tableName}
-              </div>
-            </div>
-            {dbConnection && (
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Connection</div>
-                <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
-                  {getConnectionSummary(dbType, dbConnection)}
-                </div>
-              </div>
-            )}
-          </div>
+          <div className="mt-4 space-y-2">{metadata}</div>
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col px-4 py-4">
+          {extraEditorContent}
           <div className="mb-2 flex items-center justify-between">
             <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500">SQL Query</label>
             {nodeResult && (
@@ -226,9 +246,9 @@ export default function NodeConfigPanel() {
           </div>
           <div className="min-h-0 flex-1">
             <SqlEditor
-              value={dbQuery}
-              onChange={(sql) => updateNodeData(node.id, { config: { ...config, query: sql } })}
-              upstreamTables={[]}
+              value={queryValue}
+              onChange={onQueryChange}
+              upstreamTables={availableUpstreamTables}
               height={expanded ? '100%' : '240px'}
               containerClassName={expanded ? 'h-full' : ''}
             />
@@ -236,17 +256,18 @@ export default function NodeConfigPanel() {
         </div>
 
         <div className="border-t border-gray-200 bg-white px-4 py-4">
+          <p className="mb-3 text-xs text-gray-500">{description}</p>
           <button
             type="button"
-            onClick={() => void executeSingleNode(node.id, { loadPreviewOnSuccess: true })}
+            onClick={onExecute}
             disabled={!canExecute}
             className={`w-full rounded-lg px-4 py-2 text-sm font-medium transition ${
               canExecute
-                ? 'bg-emerald-500 text-white hover:bg-emerald-600'
+                ? enabledButtonClassName
                 : 'bg-gray-100 text-gray-400'
             }`}
           >
-            {nodeResult?.status === 'running' ? 'Running...' : 'Execute'}
+            {nodeResult?.status === 'running' ? 'Running...' : actionLabel}
           </button>
         </div>
       </div>
@@ -262,7 +283,79 @@ export default function NodeConfigPanel() {
   }
 
   if (node.type === 'db_source') {
-    return renderDbPanel(isDbEditMode)
+    const canExecute = Boolean(dbQuery.trim()) && nodeResult?.status !== 'running'
+
+    return renderQueryPanel({
+      expanded: isDbEditMode,
+      setExpanded: setIsDbEditMode,
+      title: 'Database Source',
+      defaultLabel: 'Database Source',
+      queryValue: dbQuery,
+      onQueryChange: (query) => updateNodeData(node.id, { config: { ...config, query } }),
+      canExecute,
+      actionLabel: 'Execute',
+      enabledButtonClassName: 'bg-emerald-500 text-white hover:bg-emerald-600',
+      overlayTestId: 'db-edit-overlay',
+      description: 'Execute this source query and open its preview.',
+      metadata: (
+        <>
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Table</div>
+            <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
+              {tableName}
+            </div>
+          </div>
+          {dbConnection && (
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Connection</div>
+              <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
+                {getConnectionSummary(dbType, dbConnection)}
+              </div>
+            </div>
+          )}
+        </>
+      ),
+      onExecute: () => { void executeSingleNode(node.id, { loadPreviewOnSuccess: true }) },
+    })
+  }
+
+  if (node.type === 'transform') {
+    const canExecute = Boolean(transformSql) && nodeResult?.status !== 'running'
+
+    return renderQueryPanel({
+      expanded: isTransformEditMode,
+      setExpanded: setIsTransformEditMode,
+      title: 'Transform',
+      defaultLabel: 'Transform',
+      queryValue: transformQuery,
+      onQueryChange: (query) => updateNodeData(node.id, { config: { ...config, sql: query } }),
+      canExecute,
+      actionLabel: 'Run and Preview',
+      enabledButtonClassName: 'bg-purple-500 text-white hover:bg-purple-600',
+      overlayTestId: 'transform-edit-overlay',
+      description: 'Execute this transform and open its preview. Missing upstream tables will prompt before running dependencies.',
+      metadata: (
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Table</div>
+          <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
+            {tableName}
+          </div>
+        </div>
+      ),
+      extraEditorContent: availableUpstreamTables.length > 0 ? (
+        <div className="mb-3">
+          <label className="mb-1 block text-xs text-gray-500">Available Tables</label>
+          <div className="flex flex-wrap gap-1">
+            {availableUpstreamTables.map((upstreamTable) => (
+              <span key={upstreamTable} className="rounded bg-purple-100 px-2 py-0.5 text-xs font-mono text-purple-700">
+                {upstreamTable}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : undefined,
+      onExecute: () => { void runTransformPreview(node.id) },
+    })
   }
 
   return (
@@ -508,54 +601,6 @@ export default function NodeConfigPanel() {
                   Reviewed preprocess output is ready to load into DuckDB.
                 </p>
               )}
-            </div>
-          </div>
-        )}
-
-        {node.type === 'transform' && (
-          <div>
-            {upstreamTableNames().length > 0 && (
-              <div className="mb-3">
-                <label className="block text-xs text-gray-500 mb-1">Available Tables</label>
-                <div className="flex flex-wrap gap-1">
-                  {upstreamTableNames().map((t) => (
-                    <span key={t} className="bg-purple-100 text-purple-700 px-2 py-0.5 rounded text-xs font-mono">
-                      {t}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-            <label className="block text-xs text-gray-500 mb-1">SQL Query</label>
-            <SqlEditor
-              value={(config.sql as string) || ''}
-              onChange={(sql) => updateNodeData(node.id, { config: { ...config, sql } })}
-              upstreamTables={upstreamTableNames()}
-            />
-            <div className="mt-4">
-              <div className="flex items-center justify-between mb-2">
-                <label className="block text-xs text-gray-500">Run Node</label>
-                {nodeResult && (
-                  <span className="text-xs text-gray-400">
-                    {nodeResult.status === 'running' ? 'Running...' : `Status: ${nodeResult.status}`}
-                  </span>
-                )}
-              </div>
-              <p className="mb-3 text-xs text-gray-500">
-                Execute this transform and open its preview. Missing upstream tables will prompt before running dependencies.
-              </p>
-              <button
-                type="button"
-                onClick={() => void runTransformPreview(node.id)}
-                disabled={!transformSql || nodeResult?.status === 'running'}
-                className={`w-full rounded px-3 py-2 text-sm font-medium transition ${
-                  !transformSql || nodeResult?.status === 'running'
-                    ? 'bg-gray-100 text-gray-400'
-                    : 'bg-purple-500 text-white hover:bg-purple-600'
-                }`}
-              >
-                {nodeResult?.status === 'running' ? 'Running...' : 'Run and Preview'}
-              </button>
             </div>
           </div>
         )}
