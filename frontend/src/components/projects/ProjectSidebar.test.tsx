@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ProjectSidebar from './ProjectSidebar'
 import { usePipelineStore } from '../../store/pipelineStore'
+import { PROJECT_BROWSER_TRIGGER_SLOT_PX } from './projectLayout'
 
 const mockListPipelines = vi.fn()
 const mockSavePipeline = vi.fn()
@@ -23,11 +24,11 @@ function LocationProbe() {
   return <div data-testid="location">{location.pathname}</div>
 }
 
-function renderSidebar(initialPath = '/') {
+function renderSidebar(initialPath = '/', variant: 'docked' | 'overlay' = 'overlay') {
   return render(
     <MemoryRouter initialEntries={[initialPath]}>
       <div className="flex h-full">
-        <ProjectSidebar open onClose={() => {}} />
+        <ProjectSidebar open onClose={() => {}} variant={variant} />
         <Routes>
           <Route path="/" element={<LocationProbe />} />
           <Route path="/projects/:projectId" element={<LocationProbe />} />
@@ -156,5 +157,39 @@ describe('ProjectSidebar', () => {
     expect(window.confirm).toHaveBeenCalledWith('Delete "Warehouse"? This cannot be undone.')
     expect(mockDeletePipeline).toHaveBeenCalledWith('p1')
     expect(screen.getByTestId('location')).toHaveTextContent('/')
+  })
+
+  it('renders the sidebar header with shori offset to the right of the trigger area', async () => {
+    mockListPipelines.mockResolvedValueOnce([])
+
+    renderSidebar()
+
+    await waitFor(() => {
+      expect(screen.getByText('Projects')).toBeInTheDocument()
+    })
+
+    expect(screen.getByText('Shori').parentElement).toHaveStyle({ paddingLeft: `${PROJECT_BROWSER_TRIGGER_SLOT_PX}px` })
+  })
+
+  it('uses docked styling when rendered in docked mode', async () => {
+    mockListPipelines.mockResolvedValueOnce([])
+
+    renderSidebar('/', 'docked')
+
+    const sidebar = await screen.findByRole('complementary')
+    expect(sidebar).toHaveAttribute('data-variant', 'docked')
+    expect(sidebar.className).toContain('relative')
+    expect(sidebar.className).not.toContain('absolute inset-y-0 left-0')
+  })
+
+  it('uses slide-over styling when rendered in overlay mode', async () => {
+    mockListPipelines.mockResolvedValueOnce([])
+
+    renderSidebar('/', 'overlay')
+
+    const sidebar = await screen.findByRole('complementary')
+    expect(sidebar).toHaveAttribute('data-variant', 'overlay')
+    expect(sidebar.className).toContain('absolute inset-y-0 left-0')
+    expect(sidebar.className).toContain('transition-transform')
   })
 })

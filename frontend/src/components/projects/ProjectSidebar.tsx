@@ -4,6 +4,7 @@ import { deletePipeline, listPipelines, savePipeline, setPipelineStar } from '..
 import { createBlankPipelineDefinition } from '../../lib/pipelineDefinitions'
 import { usePipelineStore } from '../../store/pipelineStore'
 import type { ProjectSummary } from '../../types/pipeline'
+import { PROJECT_BROWSER_TRIGGER_SLOT_PX } from './projectLayout'
 
 function formatUpdatedAt(value: string): string {
   const parsed = new Date(value)
@@ -14,9 +15,14 @@ function formatUpdatedAt(value: string): string {
 interface ProjectSidebarProps {
   open: boolean
   onClose: () => void
+  variant?: 'docked' | 'overlay'
 }
 
-export default function ProjectSidebar({ open, onClose }: ProjectSidebarProps) {
+export default function ProjectSidebar({
+  open,
+  onClose,
+  variant = 'overlay',
+}: ProjectSidebarProps) {
   const projectListRevision = usePipelineStore((s) => s.projectListRevision)
   const confirmDiscardChanges = usePipelineStore((s) => s.confirmDiscardChanges)
   const markProjectCatalogChanged = usePipelineStore((s) => s.markProjectCatalogChanged)
@@ -113,20 +119,27 @@ export default function ProjectSidebar({ open, onClose }: ProjectSidebarProps) {
     markProjectCatalogChanged()
   }
 
+  const sidebarClassName = variant === 'docked'
+    ? 'relative flex h-full w-full min-w-0 flex-col border-r border-stone-200 bg-[#f6f1e8] shadow-[0_24px_80px_rgba(51,39,20,0.18)] md:shadow-none'
+    : `absolute inset-y-0 left-0 z-50 flex h-full w-80 max-w-[calc(100vw-1rem)] flex-col border-r border-stone-200 bg-[#f6f1e8] shadow-[0_24px_80px_rgba(51,39,20,0.18)] transition-transform duration-200 ${
+        open ? 'translate-x-0' : '-translate-x-[calc(100%+1rem)] pointer-events-none'
+      }`
+
   return (
     <aside
       id="project-browser"
       ref={rootRef}
       aria-hidden={!open}
-      className={`absolute inset-y-0 left-0 z-50 flex h-full w-80 max-w-[calc(100vw-1rem)] flex-col border-r border-stone-200 bg-[#f6f1e8] shadow-[0_24px_80px_rgba(51,39,20,0.18)] transition-transform duration-200 ${
-        open ? 'translate-x-0' : '-translate-x-[calc(100%+1rem)] pointer-events-none'
-      }`}
+      data-variant={variant}
+      className={sidebarClassName}
     >
-      <div className="border-b border-stone-200 px-5 py-5">
+      <div className="border-b border-stone-200 px-5 pb-5 pt-5">
         <Link to="/" className="block">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.28em] text-stone-500">Shori</div>
-          <h1 className="mt-2 font-serif text-2xl text-stone-900">Projects</h1>
-          <p className="mt-2 text-sm text-stone-600">
+          <div style={{ paddingLeft: `${PROJECT_BROWSER_TRIGGER_SLOT_PX}px` }}>
+            <div className="text-sm font-semibold uppercase tracking-[0.28em] text-stone-500">Shori</div>
+          </div>
+          <h1 className="mt-3 font-serif text-2xl text-stone-900">Projects</h1>
+          <p className="mt-2 max-w-[16rem] text-sm text-stone-600">
             Centralized local catalog for every pipeline project.
           </p>
         </Link>

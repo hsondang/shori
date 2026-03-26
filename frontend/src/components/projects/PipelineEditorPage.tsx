@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import FlowCanvas from '../flow/FlowCanvas'
 import NodeErrorDialog from '../flow/NodeErrorDialog'
-import Toolbar from '../toolbar/Toolbar'
 import NodeConfigPanel from '../panels/NodeConfigPanel'
 import DataPreviewPanel from '../panels/DataPreviewPanel'
 import { usePipelineStore } from '../../store/pipelineStore'
@@ -66,10 +65,9 @@ export default function PipelineEditorPage() {
   }
 
   return (
-    <div className="h-full flex flex-col">
-      <Toolbar />
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className="flex-1">
+    <div className="flex h-full min-w-0 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+        <div className="min-w-0 flex-1">
           <FlowCanvas />
         </div>
         <NodeConfigPanel />
