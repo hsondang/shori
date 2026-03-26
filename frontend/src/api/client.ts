@@ -123,6 +123,11 @@ export async function deletePipeline(id: string): Promise<void> {
   await api.delete(`/pipelines/${id}`)
 }
 
+export async function setPipelineStar(id: string, starred: boolean): Promise<{ id: string; starred: boolean }> {
+  const { data } = await api.patch(`/pipelines/${id}/star`, { starred })
+  return data
+}
+
 export async function testDbConnection(
   dbType: 'oracle' | 'postgres',
   config: DatabaseConnectionConfig

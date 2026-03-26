@@ -86,6 +86,7 @@ export interface PipelineDefinition {
 export interface ProjectSummary {
   id: string
   name: string
+  starred: boolean
   created_at: string
   updated_at: string
 }

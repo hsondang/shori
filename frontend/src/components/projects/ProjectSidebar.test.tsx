@@ -8,10 +8,14 @@ import { usePipelineStore } from '../../store/pipelineStore'
 
 const mockListPipelines = vi.fn()
 const mockSavePipeline = vi.fn()
+const mockDeletePipeline = vi.fn()
+const mockSetPipelineStar = vi.fn()
 
 vi.mock('../../api/client', () => ({
   listPipelines: (...args: unknown[]) => mockListPipelines(...args),
   savePipeline: (...args: unknown[]) => mockSavePipeline(...args),
+  deletePipeline: (...args: unknown[]) => mockDeletePipeline(...args),
+  setPipelineStar: (...args: unknown[]) => mockSetPipelineStar(...args),
 }))
 
 function LocationProbe() {
@@ -23,7 +27,7 @@ function renderSidebar(initialPath = '/') {
   return render(
     <MemoryRouter initialEntries={[initialPath]}>
       <div className="flex h-full">
-        <ProjectSidebar />
+        <ProjectSidebar open onClose={() => {}} />
         <Routes>
           <Route path="/" element={<LocationProbe />} />
           <Route path="/projects/:projectId" element={<LocationProbe />} />
@@ -42,15 +46,15 @@ describe('ProjectSidebar', () => {
 
   it('renders projects in the order returned by the API', async () => {
     mockListPipelines.mockResolvedValueOnce([
-      { id: 'p2', name: 'Beta', created_at: '2026-03-24T10:00:00Z', updated_at: '2026-03-24T10:00:00Z' },
-      { id: 'p1', name: 'Alpha', created_at: '2026-03-23T10:00:00Z', updated_at: '2026-03-23T10:00:00Z' },
+      { id: 'p2', name: 'Beta', starred: false, created_at: '2026-03-24T10:00:00Z', updated_at: '2026-03-24T10:00:00Z' },
+      { id: 'p1', name: 'Alpha', starred: false, created_at: '2026-03-23T10:00:00Z', updated_at: '2026-03-23T10:00:00Z' },
     ])
 
     const { container } = renderSidebar()
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /beta/i })).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: /alpha/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /open project beta/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /open project alpha/i })).toBeInTheDocument()
     })
 
     const buttons = [...container.querySelectorAll('aside button')]
@@ -64,12 +68,12 @@ describe('ProjectSidebar', () => {
   it('navigates to the selected project when clicked', async () => {
     const user = userEvent.setup()
     mockListPipelines.mockResolvedValueOnce([
-      { id: 'p1', name: 'Warehouse', created_at: '2026-03-24T10:00:00Z', updated_at: '2026-03-24T10:00:00Z' },
+      { id: 'p1', name: 'Warehouse', starred: false, created_at: '2026-03-24T10:00:00Z', updated_at: '2026-03-24T10:00:00Z' },
     ])
 
     renderSidebar()
 
-    await user.click(await screen.findByRole('button', { name: /warehouse/i }))
+    await user.click(await screen.findByRole('button', { name: /open project warehouse/i }))
 
     expect(screen.getByTestId('location')).toHaveTextContent('/projects/p1')
   })
@@ -97,7 +101,7 @@ describe('ProjectSidebar', () => {
   it('warns before switching projects when the current project has unsaved changes', async () => {
     const user = userEvent.setup()
     mockListPipelines.mockResolvedValueOnce([
-      { id: 'p2', name: 'Finance', created_at: '2026-03-24T10:00:00Z', updated_at: '2026-03-24T10:00:00Z' },
+      { id: 'p2', name: 'Finance', starred: false, created_at: '2026-03-24T10:00:00Z', updated_at: '2026-03-24T10:00:00Z' },
     ])
     act(() => {
       usePipelineStore.setState({
@@ -116,9 +120,41 @@ describe('ProjectSidebar', () => {
 
     renderSidebar('/projects/p1')
 
-    await user.click(await screen.findByRole('button', { name: /finance/i }))
+    await user.click(await screen.findByRole('button', { name: /open project finance/i }))
 
     expect(window.confirm).toHaveBeenCalledWith('You have unsaved changes. Discard them and open "Finance"?')
     expect(screen.getByTestId('location')).toHaveTextContent('/projects/p2')
+  })
+
+  it('toggles a project star from the more options menu', async () => {
+    const user = userEvent.setup()
+    mockListPipelines.mockResolvedValueOnce([
+      { id: 'p1', name: 'Warehouse', starred: false, created_at: '2026-03-24T10:00:00Z', updated_at: '2026-03-24T10:00:00Z' },
+    ])
+    mockSetPipelineStar.mockResolvedValueOnce({ id: 'p1', starred: true })
+
+    renderSidebar()
+
+    await user.click(await screen.findByRole('button', { name: /more options for warehouse/i }))
+    await user.click(screen.getByRole('button', { name: 'Star' }))
+
+    expect(mockSetPipelineStar).toHaveBeenCalledWith('p1', true)
+  })
+
+  it('deletes the active project and returns to the home route', async () => {
+    const user = userEvent.setup()
+    mockListPipelines.mockResolvedValueOnce([
+      { id: 'p1', name: 'Warehouse', starred: true, created_at: '2026-03-24T10:00:00Z', updated_at: '2026-03-24T10:00:00Z' },
+    ])
+    mockDeletePipeline.mockResolvedValueOnce(undefined)
+
+    renderSidebar('/projects/p1')
+
+    await user.click(await screen.findByRole('button', { name: /more options for warehouse/i }))
+    await user.click(screen.getByRole('button', { name: 'Delete' }))
+
+    expect(window.confirm).toHaveBeenCalledWith('Delete "Warehouse"? This cannot be undone.')
+    expect(mockDeletePipeline).toHaveBeenCalledWith('p1')
+    expect(screen.getByTestId('location')).toHaveTextContent('/')
   })
 })

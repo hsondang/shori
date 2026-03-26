@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from app.models.pipeline import PipelineDefinition, NodeDefinition, NodeType, Position
@@ -68,6 +70,7 @@ def test_list_all_multiple(store):
     assert items[0]["id"] == "p2"
     assert items[1]["id"] == "p1"
     assert items[0]["name"] == "Second"
+    assert items[0]["starred"] is False
     assert items[0]["created_at"]
     assert items[0]["updated_at"]
 
@@ -98,3 +101,69 @@ def test_delete(store):
 
 def test_delete_nonexistent(store):
     store.delete("does-not-exist")  # should not raise
+
+
+def test_update_star_reorders_projects(store):
+    store.save(_make_pipeline("p1", "First"))
+    store.save(_make_pipeline("p2", "Second"))
+
+    updated = store.update_star("p1", True)
+
+    assert updated is True
+    items = store.list_all()
+    assert items[0]["id"] == "p1"
+    assert items[0]["starred"] is True
+    assert items[1]["id"] == "p2"
+    assert items[1]["starred"] is False
+
+
+def test_update_star_returns_false_for_missing_project(store):
+    assert store.update_star("missing-project", True) is False
+
+
+def test_existing_database_is_migrated_to_include_starred(monkeypatch, tmp_path):
+    project_db_path = tmp_path / "projects.sqlite3"
+    conn = sqlite3.connect(project_db_path)
+    conn.execute(
+        """
+        CREATE TABLE projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            pipeline_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    pipeline = _make_pipeline()
+    conn.execute(
+        """
+        INSERT INTO projects (id, name, pipeline_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            pipeline.id,
+            pipeline.name,
+            pipeline.model_dump_json(indent=2),
+            "2026-03-01T00:00:00+00:00",
+            "2026-03-01T00:00:00+00:00",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    import app.storage.pipeline_store as pipeline_store_module
+
+    monkeypatch.setattr(pipeline_store_module, "PROJECT_DB_PATH", project_db_path)
+    migrated_store = PipelineStore()
+
+    items = migrated_store.list_all()
+    assert items == [
+        {
+            "id": "p1",
+            "name": "Test Pipeline",
+            "starred": False,
+            "created_at": "2026-03-01T00:00:00+00:00",
+            "updated_at": "2026-03-01T00:00:00+00:00",
+        }
+    ]

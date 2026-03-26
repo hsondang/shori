@@ -9,7 +9,7 @@ vi.mock('@xyflow/react', () => ({
 }))
 
 vi.mock('./components/projects/ProjectSidebar', () => ({
-  default: () => <aside>Sidebar</aside>,
+  default: ({ open }: { open: boolean }) => <aside data-testid="sidebar">{open ? 'Sidebar Open' : 'Sidebar Closed'}</aside>,
 }))
 
 vi.mock('./components/projects/ProjectHome', () => ({
@@ -28,7 +28,7 @@ describe('App routes', () => {
       </MemoryRouter>
     )
 
-    expect(screen.getByText('Sidebar')).toBeInTheDocument()
+    expect(screen.getByTestId('sidebar')).toHaveTextContent('Sidebar Open')
     expect(screen.getByText('Home View')).toBeInTheDocument()
   })
 
@@ -39,7 +39,8 @@ describe('App routes', () => {
       </MemoryRouter>
     )
 
-    expect(screen.getByText('Sidebar')).toBeInTheDocument()
+    expect(screen.getByTestId('sidebar')).toHaveTextContent('Sidebar Closed')
+    expect(screen.getByRole('button', { name: /projects/i })).toBeInTheDocument()
     expect(screen.getByText('Editor View')).toBeInTheDocument()
   })
 })
