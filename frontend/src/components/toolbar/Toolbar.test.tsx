@@ -42,7 +42,8 @@ describe('Toolbar', () => {
 
     expect(screen.getByText('Database Connections')).toBeInTheDocument()
     expect(screen.getByText('No saved database connections yet.')).toBeInTheDocument()
-    expect(within(dropdown as HTMLElement).getByRole('button', { name: 'Save' })).toBeInTheDocument()
+    expect(within(dropdown as HTMLElement).getByRole('button', { name: 'Add' })).toBeInTheDocument()
+    expect(screen.queryByLabelText(/connection name/i)).not.toBeInTheDocument()
   })
 
   it('adds a saved connection and renders it as a draggable preset', async () => {
@@ -51,10 +52,12 @@ describe('Toolbar', () => {
 
     await user.click(screen.getByRole('button', { name: 'Database Source' }))
     const dropdown = screen.getByTestId('database-source-dropdown')
-    await user.type(screen.getByLabelText(/connection name/i), 'Analytics Postgres')
+    await user.click(within(dropdown).getByRole('button', { name: 'Add' }))
+    const modal = screen.getByTestId('database-source-modal')
+    await user.type(within(modal).getByLabelText(/connection name/i), 'Analytics Postgres')
     await user.type(screen.getByPlaceholderText('Host'), 'localhost')
     await user.type(screen.getByPlaceholderText('Database'), 'analytics')
-    await user.click(within(dropdown).getByRole('button', { name: 'Save' }))
+    await user.click(within(modal).getByRole('button', { name: 'Save' }))
 
     const preset = screen.getByText('Analytics Postgres').closest('div[draggable="true"]')
     expect(preset).not.toBeNull()
@@ -80,17 +83,31 @@ describe('Toolbar', () => {
     render(<Toolbar />)
 
     await user.click(screen.getByRole('button', { name: 'Database Source' }))
-    const dropdown = screen.getByTestId('database-source-dropdown')
     await user.click(screen.getByRole('button', { name: 'Edit' }))
-    await user.clear(screen.getByLabelText(/connection name/i))
-    await user.type(screen.getByLabelText(/connection name/i), 'Warehouse Prod')
-    await user.click(within(dropdown).getByRole('button', { name: 'Save' }))
+    const modal = screen.getByTestId('database-source-modal')
+    await user.clear(within(modal).getByLabelText(/connection name/i))
+    await user.type(within(modal).getByLabelText(/connection name/i), 'Warehouse Prod')
+    await user.click(within(modal).getByRole('button', { name: 'Save' }))
 
     expect(usePipelineStore.getState().databaseConnections[0]).toEqual(
       expect.objectContaining({ name: 'Warehouse Prod' })
     )
 
     await user.click(screen.getByRole('button', { name: 'Delete' }))
+    expect(usePipelineStore.getState().databaseConnections).toEqual([])
+  })
+
+  it('discards modal changes without mutating saved connections', async () => {
+    const user = userEvent.setup()
+    render(<Toolbar />)
+
+    await user.click(screen.getByRole('button', { name: 'Database Source' }))
+    await user.click(screen.getByRole('button', { name: 'Add' }))
+    const modal = screen.getByTestId('database-source-modal')
+    await user.type(within(modal).getByLabelText(/connection name/i), 'Transient Connection')
+    await user.click(within(modal).getByRole('button', { name: 'Discard' }))
+
+    expect(screen.queryByTestId('database-source-modal')).not.toBeInTheDocument()
     expect(usePipelineStore.getState().databaseConnections).toEqual([])
   })
 })
