@@ -31,10 +31,14 @@ export default function App() {
         onClick={() => setIsProjectBrowserOpen((open) => !open)}
         aria-expanded={isProjectBrowserOpen}
         aria-controls="project-browser"
-        className="absolute left-4 top-4 z-[60] inline-flex items-center gap-2 rounded-full border border-stone-300 bg-white/95 px-3 py-2 text-sm font-medium text-stone-700 shadow-sm backdrop-blur transition hover:border-stone-400 hover:bg-white"
+        aria-label={isProjectBrowserOpen ? 'Close project browser' : 'Open project browser'}
+        className="fixed left-3 top-3 z-[70] inline-flex h-10 w-10 items-center justify-center rounded-xl border border-stone-300 bg-white/95 text-stone-700 shadow-sm backdrop-blur transition hover:border-stone-400 hover:bg-white"
       >
-        <span className="text-base leading-none">{isProjectBrowserOpen ? '←' : '☰'}</span>
-        <span>Projects</span>
+        <span className="flex flex-col gap-1">
+          <span className="block h-[1.5px] w-4 rounded-full bg-current" />
+          <span className="block h-[1.5px] w-4 rounded-full bg-current" />
+          <span className="block h-[1.5px] w-4 rounded-full bg-current" />
+        </span>
       </button>
 
       {isProjectBrowserOpen && isProjectRoute && (

@@ -40,7 +40,7 @@ describe('App routes', () => {
     )
 
     expect(screen.getByTestId('sidebar')).toHaveTextContent('Sidebar Closed')
-    expect(screen.getByRole('button', { name: /projects/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /open project browser/i })).toBeInTheDocument()
     expect(screen.getByText('Editor View')).toBeInTheDocument()
   })
 })
