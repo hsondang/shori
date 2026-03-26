@@ -83,6 +83,8 @@ describe('NodeConfigPanel', () => {
   it('shows SQL editing only for database nodes', () => {
     render(<NodeConfigPanel />)
 
+    expect(screen.getByTestId('node-config-panel')).toHaveAttribute('data-layout-state', 'collapsed')
+    expect(screen.getByTestId('node-config-panel')).toHaveStyle({ width: '320px' })
     expect(screen.getByText('Analytics Postgres')).toBeInTheDocument()
     expect(screen.getByText('SQL Query')).toBeInTheDocument()
     expect(screen.getByLabelText('sql-editor')).toHaveValue('SELECT 1')
@@ -100,7 +102,12 @@ describe('NodeConfigPanel', () => {
     render(<NodeConfigPanel />)
 
     await user.click(screen.getByRole('button', { name: 'Edit mode' }))
-    expect(screen.getByTestId('db-edit-overlay')).toBeInTheDocument()
+    expect(screen.getByTestId('node-config-panel')).toHaveAttribute('data-layout-state', 'expanded')
+    expect(screen.getByTestId('node-config-panel')).toHaveStyle({
+      width: '36vw',
+      minWidth: '28rem',
+      maxWidth: '44rem',
+    })
 
     act(() => {
       usePipelineStore.setState({
@@ -120,7 +127,7 @@ describe('NodeConfigPanel', () => {
       })
     })
 
-    expect(screen.queryByTestId('db-edit-overlay')).not.toBeInTheDocument()
+    expect(screen.getByTestId('node-config-panel')).toHaveAttribute('data-layout-state', 'collapsed')
   })
 
   it('executes the database node and loads preview data on success', async () => {
@@ -537,7 +544,12 @@ describe('NodeConfigPanel', () => {
     render(<NodeConfigPanel />)
 
     await user.click(screen.getByRole('button', { name: 'Edit mode' }))
-    expect(screen.getByTestId('transform-edit-overlay')).toBeInTheDocument()
+    expect(screen.getByTestId('node-config-panel')).toHaveAttribute('data-layout-state', 'expanded')
+    expect(screen.getByTestId('node-config-panel')).toHaveStyle({
+      width: '36vw',
+      minWidth: '28rem',
+      maxWidth: '44rem',
+    })
 
     act(() => {
       usePipelineStore.setState({
@@ -567,7 +579,7 @@ describe('NodeConfigPanel', () => {
       })
     })
 
-    expect(screen.queryByTestId('transform-edit-overlay')).not.toBeInTheDocument()
+    expect(screen.getByTestId('node-config-panel')).toHaveAttribute('data-layout-state', 'collapsed')
   })
 
   it('disables transform Run and Preview when SQL is blank', () => {

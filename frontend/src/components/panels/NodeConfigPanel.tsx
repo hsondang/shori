@@ -11,6 +11,12 @@ import type {
 } from '../../types/pipeline'
 import { getCsvPreprocessFingerprint } from '../../lib/csvPreprocessing'
 import { getConnectionSummary } from '../../lib/databaseConnections'
+import {
+  NODE_CONFIG_PANEL_EXPANDED_MAX_WIDTH,
+  NODE_CONFIG_PANEL_EXPANDED_MIN_WIDTH,
+  NODE_CONFIG_PANEL_EXPANDED_WIDTH,
+  NODE_CONFIG_PANEL_WIDTH_PX,
+} from '../projects/pipelineEditorLayout'
 
 export default function NodeConfigPanel() {
   const selectedNodeId = usePipelineStore((s) => s.selectedNodeId)
@@ -183,12 +189,20 @@ export default function NodeConfigPanel() {
     extraEditorContent?: ReactNode
     onExecute: () => void
   }) => {
-    const panelClassName = expanded
-      ? 'fixed bottom-0 right-0 top-[57px] z-50 flex w-full flex-col border-l border-gray-200 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.24)] md:w-1/2'
-      : 'flex h-full w-80 flex-col border-l border-gray-200 bg-white'
-
     return (
-      <div className={panelClassName} data-testid={expanded ? overlayTestId : undefined}>
+      <div
+        data-testid="node-config-panel"
+        data-layout-state={expanded ? 'expanded' : 'collapsed'}
+        data-panel-kind={overlayTestId}
+        className="flex min-h-0 shrink-0 flex-col overflow-hidden border-l border-gray-200 bg-white"
+        style={expanded
+          ? {
+            width: NODE_CONFIG_PANEL_EXPANDED_WIDTH,
+            minWidth: NODE_CONFIG_PANEL_EXPANDED_MIN_WIDTH,
+            maxWidth: NODE_CONFIG_PANEL_EXPANDED_MAX_WIDTH,
+          }
+          : { width: `${NODE_CONFIG_PANEL_WIDTH_PX}px` }}
+      >
         <div className="border-b border-gray-200 px-4 py-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -276,7 +290,12 @@ export default function NodeConfigPanel() {
 
   if (!node) {
     return (
-      <div className="w-80 border-l border-gray-200 bg-white p-4 flex items-center justify-center text-gray-400 text-sm">
+      <div
+        data-testid="node-config-panel"
+        data-layout-state="collapsed"
+        className="flex shrink-0 items-center justify-center border-l border-gray-200 bg-white p-4 text-sm text-gray-400"
+        style={{ width: `${NODE_CONFIG_PANEL_WIDTH_PX}px` }}
+      >
         Select a node to configure
       </div>
     )
@@ -359,7 +378,12 @@ export default function NodeConfigPanel() {
   }
 
   return (
-    <div className="w-80 border-l border-gray-200 bg-white overflow-y-auto">
+    <div
+      data-testid="node-config-panel"
+      data-layout-state="collapsed"
+      className="min-h-0 shrink-0 overflow-y-auto border-l border-gray-200 bg-white"
+      style={{ width: `${NODE_CONFIG_PANEL_WIDTH_PX}px` }}
+    >
       <div className="p-4 border-b border-gray-200">
         <div className="flex justify-between items-center mb-3">
           <h3 className="font-semibold text-sm text-gray-800">Node Config</h3>

@@ -27,7 +27,7 @@ export default function DataPreviewPanel() {
 
   if (previewLoading) {
     return (
-      <div className="h-48 border-t border-gray-200 bg-white flex items-center justify-center text-gray-400 text-sm">
+      <div className="flex h-full min-h-0 items-center justify-center bg-white text-sm text-gray-400">
         Loading preview...
       </div>
     )
@@ -35,7 +35,7 @@ export default function DataPreviewPanel() {
 
   if (previewError) {
     return (
-      <div className="h-48 border-t border-red-200 bg-red-50 flex items-center justify-center px-4 text-sm text-red-700">
+      <div className="flex h-full min-h-0 items-center justify-center bg-red-50 px-4 text-sm text-red-700">
         {previewError}
       </div>
     )
@@ -43,7 +43,7 @@ export default function DataPreviewPanel() {
 
   if (!previewData) {
     return (
-      <div className="h-48 border-t border-gray-200 bg-white flex items-center justify-center text-gray-400 text-sm">
+      <div className="flex h-full min-h-0 items-center justify-center bg-white text-sm text-gray-400">
         Click "Preview data" on a node to see its contents
       </div>
     )
@@ -52,7 +52,7 @@ export default function DataPreviewPanel() {
   if (previewData.kind === 'csv_text') {
     const isPreprocessed = previewData.csv_stage === 'preprocessed'
     return (
-      <div className="h-64 border-t border-gray-200 bg-white flex flex-col">
+      <div className="flex h-full min-h-0 flex-col bg-white">
         <div className="flex items-center justify-between px-4 py-2 border-b border-gray-100 bg-gray-50">
           <div className="text-sm text-gray-700 font-medium">
             <span className="font-mono text-blue-600">{filename || tableName || 'CSV Source'}</span>
@@ -102,7 +102,7 @@ export default function DataPreviewPanel() {
   const currentPage = Math.floor(previewData.offset / previewData.limit) + 1
 
   return (
-    <div className="h-64 border-t border-gray-200 bg-white flex flex-col">
+    <div className="flex h-full min-h-0 flex-col bg-white">
       <div className="flex items-center justify-between px-4 py-2 border-b border-gray-100 bg-gray-50">
         <div className="text-sm text-gray-700 font-medium">
           <span className="font-mono text-purple-600">{tableName}</span>

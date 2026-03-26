@@ -102,6 +102,16 @@ describe('DataPreviewPanel', () => {
     expect(screen.getByText('Bob')).toBeInTheDocument()
   })
 
+  it('uses parent-controlled height instead of fixed panel heights', () => {
+    seedStore(makeTablePreview())
+    const { container } = render(<DataPreviewPanel />)
+    const root = container.firstElementChild
+
+    expect(root).toHaveClass('h-full')
+    expect(root?.className).not.toContain('h-48')
+    expect(root?.className).not.toContain('h-64')
+  })
+
   it('renders null values with NULL text', () => {
     seedStore(makeTablePreview({ rows: [[1, null]] }))
     render(<DataPreviewPanel />)
