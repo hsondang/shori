@@ -68,15 +68,15 @@ export default function DataPreviewPanel() {
                 : 'Entire file fits in preview'}
           </div>
         </div>
-        <div className="flex-1 overflow-auto bg-stone-50 font-mono text-xs">
+        <div className="flex-1 overflow-auto bg-stone-50 font-mono text-xs" data-testid="csv-preview-scroll-region">
           {previewData.rows.length === 0 ? (
             <div className="px-4 py-3 text-gray-400">This CSV file is empty.</div>
           ) : (
-            <div className="min-w-full divide-y divide-stone-200">
+            <div className="min-w-max divide-y divide-stone-200">
               {previewData.rows.map((row, rowIndex) => (
-                <div key={rowIndex} className="flex gap-3 px-4 py-1.5 hover:bg-stone-100">
+                <div key={rowIndex} data-testid="csv-preview-row" className="flex gap-3 px-4 py-1.5 whitespace-nowrap hover:bg-stone-100">
                   <span className="w-10 shrink-0 text-right text-stone-400">{rowIndex + 1}</span>
-                  <div className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap">
+                  <div className="flex-1">
                     {row.map((cell, cellIndex) => (
                       <span key={`${rowIndex}-${cellIndex}`}>
                         <span className={csvCellColors[cellIndex % csvCellColors.length]}>

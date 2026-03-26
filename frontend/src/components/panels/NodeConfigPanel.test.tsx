@@ -86,11 +86,70 @@ describe('NodeConfigPanel', () => {
     expect(screen.getByText('Analytics Postgres')).toBeInTheDocument()
     expect(screen.getByText('SQL Query')).toBeInTheDocument()
     expect(screen.getByLabelText('sql-editor')).toHaveValue('SELECT 1')
+    expect(screen.getByRole('button', { name: 'Execute' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit mode' })).toBeInTheDocument()
 
     expect(screen.queryByText('Label')).not.toBeInTheDocument()
     expect(screen.queryByText('Table Name')).not.toBeInTheDocument()
     expect(screen.queryByText('Database Type')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /test connection/i })).not.toBeInTheDocument()
+  })
+
+  it('expands the database editor in edit mode and resets it when the selection changes', async () => {
+    const user = userEvent.setup()
+    render(<NodeConfigPanel />)
+
+    await user.click(screen.getByRole('button', { name: 'Edit mode' }))
+    expect(screen.getByTestId('db-edit-overlay')).toBeInTheDocument()
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'transform-node',
+            type: 'transform',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Transform',
+              tableName: 'transform_table',
+              config: { sql: 'select * from db_table' },
+            },
+          },
+        ],
+        selectedNodeId: 'transform-node',
+      })
+    })
+
+    expect(screen.queryByTestId('db-edit-overlay')).not.toBeInTheDocument()
+  })
+
+  it('executes the database node and loads preview data on success', async () => {
+    const user = userEvent.setup()
+    const result: NodeExecutionResult = {
+      node_id: 'db-node',
+      status: 'success',
+      row_count: 1,
+      column_count: 2,
+      columns: ['id', 'name'],
+      execution_time_ms: 5,
+    }
+    mockExecuteNode.mockResolvedValueOnce(result)
+    mockPreviewData.mockResolvedValueOnce(makePreview())
+
+    render(<NodeConfigPanel />)
+
+    await user.click(screen.getByRole('button', { name: 'Execute' }))
+
+    await waitFor(() => {
+      expect(mockExecuteNode).toHaveBeenCalledWith(expect.objectContaining({
+        id: 'db-node',
+        table_name: 'db_table',
+      }))
+      expect(mockPreviewData).toHaveBeenCalledWith('db_table', 0)
+    })
+
+    expect(usePipelineStore.getState().nodeResults['db-node']).toEqual(result)
+    expect(usePipelineStore.getState().previewData).toEqual(makePreview())
   })
 
   it('stages csv metadata edits and discards them without updating the store', async () => {
