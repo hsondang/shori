@@ -9,7 +9,7 @@ export default function ProjectHome() {
           Keep every pipeline project in one place.
         </h2>
         <p className="mt-4 text-base leading-7 text-stone-600">
-          Open a project from the left sidebar or create a new one to jump straight into the pipeline editor.
+          Open a project from the project browser or create a new one to jump straight into the pipeline editor.
         </p>
         <div className="mt-8 grid gap-3 text-sm text-stone-600 md:grid-cols-2">
           <div className="rounded-2xl bg-stone-50 p-4">

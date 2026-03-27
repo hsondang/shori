@@ -36,36 +36,38 @@ export default function DatabaseSourcePicker() {
   const updateDatabaseConnection = usePipelineStore((s) => s.updateDatabaseConnection)
   const deleteDatabaseConnection = usePipelineStore((s) => s.deleteDatabaseConnection)
   const [open, setOpen] = useState(false)
+  const [modalOpen, setModalOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState<SavedDatabaseConnectionInput>(makeSavedConnectionDraft())
   const [error, setError] = useState<string | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (!open) return
+    if (!open || modalOpen) return
 
     const handleClickOutside = (event: MouseEvent) => {
       if (!rootRef.current?.contains(event.target as Node)) {
         setOpen(false)
-        setEditingId(null)
-        setError(null)
+        resetForm()
       }
     }
 
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [open])
+  }, [modalOpen, open])
 
   const resetForm = () => {
     setEditingId(null)
     setDraft(makeSavedConnectionDraft())
     setError(null)
+    setModalOpen(false)
   }
 
   const startAdd = () => {
     setEditingId(null)
     setDraft(makeSavedConnectionDraft())
     setError(null)
+    setModalOpen(true)
   }
 
   const startEdit = (connection: SavedDatabaseConnection) => {
@@ -92,6 +94,7 @@ export default function DatabaseSourcePicker() {
           }
     )
     setError(null)
+    setModalOpen(true)
   }
 
   const updateDraft = (changes: Partial<SavedDatabaseConnectionInput>) => {
@@ -145,14 +148,14 @@ export default function DatabaseSourcePicker() {
     <div ref={rootRef} className="relative">
       <button
         type="button"
-        onClick={() => {
-          if (open) {
-            setOpen(false)
+          onClick={() => {
+            if (open) {
+              setOpen(false)
+              resetForm()
+              return
+            }
             resetForm()
-            return
-          }
-          startAdd()
-          setOpen(true)
+            setOpen(true)
         }}
         className="border rounded px-2 py-1 text-xs font-medium select-none bg-indigo-100 text-indigo-700 border-indigo-300 hover:bg-indigo-200"
       >
@@ -224,20 +227,40 @@ export default function DatabaseSourcePicker() {
             )}
           </div>
 
-          <div className="rounded border border-gray-200 p-3">
-            <div className="mb-2 flex items-center justify-between">
-              <h4 className="text-sm font-medium text-gray-800">
-                {editingId ? 'Edit Connection' : 'Add New Connection'}
-              </h4>
-              {(editingId || draft.name || databaseConnections.length > 0) && (
-                <button
-                  type="button"
-                  onClick={startAdd}
-                  className="text-xs text-gray-500 hover:text-gray-700"
-                >
-                  New
-                </button>
-              )}
+          <div className="border-t border-gray-200 pt-3">
+            <button
+              type="button"
+              onClick={startAdd}
+              className="w-full rounded-lg border border-dashed border-indigo-300 px-3 py-2 text-sm font-medium text-indigo-700 transition hover:border-indigo-400 hover:bg-indigo-50"
+            >
+              Add
+            </button>
+          </div>
+        </div>
+      )}
+
+      {modalOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-stone-950/30 px-4" data-testid="database-source-modal">
+          <button
+            type="button"
+            aria-label="Discard connection changes"
+            onClick={resetForm}
+            className="absolute inset-0 cursor-default"
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="database-connection-modal-title"
+            className="relative z-10 w-full max-w-lg rounded-3xl border border-stone-200 bg-white p-6 shadow-[0_30px_80px_rgba(15,23,42,0.24)]"
+          >
+            <div className="mb-5">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-stone-400">Database Source</div>
+              <h3 id="database-connection-modal-title" className="mt-2 text-xl font-semibold text-stone-900">
+                {editingId ? 'Edit connection' : 'Add a connection'}
+              </h3>
+              <p className="mt-2 text-sm text-stone-500">
+                Save reusable database connections here, then drag them onto the canvas when you need them.
+              </p>
             </div>
 
             <div className="space-y-3">
@@ -277,13 +300,13 @@ export default function DatabaseSourcePicker() {
 
               {error && <div className="text-xs text-red-600">{error}</div>}
 
-              <div className="flex justify-end gap-2">
+              <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
                   onClick={resetForm}
                   className="rounded border border-gray-300 px-3 py-1 text-sm text-gray-600 hover:bg-gray-50"
                 >
-                  Cancel
+                  Discard
                 </button>
                 <button
                   type="button"

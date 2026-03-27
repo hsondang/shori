@@ -102,6 +102,16 @@ describe('DataPreviewPanel', () => {
     expect(screen.getByText('Bob')).toBeInTheDocument()
   })
 
+  it('uses parent-controlled height instead of fixed panel heights', () => {
+    seedStore(makeTablePreview())
+    const { container } = render(<DataPreviewPanel />)
+    const root = container.firstElementChild
+
+    expect(root).toHaveClass('h-full')
+    expect(root?.className).not.toContain('h-48')
+    expect(root?.className).not.toContain('h-64')
+  })
+
   it('renders null values with NULL text', () => {
     seedStore(makeTablePreview({ rows: [[1, null]] }))
     render(<DataPreviewPanel />)
@@ -114,6 +124,15 @@ describe('DataPreviewPanel', () => {
     expect(screen.getByText(/Raw CSV preview/i)).toBeInTheDocument()
     expect(screen.getByText('orders.csv')).toBeInTheDocument()
     expect(screen.getByText('Alice')).toBeInTheDocument()
+  })
+
+  it('uses one shared horizontal scroll container for csv previews', () => {
+    seedStore(makeCsvPreview({ rows: [['id', 'name', 'notes'], ['1', 'Alice', 'long value']] }))
+    const { container } = render(<DataPreviewPanel />)
+
+    expect(screen.getAllByTestId('csv-preview-scroll-region')).toHaveLength(1)
+    expect(screen.getAllByTestId('csv-preview-row')[0].className).not.toContain('overflow-x-auto')
+    expect(container.querySelectorAll('.overflow-x-auto')).toHaveLength(0)
   })
 
   it('shows truncation text for csv previews', () => {

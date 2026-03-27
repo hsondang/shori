@@ -27,11 +27,20 @@ class PipelineStore:
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     pipeline_json TEXT NOT NULL,
+                    starred INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
                 """
             )
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(projects)").fetchall()
+            }
+            if "starred" not in columns:
+                conn.execute(
+                    "ALTER TABLE projects ADD COLUMN starred INTEGER NOT NULL DEFAULT 0"
+                )
 
     def save(self, pipeline: PipelineDefinition):
         now = _utc_now()
@@ -40,8 +49,8 @@ class PipelineStore:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO projects (id, name, pipeline_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO projects (id, name, pipeline_json, starred, created_at, updated_at)
+                VALUES (?, ?, ?, 0, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name,
                     pipeline_json = excluded.pipeline_json,
@@ -66,9 +75,9 @@ class PipelineStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, name, created_at, updated_at
+                SELECT id, name, starred, created_at, updated_at
                 FROM projects
-                ORDER BY updated_at DESC, id ASC
+                ORDER BY starred DESC, updated_at DESC, id ASC
                 """
             ).fetchall()
 
@@ -77,3 +86,11 @@ class PipelineStore:
     def delete(self, pipeline_id: str):
         with self._connect() as conn:
             conn.execute("DELETE FROM projects WHERE id = ?", (pipeline_id,))
+
+    def update_star(self, pipeline_id: str, starred: bool) -> bool:
+        with self._connect() as conn:
+            result = conn.execute(
+                "UPDATE projects SET starred = ? WHERE id = ?",
+                (1 if starred else 0, pipeline_id),
+            )
+        return result.rowcount > 0

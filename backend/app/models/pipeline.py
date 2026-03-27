@@ -97,8 +97,13 @@ class PipelineDefinition(BaseModel):
 class ProjectSummary(BaseModel):
     id: str
     name: str
+    starred: bool = False
     created_at: str
     updated_at: str
+
+
+class ProjectStarUpdate(BaseModel):
+    starred: bool
 
 
 class NodeExecutionResult(BaseModel):

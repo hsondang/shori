@@ -4,13 +4,20 @@ interface SqlEditorProps {
   value: string
   onChange: (value: string) => void
   upstreamTables: string[]
+  height?: string
+  containerClassName?: string
 }
 
-export default function SqlEditor({ value, onChange }: SqlEditorProps) {
+export default function SqlEditor({
+  value,
+  onChange,
+  height = '200px',
+  containerClassName = '',
+}: SqlEditorProps) {
   return (
-    <div className="border border-gray-300 rounded overflow-hidden">
+    <div className={`overflow-hidden rounded border border-gray-300 ${containerClassName}`.trim()}>
       <Editor
-        height="200px"
+        height={height}
         defaultLanguage="sql"
         value={value}
         onChange={(v) => onChange(v || '')}

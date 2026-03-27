@@ -17,6 +17,7 @@ async def test_create_and_list(client, pipeline_def):
     assert len(items) == 1
     assert items[0]["id"] == pipeline_def["id"]
     assert items[0]["name"] == pipeline_def["name"]
+    assert items[0]["starred"] is False
     assert items[0]["created_at"]
     assert items[0]["updated_at"]
 
@@ -91,3 +92,24 @@ async def test_delete_nonexistent(client):
     resp = await client.delete("/api/pipelines/does-not-exist")
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_update_project_star(client, pipeline_def):
+    await client.post("/api/pipelines", json=pipeline_def)
+
+    resp = await client.patch(
+        f"/api/pipelines/{pipeline_def['id']}/star",
+        json={"starred": True},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"id": pipeline_def["id"], "starred": True}
+
+    items = (await client.get("/api/pipelines")).json()
+    assert items[0]["starred"] is True
+
+
+@pytest.mark.asyncio
+async def test_update_project_star_not_found(client):
+    resp = await client.patch("/api/pipelines/missing/star", json={"starred": True})
+    assert resp.status_code == 404

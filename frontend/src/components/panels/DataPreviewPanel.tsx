@@ -27,7 +27,7 @@ export default function DataPreviewPanel() {
 
   if (previewLoading) {
     return (
-      <div className="h-48 border-t border-gray-200 bg-white flex items-center justify-center text-gray-400 text-sm">
+      <div className="flex h-full min-h-0 items-center justify-center bg-white text-sm text-gray-400">
         Loading preview...
       </div>
     )
@@ -35,7 +35,7 @@ export default function DataPreviewPanel() {
 
   if (previewError) {
     return (
-      <div className="h-48 border-t border-red-200 bg-red-50 flex items-center justify-center px-4 text-sm text-red-700">
+      <div className="flex h-full min-h-0 items-center justify-center bg-red-50 px-4 text-sm text-red-700">
         {previewError}
       </div>
     )
@@ -43,7 +43,7 @@ export default function DataPreviewPanel() {
 
   if (!previewData) {
     return (
-      <div className="h-48 border-t border-gray-200 bg-white flex items-center justify-center text-gray-400 text-sm">
+      <div className="flex h-full min-h-0 items-center justify-center bg-white text-sm text-gray-400">
         Click "Preview data" on a node to see its contents
       </div>
     )
@@ -52,7 +52,7 @@ export default function DataPreviewPanel() {
   if (previewData.kind === 'csv_text') {
     const isPreprocessed = previewData.csv_stage === 'preprocessed'
     return (
-      <div className="h-64 border-t border-gray-200 bg-white flex flex-col">
+      <div className="flex h-full min-h-0 flex-col bg-white">
         <div className="flex items-center justify-between px-4 py-2 border-b border-gray-100 bg-gray-50">
           <div className="text-sm text-gray-700 font-medium">
             <span className="font-mono text-blue-600">{filename || tableName || 'CSV Source'}</span>
@@ -68,15 +68,15 @@ export default function DataPreviewPanel() {
                 : 'Entire file fits in preview'}
           </div>
         </div>
-        <div className="flex-1 overflow-auto bg-stone-50 font-mono text-xs">
+        <div className="flex-1 overflow-auto bg-stone-50 font-mono text-xs" data-testid="csv-preview-scroll-region">
           {previewData.rows.length === 0 ? (
             <div className="px-4 py-3 text-gray-400">This CSV file is empty.</div>
           ) : (
-            <div className="min-w-full divide-y divide-stone-200">
+            <div className="min-w-max divide-y divide-stone-200">
               {previewData.rows.map((row, rowIndex) => (
-                <div key={rowIndex} className="flex gap-3 px-4 py-1.5 hover:bg-stone-100">
+                <div key={rowIndex} data-testid="csv-preview-row" className="flex gap-3 px-4 py-1.5 whitespace-nowrap hover:bg-stone-100">
                   <span className="w-10 shrink-0 text-right text-stone-400">{rowIndex + 1}</span>
-                  <div className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap">
+                  <div className="flex-1">
                     {row.map((cell, cellIndex) => (
                       <span key={`${rowIndex}-${cellIndex}`}>
                         <span className={csvCellColors[cellIndex % csvCellColors.length]}>
@@ -102,7 +102,7 @@ export default function DataPreviewPanel() {
   const currentPage = Math.floor(previewData.offset / previewData.limit) + 1
 
   return (
-    <div className="h-64 border-t border-gray-200 bg-white flex flex-col">
+    <div className="flex h-full min-h-0 flex-col bg-white">
       <div className="flex items-center justify-between px-4 py-2 border-b border-gray-100 bg-gray-50">
         <div className="text-sm text-gray-700 font-medium">
           <span className="font-mono text-purple-600">{tableName}</span>
