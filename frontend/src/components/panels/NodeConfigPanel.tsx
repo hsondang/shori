@@ -502,62 +502,72 @@ export default function NodeConfigPanel() {
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label className="block text-xs text-gray-500">Preprocessing</label>
-                <label className="flex items-center gap-2 text-xs text-gray-500">
-                  <input
-                    type="checkbox"
-                    checked={csvPreprocessing.enabled}
-                    onChange={(e) => updateCsvConfig({
-                      preprocessing: {
-                        ...csvPreprocessing,
-                        enabled: e.target.checked,
-                      },
-                    })}
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={csvPreprocessing.enabled}
+                  aria-label="Enable preprocessing"
+                  onClick={() => updateCsvConfig({
+                    preprocessing: {
+                      ...csvPreprocessing,
+                      enabled: !csvPreprocessing.enabled,
+                    },
+                  })}
+                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full px-0.5 transition ${
+                    csvPreprocessing.enabled ? 'bg-blue-500' : 'bg-gray-300'
+                  }`}
+                >
+                  <span
+                    className={`h-5 w-5 rounded-full bg-white shadow-sm transition ${
+                      csvPreprocessing.enabled ? 'translate-x-5' : 'translate-x-0'
+                    }`}
                   />
-                  Enable
-                </label>
+                </button>
               </div>
-              <p className="mb-3 text-xs text-gray-500">
-                When enabled, the script receives the uploaded CSV path as the first argument and via <code>SHORI_INPUT_CSV</code>. It must emit a cleaned CSV to stdout.
-              </p>
-              <div className="space-y-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Runtime</label>
-                  <select
-                    value={csvPreprocessing.runtime}
-                    onChange={(e) => updateCsvConfig({
-                      preprocessing: {
-                        ...csvPreprocessing,
-                        runtime: e.target.value as CsvPreprocessingConfig['runtime'],
-                      },
-                    })}
-                    disabled={!csvPreprocessing.enabled}
-                    className="w-full border border-gray-300 rounded px-2 py-1 text-sm disabled:bg-gray-100 disabled:text-gray-400"
-                  >
-                    <option value="python">Python</option>
-                    <option value="bash">Bash</option>
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor={preprocessingEditorId} className="block text-xs text-gray-500 mb-1">Script</label>
-                  <textarea
-                    id={preprocessingEditorId}
-                    value={csvPreprocessing.script}
-                    onChange={(e) => updateCsvConfig({
-                      preprocessing: {
-                        ...csvPreprocessing,
-                        script: e.target.value,
-                      },
-                    })}
-                    disabled={!csvPreprocessing.enabled}
-                    rows={8}
-                    spellCheck={false}
-                    className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm font-mono disabled:bg-gray-100 disabled:text-gray-400"
-                    placeholder={csvPreprocessing.runtime === 'bash'
-                      ? 'tail -n +3 "$1"'
-                      : 'import sys\nfrom pathlib import Path\nlines = Path(sys.argv[1]).read_text().splitlines()[2:]\nsys.stdout.write("\\n".join(lines))'}
-                  />
-                </div>
-              </div>
+              {csvPreprocessing.enabled && (
+                <>
+                  <p className="mb-3 text-xs text-gray-500">
+                    When enabled, the script receives the uploaded CSV path as the first argument and via <code>SHORI_INPUT_CSV</code>. It must emit a cleaned CSV to stdout.
+                  </p>
+                  <div className="space-y-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-1">Runtime</label>
+                      <select
+                        value={csvPreprocessing.runtime}
+                        onChange={(e) => updateCsvConfig({
+                          preprocessing: {
+                            ...csvPreprocessing,
+                            runtime: e.target.value as CsvPreprocessingConfig['runtime'],
+                          },
+                        })}
+                        className="w-full border border-gray-300 rounded px-2 py-1 text-sm"
+                      >
+                        <option value="python">Python</option>
+                        <option value="bash">Bash</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor={preprocessingEditorId} className="block text-xs text-gray-500 mb-1">Script</label>
+                      <textarea
+                        id={preprocessingEditorId}
+                        value={csvPreprocessing.script}
+                        onChange={(e) => updateCsvConfig({
+                          preprocessing: {
+                            ...csvPreprocessing,
+                            script: e.target.value,
+                          },
+                        })}
+                        rows={8}
+                        spellCheck={false}
+                        className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm font-mono"
+                        placeholder={csvPreprocessing.runtime === 'bash'
+                          ? 'tail -n +3 "$1"'
+                          : 'import sys\nfrom pathlib import Path\nlines = Path(sys.argv[1]).read_text().splitlines()[2:]\nsys.stdout.write("\\n".join(lines))'}
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
 
             <div>

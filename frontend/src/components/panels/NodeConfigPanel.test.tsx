@@ -261,6 +261,82 @@ describe('NodeConfigPanel', () => {
     expect(screen.getByRole('button', { name: 'Load data' })).toBeDisabled()
   })
 
+  it('hides the preprocessing section until the toggle is enabled', async () => {
+    const user = userEvent.setup()
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'csv-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders CSV',
+              tableName: 'orders_table',
+              config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+            },
+          },
+        ],
+        selectedNodeId: 'csv-node',
+      })
+    })
+
+    render(<NodeConfigPanel />)
+
+    expect(screen.getByRole('switch', { name: 'Enable preprocessing' })).toHaveAttribute('aria-checked', 'false')
+    expect(screen.queryByLabelText('Script')).not.toBeInTheDocument()
+    expect(screen.queryByText(/SHORI_INPUT_CSV/i)).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('switch', { name: 'Enable preprocessing' }))
+
+    expect(screen.getByRole('switch', { name: 'Enable preprocessing' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByLabelText('Script')).toBeInTheDocument()
+    expect(screen.getByText(/SHORI_INPUT_CSV/i)).toBeInTheDocument()
+  })
+
+  it('preserves preprocessing values when toggled off and on again', async () => {
+    const user = userEvent.setup()
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'csv-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders CSV',
+              tableName: 'orders_table',
+              config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+            },
+          },
+        ],
+        selectedNodeId: 'csv-node',
+      })
+    })
+
+    render(<NodeConfigPanel />)
+
+    const toggle = screen.getByRole('switch', { name: 'Enable preprocessing' })
+    await user.click(toggle)
+    await user.selectOptions(screen.getByRole('combobox'), 'bash')
+    await user.type(screen.getByLabelText('Script'), 'tail -n +3 "$1"')
+
+    expect(screen.getByRole('combobox')).toHaveValue('bash')
+    expect(screen.getByLabelText('Script')).toHaveValue('tail -n +3 "$1"')
+
+    await user.click(screen.getByRole('switch', { name: 'Enable preprocessing' }))
+
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Script')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('switch', { name: 'Enable preprocessing' }))
+
+    expect(screen.getByRole('combobox')).toHaveValue('bash')
+    expect(screen.getByLabelText('Script')).toHaveValue('tail -n +3 "$1"')
+  })
+
   it('previews the raw csv without executing the node', async () => {
     const user = userEvent.setup()
     mockPreviewCsvSource.mockResolvedValueOnce({
@@ -425,10 +501,11 @@ describe('NodeConfigPanel', () => {
 
     render(<NodeConfigPanel />)
 
-    await user.click(screen.getByRole('checkbox'))
+    await user.click(screen.getByRole('switch', { name: 'Enable preprocessing' }))
 
     expect(screen.getByRole('button', { name: 'Load data' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Preprocess' })).toBeDisabled()
+    expect(screen.getByLabelText('Script')).toBeInTheDocument()
     expect(screen.getByText(/Add a preprocessing script/i)).toBeInTheDocument()
   })
 
