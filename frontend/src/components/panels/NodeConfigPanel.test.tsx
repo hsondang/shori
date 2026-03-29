@@ -15,8 +15,18 @@ const mockDeleteTable = vi.fn((..._args: any[]) => Promise.resolve({ deleted: tr
 const mockDeletePreprocessedCsvArtifact = vi.fn((..._args: any[]) => Promise.resolve({ deleted: true }))
 
 vi.mock('@monaco-editor/react', () => ({
-  default: ({ value, onChange }: { value: string; onChange?: (value: string) => void }) => (
-    <textarea aria-label="sql-editor" value={value} onChange={(event) => onChange?.(event.target.value)} />
+  default: ({
+    value,
+    onChange,
+    height,
+  }: {
+    value: string
+    onChange?: (value: string) => void
+    height?: string
+  }) => (
+    <div data-testid="sql-editor-shell" data-height={height}>
+      <textarea aria-label="sql-editor" value={value} onChange={(event) => onChange?.(event.target.value)} />
+    </div>
   ),
 }))
 
@@ -95,6 +105,8 @@ describe('NodeConfigPanel', () => {
     expect(screen.queryByText('Table Name')).not.toBeInTheDocument()
     expect(screen.queryByText('Database Type')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /test connection/i })).not.toBeInTheDocument()
+    expect(screen.getByTestId('sql-editor-shell')).toHaveAttribute('data-height', '100%')
+    expect(screen.getByTestId('sql-editor-shell').parentElement).toHaveClass('h-full')
   })
 
   it('expands the database editor in edit mode and resets it when the selection changes', async () => {
@@ -108,6 +120,8 @@ describe('NodeConfigPanel', () => {
       minWidth: '28rem',
       maxWidth: '44rem',
     })
+    expect(screen.getByTestId('sql-editor-shell')).toHaveAttribute('data-height', '100%')
+    expect(screen.getByTestId('sql-editor-shell').parentElement).toHaveClass('h-full')
 
     act(() => {
       usePipelineStore.setState({
@@ -591,6 +605,8 @@ describe('NodeConfigPanel', () => {
     expect(screen.getByRole('button', { name: 'Edit mode' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Run and Preview' })).toBeEnabled()
     expect(screen.getByText(/Missing upstream tables will prompt before running dependencies/i)).toBeInTheDocument()
+    expect(screen.getByTestId('sql-editor-shell')).toHaveAttribute('data-height', '100%')
+    expect(screen.getByTestId('sql-editor-shell').parentElement).toHaveClass('h-full')
 
     await user.click(screen.getByRole('button', { name: 'Run and Preview' }))
 
@@ -627,6 +643,8 @@ describe('NodeConfigPanel', () => {
       minWidth: '28rem',
       maxWidth: '44rem',
     })
+    expect(screen.getByTestId('sql-editor-shell')).toHaveAttribute('data-height', '100%')
+    expect(screen.getByTestId('sql-editor-shell').parentElement).toHaveClass('h-full')
 
     act(() => {
       usePipelineStore.setState({

@@ -263,8 +263,8 @@ export default function NodeConfigPanel() {
               value={queryValue}
               onChange={onQueryChange}
               upstreamTables={availableUpstreamTables}
-              height={expanded ? '100%' : '240px'}
-              containerClassName={expanded ? 'h-full' : ''}
+              height="100%"
+              containerClassName="h-full"
             />
           </div>
         </div>
