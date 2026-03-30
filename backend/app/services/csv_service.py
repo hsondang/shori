@@ -1,11 +1,13 @@
 import csv
 import hashlib
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,7 +21,9 @@ from app.config import UPLOAD_DIR
 PREPROCESS_TIMEOUT_SECONDS = 60
 CSV_PREVIEW_LIMIT = 100
 CSV_PREVIEW_SAMPLE_SIZE = 4096
+CSV_PREVIEW_SAMPLE_ROWS = 25
 CSV_PREVIEW_ENCODINGS = ("utf-8-sig", "utf-8", "cp1252", "iso-8859-1")
+CSV_PREVIEW_DELIMITERS = (",", ";", "\t", "|")
 
 
 @dataclass
@@ -202,12 +206,7 @@ def _read_preview_rows(path: Path, limit: int) -> tuple[list[list[str]], bool]:
         try:
             with path.open("r", encoding=encoding, newline="") as handle:
                 sample = handle.read(CSV_PREVIEW_SAMPLE_SIZE)
-                dialects: list[type[csv.Dialect] | csv.Dialect] = [csv.excel]
-
-                try:
-                    dialects.insert(0, csv.Sniffer().sniff(sample))
-                except csv.Error:
-                    pass
+                dialects = _rank_preview_dialects(sample)
 
                 for dialect in dialects:
                     try:
@@ -242,6 +241,92 @@ def _collect_preview_rows(
             break
         rows.append(row)
     return rows, truncated
+
+
+def _rank_preview_dialects(sample: str) -> list[csv.Dialect]:
+    candidates: list[str] = []
+    seen_delimiters: set[str] = set()
+
+    sniffed_delimiter = _sniff_preview_delimiter(sample)
+    if sniffed_delimiter is not None:
+        candidates.append(sniffed_delimiter)
+        seen_delimiters.add(sniffed_delimiter)
+
+    for delimiter in CSV_PREVIEW_DELIMITERS:
+        if delimiter in seen_delimiters:
+            continue
+        candidates.append(delimiter)
+
+    scores = {delimiter: _score_preview_delimiter(sample, delimiter) for delimiter in candidates}
+    ranked = sorted(
+        enumerate(candidates),
+        key=lambda item: (scores[item[1]], -item[0]),
+        reverse=True,
+    )
+
+    ordered_delimiters = [candidates[index] for index, _ in ranked]
+    best_score = scores[ordered_delimiters[0]]
+    if best_score == (0, 0, 0):
+        ordered_delimiters = list(CSV_PREVIEW_DELIMITERS)
+
+    return [_build_preview_dialect(delimiter) for delimiter in ordered_delimiters]
+
+
+def _sniff_preview_delimiter(sample: str) -> str | None:
+    if not sample:
+        return None
+
+    try:
+        sniffed = csv.Sniffer().sniff(sample, delimiters="".join(CSV_PREVIEW_DELIMITERS))
+    except csv.Error:
+        return None
+
+    delimiter = getattr(sniffed, "delimiter", None)
+    if delimiter not in CSV_PREVIEW_DELIMITERS:
+        return None
+    return delimiter
+
+
+def _score_preview_delimiter(sample: str, delimiter: str) -> tuple[int, int, int]:
+    if not sample:
+        return (0, 0, 0)
+
+    try:
+        rows, _ = _collect_preview_rows(
+            io.StringIO(sample),
+            _build_preview_dialect(delimiter),
+            CSV_PREVIEW_SAMPLE_ROWS,
+        )
+    except (csv.Error, ValueError):
+        return (0, 0, 0)
+
+    widths = [len(row) for row in rows if any(cell != "" for cell in row)]
+    multi_column_widths = [width for width in widths if width > 1]
+    if not multi_column_widths:
+        return (0, 0, 0)
+
+    width_counts = Counter(multi_column_widths)
+    dominant_width, dominant_count = max(
+        width_counts.items(),
+        key=lambda item: (item[1], item[0]),
+    )
+    return (dominant_count, len(multi_column_widths), dominant_width)
+
+
+def _build_preview_dialect(delimiter: str) -> csv.Dialect:
+    return type(
+        "PreviewDialect",
+        (csv.Dialect,),
+        {
+            "delimiter": delimiter,
+            "quotechar": '"',
+            "doublequote": True,
+            "escapechar": None,
+            "skipinitialspace": False,
+            "lineterminator": "\r\n",
+            "quoting": csv.QUOTE_MINIMAL,
+        },
+    )()
 
 
 def _materialization_file_path(config: Mapping[str, object]) -> str:

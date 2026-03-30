@@ -36,6 +36,27 @@ async def test_csv_source_preview_returns_first_rows(client, office365_csv_file)
 
 
 @pytest.mark.asyncio
+async def test_csv_source_preview_handles_excel_style_commas_and_notes(client, excel_style_csv_file):
+    resp = await client.post("/api/data/preview/csv-source", json={"file_path": excel_style_csv_file, "limit": 20})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["rows"] == [
+        ["", "MONTHLY DATA ALLOCATION", "", ""],
+        ["Notes", "Synthetic spreadsheet-style export for CSV preview regression testing", "", ""],
+        ["", "", "", ""],
+        ["", "", "", ""],
+        ["Employee ID", "Agent Name", "User", "Quota"],
+        ["EMP001", "Agent One", "user.one", " 1,120   "],
+        ["EMP002", "Agent Two", "user.two", " 1,120   "],
+        ["EMP003", "Agent Three", "user.three", " 770   "],
+        ["EMP004", "Agent Four", "user.four", " 770   "],
+        ["", "", "", " 3,780   "],
+    ]
+    assert data["truncated"] is False
+
+
+@pytest.mark.asyncio
 async def test_preprocessed_csv_source_preview_returns_reviewed_rows(client, office365_csv_file):
     resp = await client.post(
         "/api/data/preview/csv-source/preprocessed",

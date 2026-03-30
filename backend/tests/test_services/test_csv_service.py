@@ -32,6 +32,24 @@ def test_preview_csv_text_falls_back_to_legacy_csv_encodings(tmp_path):
     ]
 
 
+def test_preview_csv_text_handles_excel_style_commas_and_notes(excel_style_csv_file):
+    preview = csv_service.preview_csv_text(excel_style_csv_file, limit=20)
+
+    assert preview["rows"] == [
+        ["", "MONTHLY DATA ALLOCATION", "", ""],
+        ["Notes", "Synthetic spreadsheet-style export for CSV preview regression testing", "", ""],
+        ["", "", "", ""],
+        ["", "", "", ""],
+        ["Employee ID", "Agent Name", "User", "Quota"],
+        ["EMP001", "Agent One", "user.one", " 1,120   "],
+        ["EMP002", "Agent Two", "user.two", " 1,120   "],
+        ["EMP003", "Agent Three", "user.three", " 770   "],
+        ["EMP004", "Agent Four", "user.four", " 770   "],
+        ["", "", "", " 3,780   "],
+    ]
+    assert all(len(row) == 4 for row in preview["rows"])
+
+
 def test_preview_preprocessed_csv_text_stores_artifact(csv_artifact_store, office365_csv_file):
     preprocessing = {
         "enabled": True,

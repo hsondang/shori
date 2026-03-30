@@ -100,6 +100,26 @@ def office365_csv_file(tmp_path) -> str:
 
 
 @pytest.fixture
+def excel_style_csv_file(tmp_path) -> str:
+    path = tmp_path / "excel-style.csv"
+    path.write_bytes(
+        (
+            "\ufeff,MONTHLY DATA ALLOCATION,,\r\n"
+            "Notes,Synthetic spreadsheet-style export for CSV preview regression testing,,\r\n"
+            ",,,\r\n"
+            ",,,\r\n"
+            "Employee ID,Agent Name,User,Quota\r\n"
+            "EMP001,Agent One,user.one,\" 1,120   \"\r\n"
+            "EMP002,Agent Two,user.two,\" 1,120   \"\r\n"
+            "EMP003,Agent Three,user.three, 770   \r\n"
+            "EMP004,Agent Four,user.four, 770   \r\n"
+            ",,,\" 3,780   \"\r\n"
+        ).encode("utf-8")
+    )
+    return str(path)
+
+
+@pytest.fixture
 def pipeline_def(sample_csv_file):
     """A minimal valid pipeline definition dict (one CSV_SOURCE node, no edges)."""
     return {
