@@ -76,6 +76,8 @@ class NodeDefinition(BaseModel):
     type: NodeType
     table_name: str
     label: str
+    auto_label: Optional[str] = None
+    label_mode: Optional[Literal["auto", "custom"]] = None
     position: Position
     config: dict
 

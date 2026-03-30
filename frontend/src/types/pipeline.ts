@@ -1,6 +1,7 @@
 export type NodeType = 'csv_source' | 'db_source' | 'transform' | 'export'
 export type DbType = 'oracle' | 'postgres'
 export type NodeStatus = 'idle' | 'running' | 'success' | 'error'
+export type NodeLabelMode = 'auto' | 'custom'
 
 export interface PostgresConnectionConfig {
   host: string
@@ -73,6 +74,8 @@ export interface PipelineDefinition {
     type: NodeType
     table_name: string
     label: string
+    auto_label?: string
+    label_mode?: NodeLabelMode
     position: { x: number; y: number }
     config: Record<string, unknown>
   }>
@@ -111,3 +114,23 @@ export interface CsvTextPreviewData {
 }
 
 export type DataPreview = TablePreviewData | CsvTextPreviewData
+
+export interface MaterializedPreviewTab {
+  nodeId: string
+  tableNameAtLoad: string
+  data: TablePreviewData | null
+  loading: boolean
+  error: string | null
+  isStale: boolean
+}
+
+export interface TransientPreviewState {
+  nodeId: string | null
+  data: CsvTextPreviewData | null
+  loading: boolean
+  error: string | null
+}
+
+export type ActivePreviewTarget =
+  | { kind: 'tab'; nodeId: string }
+  | { kind: 'transient'; nodeId: string }

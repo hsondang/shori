@@ -10,14 +10,19 @@ import {
   addEdge,
 } from '@xyflow/react'
 import type {
+  ActivePreviewTarget,
   CsvPreprocessingConfig,
   CsvSourceConfig,
+  CsvTextPreviewData,
+  MaterializedPreviewTab,
+  NodeLabelMode,
   NodeType,
   NodeExecutionResult,
-  DataPreview,
   PipelineDefinition,
   SavedDatabaseConnection,
   SavedDatabaseConnectionInput,
+  TablePreviewData,
+  TransientPreviewState,
 } from '../types/pipeline'
 import * as api from '../api/client'
 import { getCsvPreprocessFingerprint } from '../lib/csvPreprocessing'
@@ -55,11 +60,12 @@ interface PipelineState {
   closeNodeError: () => void
 
   // Data preview
-  previewData: DataPreview | null
-  previewNodeId: string | null
-  previewLoading: boolean
-  previewError: string | null
+  previewTabsByNodeId: Record<string, MaterializedPreviewTab>
+  previewTabOrder: string[]
+  activePreviewTarget: ActivePreviewTarget | null
+  transientPreview: TransientPreviewState
   csvPreprocessArtifacts: Record<string, string>
+  selectPreviewTab: (nodeId: string) => void
 
   // Actions
   addNode: (type: NodeType, position: { x: number; y: number }) => void
@@ -74,7 +80,7 @@ interface PipelineState {
   runTransformPreview: (nodeId: string) => Promise<void>
   loadCsvPreview: (nodeId: string, filePath: string) => Promise<void>
   loadPreprocessedCsvPreview: (nodeId: string, filePath: string, preprocessing: CsvPreprocessingConfig) => Promise<void>
-  loadTablePreview: (nodeId: string, tableName: string, offset?: number) => Promise<void>
+  loadTablePreview: (nodeId: string, tableName: string, offset?: number, options?: { forceReload?: boolean }) => Promise<void>
   savePipeline: () => Promise<void>
   loadPipeline: (id: string) => Promise<void>
   newPipeline: () => void
@@ -116,12 +122,90 @@ function defaultConfig(type: NodeType): Record<string, unknown> {
   }
 }
 
+function defaultAutoLabel(type: NodeType): string {
+  return defaultLabel(type)
+}
+
+function deriveLabelMode(label: string, autoLabel: string): NodeLabelMode {
+  return label === autoLabel ? 'auto' : 'custom'
+}
+
+function inferLegacyLabelMetadata(type: NodeType, label: string) {
+  if (type === 'db_source') {
+    return {
+      autoLabel: label || defaultAutoLabel(type),
+      labelMode: 'auto' as const,
+    }
+  }
+
+  const autoLabel = defaultAutoLabel(type)
+  return {
+    autoLabel,
+    labelMode: deriveLabelMode(label, autoLabel),
+  }
+}
+
+function getNodeLabelMetadata(node: Node): { label: string; autoLabel: string; labelMode: NodeLabelMode } {
+  const data = (node.data as Record<string, unknown> | undefined) ?? {}
+  const label = typeof data.label === 'string' ? data.label : ''
+  const autoLabel = typeof data.autoLabel === 'string' ? data.autoLabel : null
+  const labelMode = data.labelMode === 'custom' || data.labelMode === 'auto'
+    ? data.labelMode
+    : null
+
+  if (autoLabel && labelMode) {
+    return { label, autoLabel, labelMode }
+  }
+
+  const inferred = inferLegacyLabelMetadata(node.type as NodeType, label)
+  return {
+    label,
+    autoLabel: autoLabel ?? inferred.autoLabel,
+    labelMode: labelMode ?? inferred.labelMode,
+  }
+}
+
+function normalizeHydratedNode(nodeDef: PipelineDefinition['nodes'][number]): Node {
+  const label = nodeDef.label
+  const inferred = inferLegacyLabelMetadata(nodeDef.type, label)
+
+  return {
+    id: nodeDef.id,
+    type: nodeDef.type,
+    position: nodeDef.position,
+    data: {
+      label,
+      autoLabel: nodeDef.auto_label ?? inferred.autoLabel,
+      labelMode: nodeDef.label_mode ?? inferred.labelMode,
+      tableName: nodeDef.table_name,
+      config: nodeDef.config,
+    },
+  }
+}
+
+function getFallbackActivePreviewTarget(previewTabOrder: string[]): ActivePreviewTarget | null {
+  const nodeId = previewTabOrder[previewTabOrder.length - 1]
+  return nodeId ? { kind: 'tab', nodeId } : null
+}
+
+function getEmptyTransientPreview(): TransientPreviewState {
+  return {
+    nodeId: null,
+    data: null,
+    loading: false,
+    error: null,
+  }
+}
+
 function serializeNode(node: Node): PipelineDefinition['nodes'][number] {
+  const { autoLabel, labelMode } = getNodeLabelMetadata(node)
   return {
     id: node.id,
     type: node.type as NodeType,
     table_name: (node.data as Record<string, unknown>).tableName as string,
     label: (node.data as Record<string, unknown>).label as string,
+    auto_label: autoLabel,
+    label_mode: labelMode,
     position: node.position,
     config: (node.data as Record<string, unknown>).config as Record<string, unknown>,
   }
@@ -138,16 +222,7 @@ function buildPipelineDefinitionFromState(state: Pick<PipelineState, 'nodes' | '
 }
 
 function hydratePipelineState(pipeline: PipelineDefinition) {
-  const nodes: Node[] = pipeline.nodes.map((n) => ({
-    id: n.id,
-    type: n.type,
-    position: n.position,
-    data: {
-      label: n.label,
-      tableName: n.table_name,
-      config: n.config,
-    },
-  }))
+  const nodes: Node[] = pipeline.nodes.map(normalizeHydratedNode)
   const edges: Edge[] = pipeline.edges.map((e) => ({
     id: e.id,
     source: e.source,
@@ -162,10 +237,10 @@ function hydratePipelineState(pipeline: PipelineDefinition) {
     nodeResults: {},
     errorDialogNodeId: null,
     selectedNodeId: null,
-    previewData: null,
-    previewNodeId: null,
-    previewLoading: false,
-    previewError: null,
+    previewTabsByNodeId: {},
+    previewTabOrder: [],
+    activePreviewTarget: null,
+    transientPreview: getEmptyTransientPreview(),
     csvPreprocessArtifacts: {},
     savedPipelineSnapshot: snapshotPipelineDefinition(pipeline),
     hasUnsavedChanges: false,
@@ -221,6 +296,39 @@ function hasCsvLoadInputsChanged(
     || getCsvPreprocessFingerprint(currentConfig) !== getCsvPreprocessFingerprint(mergedConfig)
 }
 
+function hasDbSourceInputsChanged(
+  node: Node,
+  nextConfig?: Record<string, unknown>,
+): boolean {
+  if (node.type !== 'db_source' || !nextConfig) return false
+
+  const currentConfig = getNodeConfig(node)
+  const mergedConfig = { ...currentConfig, ...nextConfig }
+
+  return JSON.stringify(currentConfig) !== JSON.stringify(mergedConfig)
+}
+
+function hasTransformInputsChanged(
+  node: Node,
+  nextConfig?: Record<string, unknown>,
+): boolean {
+  if (node.type !== 'transform' || !nextConfig) return false
+
+  const currentSql = getNodeConfig(node).sql
+  const nextSql = ({ ...getNodeConfig(node), ...nextConfig }).sql
+
+  return currentSql !== nextSql
+}
+
+function hasExecutionInputsChanged(
+  node: Node,
+  nextConfig?: Record<string, unknown>,
+): boolean {
+  return hasCsvLoadInputsChanged(node, nextConfig)
+    || hasDbSourceInputsChanged(node, nextConfig)
+    || hasTransformInputsChanged(node, nextConfig)
+}
+
 function collectAncestorNodeIds(nodeId: string, edges: Edge[]): string[] {
   const parentsByTarget = new Map<string, string[]>()
   edges.forEach((edge) => {
@@ -254,10 +362,10 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   nodeResults: {},
   errorDialogNodeId: null,
   selectedNodeId: null,
-  previewData: null,
-  previewNodeId: null,
-  previewLoading: false,
-  previewError: null,
+  previewTabsByNodeId: {},
+  previewTabOrder: [],
+  activePreviewTarget: null,
+  transientPreview: getEmptyTransientPreview(),
   csvPreprocessArtifacts: {},
 
   setPipelineName: (name) => {
@@ -295,16 +403,23 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
   openNodeError: (nodeId) => set({ errorDialogNodeId: nodeId }),
   closeNodeError: () => set({ errorDialogNodeId: null }),
+  selectPreviewTab: (nodeId) => {
+    if (!get().previewTabsByNodeId[nodeId]) return
+    set({ activePreviewTarget: { kind: 'tab', nodeId } })
+  },
 
   addNode: (type, position) => {
     const id = generateNodeId()
     const tableName = id
+    const autoLabel = defaultAutoLabel(type)
     const newNode: Node = {
       id,
       type,
       position,
       data: {
-        label: defaultLabel(type),
+        label: autoLabel,
+        autoLabel,
+        labelMode: 'auto',
         tableName,
         config: defaultConfig(type),
       },
@@ -374,6 +489,8 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       position,
       data: {
         label: savedConnection.name,
+        autoLabel: savedConnection.name,
+        labelMode: 'auto',
         tableName: id,
         config: {
           db_type: savedConnection.db_type,
@@ -394,11 +511,22 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     const currentNode = get().nodes.find((candidate) => candidate.id === nodeId)
     if (!currentNode) return
 
+    const currentLabelMetadata = getNodeLabelMetadata(currentNode)
     const previousTableName = getTableName(currentNode)
     const nextTableName = typeof data.tableName === 'string' ? data.tableName : previousTableName
     const tableNameChanged = previousTableName !== nextTableName
     const csvLoadInputsChanged = hasCsvLoadInputsChanged(currentNode, data.config as Record<string, unknown> | undefined)
-    const shouldInvalidateExecution = tableNameChanged || csvLoadInputsChanged
+    const shouldInvalidateExecution = tableNameChanged || hasExecutionInputsChanged(currentNode, data.config as Record<string, unknown> | undefined)
+
+    const nextLabel = typeof data.label === 'string'
+      ? data.label
+      : currentLabelMetadata.label
+    const nextAutoLabel = typeof data.autoLabel === 'string'
+      ? data.autoLabel
+      : currentLabelMetadata.autoLabel
+    const nextLabelMode = data.labelMode === 'auto' || data.labelMode === 'custom'
+      ? data.labelMode
+      : currentLabelMetadata.labelMode
 
     if (shouldInvalidateExecution) {
       dropMaterializedTable(previousTableName)
@@ -410,22 +538,45 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     set((state) => {
       const nodeResults = { ...state.nodeResults }
       const csvPreprocessArtifacts = { ...state.csvPreprocessArtifacts }
+      const previewTabsByNodeId = { ...state.previewTabsByNodeId }
+      const transientPreview = state.transientPreview.nodeId === nodeId && (shouldInvalidateExecution || csvLoadInputsChanged)
+        ? getEmptyTransientPreview()
+        : state.transientPreview
+
       if (shouldInvalidateExecution) {
         delete nodeResults[nodeId]
       }
       if (csvLoadInputsChanged) {
         delete csvPreprocessArtifacts[nodeId]
       }
+      if (previewTabsByNodeId[nodeId] && shouldInvalidateExecution) {
+        previewTabsByNodeId[nodeId] = {
+          ...previewTabsByNodeId[nodeId],
+          loading: false,
+          error: null,
+          isStale: true,
+        }
+      }
 
       return {
         nodes: state.nodes.map((n) =>
-          n.id === nodeId ? { ...n, data: { ...n.data, ...data } } : n
+          n.id === nodeId
+            ? {
+                ...n,
+                data: {
+                  ...n.data,
+                  ...data,
+                  label: nextLabel,
+                  autoLabel: nextAutoLabel,
+                  labelMode: nextLabelMode,
+                },
+              }
+            : n
         ),
         nodeResults,
+        previewTabsByNodeId,
+        transientPreview,
         csvPreprocessArtifacts,
-        ...((shouldInvalidateExecution || csvLoadInputsChanged) && state.previewNodeId === nodeId
-          ? { previewData: null, previewNodeId: null, previewLoading: false, previewError: null }
-          : {}),
       }
     })
     const state = get()
@@ -446,19 +597,29 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     set((state) => {
       const nodeResults = { ...state.nodeResults }
       const csvPreprocessArtifacts = { ...state.csvPreprocessArtifacts }
+      const previewTabsByNodeId = { ...state.previewTabsByNodeId }
+      const previewTabOrder = state.previewTabOrder.filter((id) => id !== nodeId)
+      const activePreviewTarget = state.activePreviewTarget?.nodeId === nodeId
+        ? getFallbackActivePreviewTarget(previewTabOrder)
+        : state.activePreviewTarget
+      const transientPreview = state.transientPreview.nodeId === nodeId
+        ? getEmptyTransientPreview()
+        : state.transientPreview
       delete nodeResults[nodeId]
       delete csvPreprocessArtifacts[nodeId]
+      delete previewTabsByNodeId[nodeId]
 
       return {
         nodes: state.nodes.filter((n) => n.id !== nodeId),
         edges: state.edges.filter((e) => e.source !== nodeId && e.target !== nodeId),
         nodeResults,
+        previewTabsByNodeId,
+        previewTabOrder,
+        activePreviewTarget,
+        transientPreview,
         csvPreprocessArtifacts,
         selectedNodeId: state.selectedNodeId === nodeId ? null : state.selectedNodeId,
         errorDialogNodeId: state.errorDialogNodeId === nodeId ? null : state.errorDialogNodeId,
-        ...(state.previewNodeId === nodeId
-          ? { previewData: null, previewNodeId: null, previewLoading: false, previewError: null }
-          : {}),
       }
     })
     const state = get()
@@ -530,7 +691,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       })
 
       if (options?.loadPreviewOnSuccess && result.status === 'success') {
-        await get().loadTablePreview(nodeId, tableName)
+        await get().loadTablePreview(nodeId, tableName, 0, { forceReload: true })
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unknown error'
@@ -609,7 +770,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         })
 
         if (results[nodeId]?.status === 'success') {
-          await get().loadTablePreview(nodeId, tableName)
+          await get().loadTablePreview(nodeId, tableName, 0, { forceReload: true })
         }
         return
       }
@@ -628,32 +789,64 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   },
 
   loadCsvPreview: async (nodeId, filePath) => {
-    set({ previewLoading: true, previewNodeId: nodeId, previewError: null })
+    set({
+      activePreviewTarget: { kind: 'transient', nodeId },
+      transientPreview: {
+        nodeId,
+        data: null,
+        loading: true,
+        error: null,
+      },
+    })
     try {
-      const data = await api.previewCsvSource(filePath)
-      set({ previewData: data, previewLoading: false, previewError: null })
+      const data = await api.previewCsvSource(filePath) as CsvTextPreviewData
+      set({
+        activePreviewTarget: { kind: 'transient', nodeId },
+        transientPreview: {
+          nodeId,
+          data,
+          loading: false,
+          error: null,
+        },
+      })
     } catch (err) {
       set({
-        previewData: null,
-        previewLoading: false,
-        previewError: getRequestErrorMessage(err, 'Unable to preview CSV'),
+        activePreviewTarget: { kind: 'transient', nodeId },
+        transientPreview: {
+          nodeId,
+          data: null,
+          loading: false,
+          error: getRequestErrorMessage(err, 'Unable to preview CSV'),
+        },
       })
     }
   },
 
   loadPreprocessedCsvPreview: async (nodeId, filePath, preprocessing) => {
-    set({ previewLoading: true, previewNodeId: nodeId, previewError: null })
+    set({
+      activePreviewTarget: { kind: 'transient', nodeId },
+      transientPreview: {
+        nodeId,
+        data: null,
+        loading: true,
+        error: null,
+      },
+    })
     const fingerprint = getCsvPreprocessFingerprint({
       file_path: filePath,
       original_filename: '',
       preprocessing,
     })
     try {
-      const data = await api.previewPreprocessedCsvSource(nodeId, filePath, preprocessing)
+      const data = await api.previewPreprocessedCsvSource(nodeId, filePath, preprocessing) as CsvTextPreviewData
       set((state) => ({
-        previewData: data,
-        previewLoading: false,
-        previewError: null,
+        activePreviewTarget: { kind: 'transient', nodeId },
+        transientPreview: {
+          nodeId,
+          data,
+          loading: false,
+          error: null,
+        },
         csvPreprocessArtifacts: fingerprint
           ? { ...state.csvPreprocessArtifacts, [nodeId]: fingerprint }
           : state.csvPreprocessArtifacts,
@@ -663,26 +856,87 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         const csvPreprocessArtifacts = { ...state.csvPreprocessArtifacts }
         delete csvPreprocessArtifacts[nodeId]
         return {
-          previewData: null,
-          previewLoading: false,
-          previewError: getRequestErrorMessage(err, 'Unable to preview CSV'),
+          activePreviewTarget: { kind: 'transient', nodeId },
+          transientPreview: {
+            nodeId,
+            data: null,
+            loading: false,
+            error: getRequestErrorMessage(err, 'Unable to preview CSV'),
+          },
           csvPreprocessArtifacts,
         }
       })
     }
   },
 
-  loadTablePreview: async (nodeId, tableName, offset = 0) => {
-    set({ previewLoading: true, previewNodeId: nodeId, previewError: null })
+  loadTablePreview: async (nodeId, tableName, offset = 0, options) => {
+    const existingTab = get().previewTabsByNodeId[nodeId]
+    const shouldReuseCachedPage = !options?.forceReload
+      && offset === 0
+      && Boolean(existingTab?.data)
+
+    if (shouldReuseCachedPage && existingTab) {
+      set({ activePreviewTarget: { kind: 'tab', nodeId } })
+      return
+    }
+
+    set((state) => {
+      const previewTabsByNodeId = { ...state.previewTabsByNodeId }
+      const previewTabOrder = previewTabsByNodeId[nodeId]
+        ? state.previewTabOrder
+        : [...state.previewTabOrder, nodeId]
+      previewTabsByNodeId[nodeId] = {
+        nodeId,
+        tableNameAtLoad: previewTabsByNodeId[nodeId]?.tableNameAtLoad ?? tableName,
+        data: previewTabsByNodeId[nodeId]?.data ?? null,
+        loading: true,
+        error: null,
+        isStale: previewTabsByNodeId[nodeId]?.isStale ?? false,
+      }
+
+      return {
+        previewTabsByNodeId,
+        previewTabOrder,
+        activePreviewTarget: { kind: 'tab', nodeId },
+      }
+    })
     try {
-      const data = await api.previewData(tableName, offset)
-      set({ previewData: data, previewLoading: false, previewError: null })
+      const data = await api.previewData(tableName, offset) as TablePreviewData
+      set((state) => ({
+        previewTabsByNodeId: {
+          ...state.previewTabsByNodeId,
+          [nodeId]: {
+            nodeId,
+            tableNameAtLoad: tableName,
+            data,
+            loading: false,
+            error: null,
+            isStale: false,
+          },
+        },
+        previewTabOrder: state.previewTabOrder.includes(nodeId)
+          ? state.previewTabOrder
+          : [...state.previewTabOrder, nodeId],
+        activePreviewTarget: { kind: 'tab', nodeId },
+      }))
     } catch (err) {
-      set({
-        previewData: null,
-        previewLoading: false,
-        previewError: getRequestErrorMessage(err, 'Unable to preview data'),
-      })
+      set((state) => ({
+        previewTabsByNodeId: {
+          ...state.previewTabsByNodeId,
+          [nodeId]: {
+            nodeId,
+            tableNameAtLoad: state.previewTabsByNodeId[nodeId]?.tableNameAtLoad ?? tableName,
+            data: state.previewTabsByNodeId[nodeId]?.data ?? null,
+            loading: false,
+            error: getRequestErrorMessage(err, 'Unable to preview data'),
+            isStale: state.previewTabsByNodeId[nodeId]?.isStale ?? false,
+          },
+        },
+        previewTabOrder: state.previewTabOrder.includes(nodeId)
+          ? state.previewTabOrder
+          : [...state.previewTabOrder, nodeId],
+        activePreviewTarget: { kind: 'tab', nodeId },
+      }))
     }
   },
 

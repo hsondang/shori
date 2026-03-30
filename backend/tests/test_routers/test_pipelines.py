@@ -35,6 +35,28 @@ async def test_create_and_get(client, pipeline_def):
 
 
 @pytest.mark.asyncio
+async def test_create_and_get_preserves_optional_label_metadata(client, pipeline_def):
+    pipeline_with_label_meta = {
+        **pipeline_def,
+        "nodes": [
+            {
+                **pipeline_def["nodes"][0],
+                "auto_label": "CSV Source",
+                "label_mode": "custom",
+            }
+        ],
+    }
+
+    await client.post("/api/pipelines", json=pipeline_with_label_meta)
+    resp = await client.get(f"/api/pipelines/{pipeline_def['id']}")
+
+    assert resp.status_code == 200
+    node = resp.json()["nodes"][0]
+    assert node["auto_label"] == "CSV Source"
+    assert node["label_mode"] == "custom"
+
+
+@pytest.mark.asyncio
 async def test_get_not_found(client):
     resp = await client.get("/api/pipelines/nonexistent-id")
     assert resp.status_code == 404

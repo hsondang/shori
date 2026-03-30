@@ -170,7 +170,8 @@ describe('NodeConfigPanel', () => {
     })
 
     expect(usePipelineStore.getState().nodeResults['db-node']).toEqual(result)
-    expect(usePipelineStore.getState().previewData).toEqual(makePreview())
+    expect(usePipelineStore.getState().previewTabsByNodeId['db-node']?.data).toEqual(makePreview())
+    expect(usePipelineStore.getState().activePreviewTarget).toEqual({ kind: 'tab', nodeId: 'db-node' })
   })
 
   it('stages csv metadata edits and discards them without updating the store', async () => {
@@ -485,7 +486,8 @@ describe('NodeConfigPanel', () => {
     })
 
     expect(usePipelineStore.getState().nodeResults['csv-node']).toEqual(result)
-    expect(usePipelineStore.getState().previewData).toEqual(makePreview())
+    expect(usePipelineStore.getState().previewTabsByNodeId['csv-node']?.data).toEqual(makePreview())
+    expect(usePipelineStore.getState().activePreviewTarget).toEqual({ kind: 'tab', nodeId: 'csv-node' })
   })
 
   it('disables Load data when preprocessing is enabled without a script', async () => {

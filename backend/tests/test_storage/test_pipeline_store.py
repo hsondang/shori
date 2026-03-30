@@ -28,6 +28,8 @@ def _make_pipeline(pid="p1", name="Test Pipeline"):
                 type=NodeType.CSV_SOURCE,
                 table_name="t",
                 label="CSV",
+                auto_label="CSV Source",
+                label_mode="custom",
                 position=Position(x=0, y=0),
                 config={"file_path": "/tmp/f.csv", "original_filename": "f.csv"},
             )
@@ -51,6 +53,8 @@ def test_save_and_load_roundtrip(store):
     assert loaded.database_connections[0].name == "Analytics"
     assert len(loaded.nodes) == 1
     assert loaded.nodes[0].type == NodeType.CSV_SOURCE
+    assert loaded.nodes[0].auto_label == "CSV Source"
+    assert loaded.nodes[0].label_mode == "custom"
 
 
 def test_load_not_found(store):

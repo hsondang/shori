@@ -207,9 +207,18 @@ describe('pipelineStore', () => {
           nodeResults: {
             'csv-node': { node_id: 'csv-node', status: 'success', row_count: 5, column_count: 2 },
           },
-          previewNodeId: 'csv-node',
-          previewLoading: true,
-          previewData: makeTablePreview({ columns: ['id'], column_types: ['INTEGER'], rows: [[1]] }),
+          previewTabsByNodeId: {
+            'csv-node': {
+              nodeId: 'csv-node',
+              tableNameAtLoad: 'orders_table',
+              data: makeTablePreview({ columns: ['id'], column_types: ['INTEGER'], rows: [[1]] }),
+              loading: false,
+              error: null,
+              isStale: false,
+            },
+          },
+          previewTabOrder: ['csv-node'],
+          activePreviewTarget: { kind: 'tab', nodeId: 'csv-node' },
         })
       })
 
@@ -218,9 +227,12 @@ describe('pipelineStore', () => {
       expect(mockDeleteTable).toHaveBeenCalledWith('orders_table')
       expect((usePipelineStore.getState().nodes[0].data as Record<string, unknown>).tableName).toBe('orders_new')
       expect(usePipelineStore.getState().nodeResults['csv-node']).toBeUndefined()
-      expect(usePipelineStore.getState().previewNodeId).toBeNull()
-      expect(usePipelineStore.getState().previewData).toBeNull()
-      expect(usePipelineStore.getState().previewLoading).toBe(false)
+      expect(usePipelineStore.getState().previewTabsByNodeId['csv-node']).toEqual(
+        expect.objectContaining({
+          tableNameAtLoad: 'orders_table',
+          isStale: true,
+        })
+      )
     })
 
     it('invalidates reviewed preprocess artifacts when csv preprocessing inputs change', () => {
@@ -265,6 +277,109 @@ describe('pipelineStore', () => {
       expect(usePipelineStore.getState().csvPreprocessArtifacts['csv-node']).toBeUndefined()
       expect(usePipelineStore.getState().nodeResults['csv-node']).toBeUndefined()
     })
+
+    it('retitles custom-label nodes without marking their preview tab stale', () => {
+      act(() => {
+        usePipelineStore.setState({
+          nodes: [{
+            id: 'tx-node',
+            type: 'transform',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders Final',
+              autoLabel: 'Transform',
+              labelMode: 'custom',
+              tableName: 'orders_final',
+              config: { sql: 'select * from orders_table' },
+            },
+          }],
+          previewTabsByNodeId: {
+            'tx-node': {
+              nodeId: 'tx-node',
+              tableNameAtLoad: 'orders_final',
+              data: makeTablePreview(),
+              loading: false,
+              error: null,
+              isStale: false,
+            },
+          },
+          previewTabOrder: ['tx-node'],
+          activePreviewTarget: { kind: 'tab', nodeId: 'tx-node' },
+        })
+      })
+
+      act(() => usePipelineStore.getState().updateNodeData('tx-node', {
+        label: 'Orders Curated',
+        labelMode: 'custom',
+      }))
+
+      const updated = usePipelineStore.getState().nodes[0]
+      expect((updated.data as Record<string, unknown>).label).toBe('Orders Curated')
+      expect((updated.data as Record<string, unknown>).labelMode).toBe('custom')
+      expect(usePipelineStore.getState().previewTabsByNodeId['tx-node']?.isStale).toBe(false)
+    })
+
+    it('marks database source tabs stale when execution inputs change', () => {
+      act(() => {
+        usePipelineStore.setState({
+          nodes: [{
+            id: 'db-node',
+            type: 'db_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Warehouse',
+              autoLabel: 'Warehouse',
+              labelMode: 'auto',
+              tableName: 'orders_table',
+              config: {
+                db_type: 'postgres',
+                connection: {
+                  host: 'localhost',
+                  port: 5432,
+                  database: 'analytics',
+                  user: 'user',
+                  password: 'secret',
+                },
+                query: 'SELECT * FROM orders',
+              },
+            },
+          }],
+          nodeResults: {
+            'db-node': { node_id: 'db-node', status: 'success' },
+          },
+          previewTabsByNodeId: {
+            'db-node': {
+              nodeId: 'db-node',
+              tableNameAtLoad: 'orders_table',
+              data: makeTablePreview(),
+              loading: false,
+              error: null,
+              isStale: false,
+            },
+          },
+          previewTabOrder: ['db-node'],
+          activePreviewTarget: { kind: 'tab', nodeId: 'db-node' },
+        })
+      })
+
+      act(() => usePipelineStore.getState().updateNodeData('db-node', {
+        config: {
+          db_type: 'postgres',
+          connection: {
+            host: 'localhost',
+            port: 5432,
+            database: 'analytics',
+            user: 'user',
+            password: 'secret',
+          },
+          query: 'SELECT * FROM orders WHERE id > 10',
+        },
+      }))
+
+      expect(mockDeleteTable).toHaveBeenCalledWith('orders_table')
+      expect(usePipelineStore.getState().nodeResults['db-node']).toBeUndefined()
+      expect(usePipelineStore.getState().previewTabsByNodeId['db-node']?.isStale).toBe(true)
+    })
   })
 
   describe('deleteNode', () => {
@@ -307,9 +422,18 @@ describe('pipelineStore', () => {
           nodeResults: {
             'csv-node': { node_id: 'csv-node', status: 'success', row_count: 5, column_count: 2 },
           },
-          previewNodeId: 'csv-node',
-          previewLoading: true,
-          previewData: makeTablePreview({ columns: ['id'], column_types: ['INTEGER'], rows: [[1]] }),
+          previewTabsByNodeId: {
+            'csv-node': {
+              nodeId: 'csv-node',
+              tableNameAtLoad: 'orders_table',
+              data: makeTablePreview({ columns: ['id'], column_types: ['INTEGER'], rows: [[1]] }),
+              loading: false,
+              error: null,
+              isStale: false,
+            },
+          },
+          previewTabOrder: ['csv-node'],
+          activePreviewTarget: { kind: 'tab', nodeId: 'csv-node' },
         })
       })
 
@@ -320,9 +444,9 @@ describe('pipelineStore', () => {
       expect(usePipelineStore.getState().nodeResults['csv-node']).toBeUndefined()
       expect(usePipelineStore.getState().selectedNodeId).toBeNull()
       expect(usePipelineStore.getState().errorDialogNodeId).toBeNull()
-      expect(usePipelineStore.getState().previewNodeId).toBeNull()
-      expect(usePipelineStore.getState().previewData).toBeNull()
-      expect(usePipelineStore.getState().previewLoading).toBe(false)
+      expect(usePipelineStore.getState().previewTabsByNodeId['csv-node']).toBeUndefined()
+      expect(usePipelineStore.getState().previewTabOrder).toEqual([])
+      expect(usePipelineStore.getState().activePreviewTarget).toBeNull()
     })
   })
 
@@ -434,6 +558,55 @@ describe('pipelineStore', () => {
       expect(usePipelineStore.getState().hasUnsavedChanges).toBe(false)
     })
 
+    it('loadPipeline preserves explicit label metadata and infers legacy metadata compatibly', async () => {
+      mockLoadPipeline.mockResolvedValueOnce({
+        id: 'pipeline-1',
+        name: 'Loaded Pipeline',
+        database_connections: [],
+        nodes: [
+          {
+            id: 'csv-node',
+            type: 'csv_source',
+            table_name: 'orders_table',
+            label: 'Orders CSV',
+            auto_label: 'CSV Source',
+            label_mode: 'custom',
+            position: { x: 0, y: 0 },
+            config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+          },
+          {
+            id: 'db-node',
+            type: 'db_source',
+            table_name: 'warehouse_table',
+            label: 'Warehouse',
+            position: { x: 200, y: 0 },
+            config: {
+              db_type: 'postgres',
+              connection: {
+                host: 'localhost',
+                port: 5432,
+                database: 'analytics',
+                user: 'user',
+                password: 'secret',
+              },
+              query: 'SELECT 1',
+            },
+          },
+        ],
+        edges: [],
+      })
+
+      await act(async () => {
+        await usePipelineStore.getState().loadPipeline('pipeline-1')
+      })
+
+      const [csvNode, dbNode] = usePipelineStore.getState().nodes
+      expect((csvNode.data as Record<string, unknown>).autoLabel).toBe('CSV Source')
+      expect((csvNode.data as Record<string, unknown>).labelMode).toBe('custom')
+      expect((dbNode.data as Record<string, unknown>).autoLabel).toBe('Warehouse')
+      expect((dbNode.data as Record<string, unknown>).labelMode).toBe('auto')
+    })
+
     it('marks the pipeline dirty after metadata changes and clears dirty state after save', async () => {
       act(() => {
         usePipelineStore.getState().setPipelineName('Renamed Pipeline')
@@ -446,6 +619,38 @@ describe('pipelineStore', () => {
       })
 
       expect(usePipelineStore.getState().hasUnsavedChanges).toBe(false)
+    })
+
+    it('savePipeline includes node label metadata', async () => {
+      act(() => {
+        usePipelineStore.setState({
+          nodes: [{
+            id: 'tx-node',
+            type: 'transform',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders Final',
+              autoLabel: 'Transform',
+              labelMode: 'custom',
+              tableName: 'orders_final',
+              config: { sql: 'select * from orders_table' },
+            },
+          }],
+        })
+      })
+
+      await act(async () => {
+        await usePipelineStore.getState().savePipeline()
+      })
+
+      expect(mockSavePipeline).toHaveBeenCalledWith(expect.objectContaining({
+        nodes: [
+          expect.objectContaining({
+            auto_label: 'Transform',
+            label_mode: 'custom',
+          }),
+        ],
+      }))
     })
 
     it('confirms discard only when there are unsaved changes', () => {
@@ -507,22 +712,42 @@ describe('pipelineStore', () => {
         node_id: node.id,
         status: 'success',
       }))
-      expect(usePipelineStore.getState().previewData).toEqual(expect.objectContaining({
+      expect(usePipelineStore.getState().previewTabsByNodeId[node.id]?.data).toEqual(expect.objectContaining({
         columns: ['id', 'name'],
       }))
+      expect(usePipelineStore.getState().activePreviewTarget).toEqual({ kind: 'tab', nodeId: node.id })
     })
 
     it('stores an error result and does not load preview when execution fails', async () => {
       act(() => {
-        usePipelineStore.getState().addNode('csv_source', { x: 0, y: 0 })
-      })
-
-      const node = usePipelineStore.getState().nodes[0]
-      act(() => {
         usePipelineStore.setState({
-          previewData: makeTablePreview({ columns: ['existing'], column_types: ['VARCHAR'], rows: [['value']] }),
+          nodes: [{
+            id: 'csv-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'CSV Source',
+              autoLabel: 'CSV Source',
+              labelMode: 'auto',
+              tableName: 'node_table',
+              config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+            },
+          }],
+          previewTabsByNodeId: {
+            'csv-node': {
+              nodeId: 'csv-node',
+              tableNameAtLoad: 'node_table',
+              data: makeTablePreview({ columns: ['existing'], column_types: ['VARCHAR'], rows: [['value']] }),
+              loading: false,
+              error: null,
+              isStale: false,
+            },
+          },
+          previewTabOrder: ['csv-node'],
+          activePreviewTarget: { kind: 'tab', nodeId: 'csv-node' },
         })
       })
+      const node = usePipelineStore.getState().nodes[0]
       mockExecuteNode.mockRejectedValueOnce(new Error('boom'))
 
       await act(async () => {
@@ -535,14 +760,14 @@ describe('pipelineStore', () => {
         error: 'boom',
       })
       expect(mockPreviewData).not.toHaveBeenCalled()
-      expect(usePipelineStore.getState().previewData).toEqual(expect.objectContaining({
+      expect(usePipelineStore.getState().previewTabsByNodeId[node.id]?.data).toEqual(expect.objectContaining({
         columns: ['existing'],
       }))
     })
   })
 
   describe('loadCsvPreview', () => {
-    it('loads raw csv preview into the shared preview state', async () => {
+    it('loads raw csv preview into transient preview state', async () => {
       act(() => {
         usePipelineStore.setState({
           nodes: [{
@@ -565,8 +790,8 @@ describe('pipelineStore', () => {
       })
 
       expect(mockPreviewCsvSource).toHaveBeenCalledWith('/tmp/orders.csv')
-      expect(usePipelineStore.getState().previewData).toEqual(makeCsvTextPreview())
-      expect(usePipelineStore.getState().previewNodeId).toBe('csv-node')
+      expect(usePipelineStore.getState().transientPreview.data).toEqual(makeCsvTextPreview())
+      expect(usePipelineStore.getState().activePreviewTarget).toEqual({ kind: 'transient', nodeId: 'csv-node' })
     })
 
     it('stores the backend preview error message when the request fails', async () => {
@@ -582,8 +807,8 @@ describe('pipelineStore', () => {
         await usePipelineStore.getState().loadCsvPreview('csv-node', '/tmp/orders.csv')
       })
 
-      expect(usePipelineStore.getState().previewData).toBeNull()
-      expect(usePipelineStore.getState().previewError).toBe(
+      expect(usePipelineStore.getState().transientPreview.data).toBeNull()
+      expect(usePipelineStore.getState().transientPreview.error).toBe(
         'Unable to preview CSV: unsupported encoding'
       )
     })
@@ -628,7 +853,7 @@ describe('pipelineStore', () => {
         '/tmp/orders.csv',
         { enabled: true, runtime: 'python', script: 'print(1)' },
       )
-      expect(usePipelineStore.getState().previewData).toEqual(makeCsvTextPreview({
+      expect(usePipelineStore.getState().transientPreview.data).toEqual(makeCsvTextPreview({
         csv_stage: 'preprocessed',
         artifact_ready: true,
       }))
@@ -639,6 +864,71 @@ describe('pipelineStore', () => {
           script: 'print(1)',
         })
       )
+    })
+  })
+
+  describe('loadTablePreview', () => {
+    it('reuses an existing tab without refetching when preview data already exists', async () => {
+      act(() => {
+        usePipelineStore.setState({
+          previewTabsByNodeId: {
+            'tx-node': {
+              nodeId: 'tx-node',
+              tableNameAtLoad: 'orders_final',
+              data: makeTablePreview(),
+              loading: false,
+              error: null,
+              isStale: false,
+            },
+          },
+          previewTabOrder: ['tx-node'],
+          activePreviewTarget: null,
+        })
+      })
+
+      await act(async () => {
+        await usePipelineStore.getState().loadTablePreview('tx-node', 'orders_final')
+      })
+
+      expect(mockPreviewData).not.toHaveBeenCalled()
+      expect(usePipelineStore.getState().activePreviewTarget).toEqual({ kind: 'tab', nodeId: 'tx-node' })
+    })
+
+    it('updates only the active tab page when paginating', async () => {
+      act(() => {
+        usePipelineStore.setState({
+          previewTabsByNodeId: {
+            first: {
+              nodeId: 'first',
+              tableNameAtLoad: 'first_table',
+              data: makeTablePreview({ rows: [[1, 'Alice']], offset: 0 }),
+              loading: false,
+              error: null,
+              isStale: false,
+            },
+            second: {
+              nodeId: 'second',
+              tableNameAtLoad: 'second_table',
+              data: makeTablePreview({ rows: [[10, 'Bob']], offset: 0 }),
+              loading: false,
+              error: null,
+              isStale: false,
+            },
+          },
+          previewTabOrder: ['first', 'second'],
+          activePreviewTarget: { kind: 'tab', nodeId: 'second' },
+        })
+      })
+
+      mockPreviewData.mockResolvedValueOnce(makeTablePreview({ rows: [[11, 'Carol']], offset: 100, total_rows: 250 }))
+
+      await act(async () => {
+        await usePipelineStore.getState().loadTablePreview('second', 'second_table', 100)
+      })
+
+      expect(mockPreviewData).toHaveBeenCalledWith('second_table', 100)
+      expect(usePipelineStore.getState().previewTabsByNodeId.second?.data?.offset).toBe(100)
+      expect(usePipelineStore.getState().previewTabsByNodeId.first?.data?.offset).toBe(0)
     })
   })
 
@@ -710,6 +1000,9 @@ describe('pipelineStore', () => {
       }))
       expect(mockExecutePipeline).not.toHaveBeenCalled()
       expect(mockPreviewData).toHaveBeenCalledWith('orders_filtered', 0)
+      expect(usePipelineStore.getState().previewTabsByNodeId['tx-node']?.data).toEqual(expect.objectContaining({
+        rows: [[2], [3]],
+      }))
     })
 
     it('runs the minimal missing upstream chain after confirmation and preserves unrelated node results', async () => {
@@ -804,6 +1097,9 @@ describe('pipelineStore', () => {
       expect(usePipelineStore.getState().nodeResults.other).toEqual(
         expect.objectContaining({ node_id: 'other', status: 'success' })
       )
+      expect(usePipelineStore.getState().previewTabsByNodeId['tx-node']?.data).toEqual(expect.objectContaining({
+        rows: [[2], [3]],
+      }))
     })
 
     it('does not execute or load preview when the user cancels missing upstream execution', async () => {

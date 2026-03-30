@@ -8,6 +8,7 @@ import type {
   CsvSourceConfig,
   DatabaseConnectionConfig,
   DbType,
+  NodeLabelMode,
 } from '../../types/pipeline'
 import { getCsvPreprocessFingerprint } from '../../lib/csvPreprocessing'
 import { getConnectionSummary } from '../../lib/databaseConnections'
@@ -56,6 +57,13 @@ export default function NodeConfigPanel() {
   const dbConnection = config.connection as DatabaseConnectionConfig | undefined
   const transformQuery = (config.sql as string | undefined) ?? ''
   const csvLabel = isCsvNode ? ((d.label as string) || '') : ''
+  const autoLabel = typeof d.autoLabel === 'string'
+    ? d.autoLabel
+    : node?.type === 'db_source'
+      ? ((d.label as string) || 'Database Source')
+      : node?.type
+        ? ({ csv_source: 'CSV Source', db_source: 'Database Source', transform: 'Transform', export: 'Export' }[node.type] ?? '')
+        : ''
   const labelInputId = nodeId ? `${nodeId}-label` : 'node-label'
   const tableNameInputId = nodeId ? `${nodeId}-table-name` : 'node-table-name'
   const preprocessingEditorId = nodeId ? `${nodeId}-preprocessing-script` : 'preprocessing-script'
@@ -151,8 +159,10 @@ export default function NodeConfigPanel() {
   const saveCsvChanges = () => {
     if (!hasCsvMetadataChanges) return
     if (!nodeId) return
+    const labelMode: NodeLabelMode = csvDraft.label === autoLabel ? 'auto' : 'custom'
     updateNodeData(nodeId, {
       label: csvDraft.label,
+      labelMode,
       tableName: csvDraft.tableName,
     })
     setIsCsvEditing(false)
@@ -469,7 +479,10 @@ export default function NodeConfigPanel() {
               id={labelInputId}
               type="text"
               value={(d.label as string) || ''}
-              onChange={(e) => updateNodeData(node.id, { label: e.target.value })}
+              onChange={(e) => updateNodeData(node.id, {
+                label: e.target.value,
+                labelMode: e.target.value === autoLabel ? 'auto' : 'custom',
+              })}
               className="w-full border border-gray-300 rounded px-2 py-1 text-sm mb-3"
             />
 
