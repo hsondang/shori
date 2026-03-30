@@ -15,8 +15,18 @@ const mockDeleteTable = vi.fn((..._args: any[]) => Promise.resolve({ deleted: tr
 const mockDeletePreprocessedCsvArtifact = vi.fn((..._args: any[]) => Promise.resolve({ deleted: true }))
 
 vi.mock('@monaco-editor/react', () => ({
-  default: ({ value, onChange }: { value: string; onChange?: (value: string) => void }) => (
-    <textarea aria-label="sql-editor" value={value} onChange={(event) => onChange?.(event.target.value)} />
+  default: ({
+    value,
+    onChange,
+    height,
+  }: {
+    value: string
+    onChange?: (value: string) => void
+    height?: string
+  }) => (
+    <div data-testid="sql-editor-shell" data-height={height}>
+      <textarea aria-label="sql-editor" value={value} onChange={(event) => onChange?.(event.target.value)} />
+    </div>
   ),
 }))
 
@@ -95,6 +105,8 @@ describe('NodeConfigPanel', () => {
     expect(screen.queryByText('Table Name')).not.toBeInTheDocument()
     expect(screen.queryByText('Database Type')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /test connection/i })).not.toBeInTheDocument()
+    expect(screen.getByTestId('sql-editor-shell')).toHaveAttribute('data-height', '100%')
+    expect(screen.getByTestId('sql-editor-shell').parentElement).toHaveClass('h-full')
   })
 
   it('expands the database editor in edit mode and resets it when the selection changes', async () => {
@@ -108,6 +120,8 @@ describe('NodeConfigPanel', () => {
       minWidth: '28rem',
       maxWidth: '44rem',
     })
+    expect(screen.getByTestId('sql-editor-shell')).toHaveAttribute('data-height', '100%')
+    expect(screen.getByTestId('sql-editor-shell').parentElement).toHaveClass('h-full')
 
     act(() => {
       usePipelineStore.setState({
@@ -259,6 +273,82 @@ describe('NodeConfigPanel', () => {
 
     expect(screen.getByRole('button', { name: 'Preview data' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Load data' })).toBeDisabled()
+  })
+
+  it('hides the preprocessing section until the toggle is enabled', async () => {
+    const user = userEvent.setup()
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'csv-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders CSV',
+              tableName: 'orders_table',
+              config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+            },
+          },
+        ],
+        selectedNodeId: 'csv-node',
+      })
+    })
+
+    render(<NodeConfigPanel />)
+
+    expect(screen.getByRole('switch', { name: 'Enable preprocessing' })).toHaveAttribute('aria-checked', 'false')
+    expect(screen.queryByLabelText('Script')).not.toBeInTheDocument()
+    expect(screen.queryByText(/SHORI_INPUT_CSV/i)).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('switch', { name: 'Enable preprocessing' }))
+
+    expect(screen.getByRole('switch', { name: 'Enable preprocessing' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByLabelText('Script')).toBeInTheDocument()
+    expect(screen.getByText(/SHORI_INPUT_CSV/i)).toBeInTheDocument()
+  })
+
+  it('preserves preprocessing values when toggled off and on again', async () => {
+    const user = userEvent.setup()
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'csv-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Orders CSV',
+              tableName: 'orders_table',
+              config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+            },
+          },
+        ],
+        selectedNodeId: 'csv-node',
+      })
+    })
+
+    render(<NodeConfigPanel />)
+
+    const toggle = screen.getByRole('switch', { name: 'Enable preprocessing' })
+    await user.click(toggle)
+    await user.selectOptions(screen.getByRole('combobox'), 'bash')
+    await user.type(screen.getByLabelText('Script'), 'tail -n +3 "$1"')
+
+    expect(screen.getByRole('combobox')).toHaveValue('bash')
+    expect(screen.getByLabelText('Script')).toHaveValue('tail -n +3 "$1"')
+
+    await user.click(screen.getByRole('switch', { name: 'Enable preprocessing' }))
+
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Script')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('switch', { name: 'Enable preprocessing' }))
+
+    expect(screen.getByRole('combobox')).toHaveValue('bash')
+    expect(screen.getByLabelText('Script')).toHaveValue('tail -n +3 "$1"')
   })
 
   it('previews the raw csv without executing the node', async () => {
@@ -425,10 +515,11 @@ describe('NodeConfigPanel', () => {
 
     render(<NodeConfigPanel />)
 
-    await user.click(screen.getByRole('checkbox'))
+    await user.click(screen.getByRole('switch', { name: 'Enable preprocessing' }))
 
     expect(screen.getByRole('button', { name: 'Load data' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Preprocess' })).toBeDisabled()
+    expect(screen.getByLabelText('Script')).toBeInTheDocument()
     expect(screen.getByText(/Add a preprocessing script/i)).toBeInTheDocument()
   })
 
@@ -514,6 +605,8 @@ describe('NodeConfigPanel', () => {
     expect(screen.getByRole('button', { name: 'Edit mode' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Run and Preview' })).toBeEnabled()
     expect(screen.getByText(/Missing upstream tables will prompt before running dependencies/i)).toBeInTheDocument()
+    expect(screen.getByTestId('sql-editor-shell')).toHaveAttribute('data-height', '100%')
+    expect(screen.getByTestId('sql-editor-shell').parentElement).toHaveClass('h-full')
 
     await user.click(screen.getByRole('button', { name: 'Run and Preview' }))
 
@@ -550,6 +643,8 @@ describe('NodeConfigPanel', () => {
       minWidth: '28rem',
       maxWidth: '44rem',
     })
+    expect(screen.getByTestId('sql-editor-shell')).toHaveAttribute('data-height', '100%')
+    expect(screen.getByTestId('sql-editor-shell').parentElement).toHaveClass('h-full')
 
     act(() => {
       usePipelineStore.setState({
