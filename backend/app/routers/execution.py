@@ -5,7 +5,10 @@ from app.services.pipeline_engine import PipelineEngine
 from app.storage.pipeline_store import PipelineStore
 
 router = APIRouter()
-store = PipelineStore()
+
+
+def get_store() -> PipelineStore:
+    return PipelineStore()
 
 
 def _get_engine(request: Request) -> PipelineEngine:
@@ -18,7 +21,7 @@ def _get_engine(request: Request) -> PipelineEngine:
 @router.post("/pipeline/{pipeline_id}")
 async def execute_pipeline(pipeline_id: str, request: Request, force: bool = False):
     try:
-        pipeline = store.load(pipeline_id)
+        pipeline = get_store().load(pipeline_id)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Pipeline not found")
 
