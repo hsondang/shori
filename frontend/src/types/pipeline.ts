@@ -2,6 +2,7 @@ export type NodeType = 'csv_source' | 'db_source' | 'transform' | 'export'
 export type DbType = 'oracle' | 'postgres'
 export type NodeStatus = 'idle' | 'running' | 'success' | 'error'
 export type NodeLabelMode = 'auto' | 'custom'
+export type NodeEditorMode = 'closed' | 'create' | 'edit'
 
 export interface PostgresConnectionConfig {
   host: string
@@ -53,6 +54,17 @@ export interface TransformConfig {
 
 export interface ExportConfig {
   format: string
+}
+
+export interface NodeEditorDraft {
+  id: string
+  type: NodeType
+  position: { x: number; y: number }
+  label: string
+  autoLabel: string
+  labelMode: NodeLabelMode
+  tableName: string
+  config: Record<string, unknown>
 }
 
 export interface NodeExecutionResult {

@@ -1,17 +1,25 @@
-import { usePipelineStore } from '../../store/pipelineStore'
-import SqlEditor from './SqlEditor'
 import { uploadCsv } from '../../api/client'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from 'react'
+import { usePipelineStore } from '../../store/pipelineStore'
+import { getConnectionSummary } from '../../lib/databaseConnections'
+import { getCsvPreprocessFingerprint } from '../../lib/csvPreprocessing'
+import SqlEditor from './SqlEditor'
 import type {
   CsvPreprocessingConfig,
   CsvSourceConfig,
   DatabaseConnectionConfig,
   DbType,
-  NodeLabelMode,
 } from '../../types/pipeline'
-import { getCsvPreprocessFingerprint } from '../../lib/csvPreprocessing'
-import { getConnectionSummary } from '../../lib/databaseConnections'
 import {
   NODE_CONFIG_PANEL_EXPANDED_MAX_WIDTH,
   NODE_CONFIG_PANEL_EXPANDED_MIN_WIDTH,
@@ -19,12 +27,28 @@ import {
   NODE_CONFIG_PANEL_WIDTH_PX,
 } from '../projects/pipelineEditorLayout'
 
+function getNodeTitle(type: string): string {
+  switch (type) {
+    case 'csv_source':
+      return 'CSV Source'
+    case 'db_source':
+      return 'Database Source'
+    case 'transform':
+      return 'Transform'
+    case 'export':
+      return 'Export'
+    default:
+      return 'Node'
+  }
+}
+
 export default function NodeConfigPanel() {
   const selectedNodeId = usePipelineStore((s) => s.selectedNodeId)
   const nodes = usePipelineStore((s) => s.nodes)
   const edges = usePipelineStore((s) => s.edges)
   const updateNodeData = usePipelineStore((s) => s.updateNodeData)
   const deleteNode = usePipelineStore((s) => s.deleteNode)
+  const openEditNodeEditor = usePipelineStore((s) => s.openEditNodeEditor)
   const executeSingleNode = usePipelineStore((s) => s.executeSingleNode)
   const runTransformPreview = usePipelineStore((s) => s.runTransformPreview)
   const loadCsvPreview = usePipelineStore((s) => s.loadCsvPreview)
@@ -32,16 +56,18 @@ export default function NodeConfigPanel() {
   const csvPreprocessArtifacts = usePipelineStore((s) => s.csvPreprocessArtifacts)
   const nodeResults = usePipelineStore((s) => s.nodeResults)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const [isCsvEditing, setIsCsvEditing] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
   const [isDbEditMode, setIsDbEditMode] = useState(false)
   const [isTransformEditMode, setIsTransformEditMode] = useState(false)
-  const [csvDraft, setCsvDraft] = useState({ label: '', tableName: '' })
-  const [csvSnapshot, setCsvSnapshot] = useState({ label: '', tableName: '' })
 
-  const node = nodes.find((n) => n.id === selectedNodeId)
+  const node = nodes.find((candidate) => candidate.id === selectedNodeId)
   const nodeId = node?.id ?? null
-  const d = (node?.data as Record<string, unknown> | undefined) ?? {}
-  const config = (d.config as Record<string, unknown> | undefined) ?? {}
+  const data = (node?.data as Record<string, unknown> | undefined) ?? {}
+  const config = (data.config as Record<string, unknown> | undefined) ?? {}
+  const tableName = (data.tableName as string | undefined) ?? ''
+  const label = (data.label as string | undefined) ?? (node ? getNodeTitle(node.type) : '')
+  const nodeResult = nodeId ? nodeResults[nodeId] : undefined
   const isCsvNode = node?.type === 'csv_source'
   const csvConfig = (isCsvNode ? config : null) as CsvSourceConfig | null
   const csvPreprocessing: CsvPreprocessingConfig = csvConfig?.preprocessing ?? {
@@ -49,31 +75,13 @@ export default function NodeConfigPanel() {
     runtime: 'python',
     script: '',
   }
-  const tableName = (d.tableName as string | undefined) ?? ''
-  const nodeResult = nodeId ? nodeResults[nodeId] : undefined
-  const transformSql = ((config.sql as string | undefined) ?? '').trim()
-  const dbQuery = ((config.query as string | undefined) ?? '')
-  const dbType = ((config.db_type as string | undefined) ?? 'postgres') as DbType
-  const dbConnection = config.connection as DatabaseConnectionConfig | undefined
-  const transformQuery = (config.sql as string | undefined) ?? ''
-  const csvLabel = isCsvNode ? ((d.label as string) || '') : ''
-  const autoLabel = typeof d.autoLabel === 'string'
-    ? d.autoLabel
-    : node?.type === 'db_source'
-      ? ((d.label as string) || 'Database Source')
-      : node?.type
-        ? ({ csv_source: 'CSV Source', db_source: 'Database Source', transform: 'Transform', export: 'Export' }[node.type] ?? '')
-        : ''
-  const labelInputId = nodeId ? `${nodeId}-label` : 'node-label'
-  const tableNameInputId = nodeId ? `${nodeId}-table-name` : 'node-table-name'
-  const preprocessingEditorId = nodeId ? `${nodeId}-preprocessing-script` : 'preprocessing-script'
-  const canPreviewCsv = Boolean(csvConfig?.file_path) && nodeResult?.status !== 'running'
   const preprocessFingerprint = getCsvPreprocessFingerprint(csvConfig)
   const hasReviewedPreprocess = Boolean(
     nodeId
     && preprocessFingerprint
     && csvPreprocessArtifacts[nodeId] === preprocessFingerprint
   )
+  const canPreviewCsv = Boolean(csvConfig?.file_path) && nodeResult?.status !== 'running'
   const canRunPreprocess = Boolean(csvConfig?.file_path)
     && csvPreprocessing.enabled
     && Boolean(csvPreprocessing.script.trim())
@@ -82,46 +90,59 @@ export default function NodeConfigPanel() {
     && nodeResult?.status !== 'running'
     && (!csvPreprocessing.enabled || hasReviewedPreprocess)
 
-  const upstreamTableNames = useCallback(() => {
-    if (!selectedNodeId) return []
-    const upstreamIds = edges.filter((e) => e.target === selectedNodeId).map((e) => e.source)
+  const availableUpstreamTables = useMemo(() => {
+    if (!selectedNodeId || node?.type !== 'transform') return []
+    const upstreamIds = edges.filter((edge) => edge.target === selectedNodeId).map((edge) => edge.source)
     return nodes
-      .filter((n) => upstreamIds.includes(n.id))
-      .map((n) => (n.data as Record<string, unknown>).tableName as string)
-  }, [selectedNodeId, edges, nodes])
-  const availableUpstreamTables = node?.type === 'transform' ? upstreamTableNames() : []
+      .filter((candidate) => upstreamIds.includes(candidate.id))
+      .map((candidate) => ((candidate.data as Record<string, unknown>).tableName as string | undefined) ?? '')
+      .filter(Boolean)
+  }, [edges, node?.type, nodes, selectedNodeId])
 
   useEffect(() => {
-    setIsCsvEditing(false)
+    if (!menuOpen) return
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    return () => document.removeEventListener('mousedown', handlePointerDown)
+  }, [menuOpen])
+
+  useEffect(() => {
+    setMenuOpen(false)
+  }, [nodeId])
+
+  useEffect(() => {
     setIsDbEditMode(false)
     setIsTransformEditMode(false)
   }, [nodeId])
 
-  useEffect(() => {
-    if (!isCsvNode) {
-      setIsCsvEditing(false)
-      return
-    }
+  const updateCsvConfig = useCallback((patch: Partial<CsvSourceConfig>) => {
+    if (!nodeId || !csvConfig) return
+    updateNodeData(nodeId, {
+      config: {
+        ...csvConfig,
+        ...patch,
+        preprocessing: patch.preprocessing ?? csvPreprocessing,
+      },
+    })
+  }, [csvConfig, csvPreprocessing, nodeId, updateNodeData])
 
-    if (!isCsvEditing) {
-      const nextMetadata = { label: csvLabel, tableName }
-      setCsvDraft(nextMetadata)
-      setCsvSnapshot(nextMetadata)
-    }
-  }, [csvLabel, isCsvEditing, isCsvNode, tableName])
-
-  const hasCsvMetadataChanges = isCsvEditing
-    && (csvDraft.label !== csvSnapshot.label || csvDraft.tableName !== csvSnapshot.tableName)
-
-  const handleCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
+  const handleCsvUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
     if (!file || !nodeId) return
+
     const result = await uploadCsv(file)
-    const existingConfig = (d.config as CsvSourceConfig | undefined) ?? {
+    const existingConfig = (data.config as CsvSourceConfig | undefined) ?? {
       file_path: '',
       original_filename: '',
       preprocessing: csvPreprocessing,
     }
+
     updateNodeData(nodeId, {
       config: {
         ...existingConfig,
@@ -132,170 +153,12 @@ export default function NodeConfigPanel() {
     })
   }
 
-  const updateCsvConfig = (patch: Partial<CsvSourceConfig>) => {
-    if (!nodeId || !csvConfig) return
-    updateNodeData(nodeId, {
-      config: {
-        ...csvConfig,
-        ...patch,
-        preprocessing: patch.preprocessing ?? csvPreprocessing,
-      },
-    })
-  }
-
-  const startCsvEditing = () => {
-    if (!isCsvNode) return
-    const nextMetadata = { label: csvLabel, tableName }
-    setCsvDraft(nextMetadata)
-    setCsvSnapshot(nextMetadata)
-    setIsCsvEditing(true)
-  }
-
-  const discardCsvChanges = () => {
-    setCsvDraft(csvSnapshot)
-    setIsCsvEditing(false)
-  }
-
-  const saveCsvChanges = () => {
-    if (!hasCsvMetadataChanges) return
-    if (!nodeId) return
-    const labelMode: NodeLabelMode = csvDraft.label === autoLabel ? 'auto' : 'custom'
-    updateNodeData(nodeId, {
-      label: csvDraft.label,
-      labelMode,
-      tableName: csvDraft.tableName,
-    })
-    setIsCsvEditing(false)
-  }
-
-  const renderQueryPanel = ({
-    expanded,
-    setExpanded,
-    title,
-    defaultLabel,
-    queryValue,
-    onQueryChange,
-    canExecute,
-    actionLabel,
-    enabledButtonClassName,
-    overlayTestId,
-    description,
-    metadata,
-    extraEditorContent,
-    onExecute,
-  }: {
-    expanded: boolean
-    setExpanded: React.Dispatch<React.SetStateAction<boolean>>
-    title: string
-    defaultLabel: string
-    queryValue: string
-    onQueryChange: (query: string) => void
-    canExecute: boolean
-    actionLabel: string
-    enabledButtonClassName: string
-    overlayTestId: string
-    description: string
-    metadata: ReactNode
-    extraEditorContent?: ReactNode
-    onExecute: () => void
-  }) => {
-    return (
-      <div
-        data-testid="node-config-panel"
-        data-layout-state={expanded ? 'expanded' : 'collapsed'}
-        data-panel-kind={overlayTestId}
-        className="flex min-h-0 shrink-0 flex-col overflow-hidden border-l border-gray-200 bg-white"
-        style={expanded
-          ? {
-            width: NODE_CONFIG_PANEL_EXPANDED_WIDTH,
-            minWidth: NODE_CONFIG_PANEL_EXPANDED_MIN_WIDTH,
-            maxWidth: NODE_CONFIG_PANEL_EXPANDED_MAX_WIDTH,
-          }
-          : { width: `${NODE_CONFIG_PANEL_WIDTH_PX}px` }}
-      >
-        <div className="border-b border-gray-200 px-4 py-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-gray-400">{title}</div>
-              <h3 className="mt-2 truncate text-base font-semibold text-gray-900">
-                {(d.label as string) || defaultLabel}
-              </h3>
-            </div>
-            <button
-              onClick={() => deleteNode(node.id)}
-              className="shrink-0 text-xs text-red-500 hover:text-red-700"
-            >
-              Delete
-            </button>
-          </div>
-
-          <div className="mt-4 rounded-2xl border border-stone-200 bg-stone-50 px-3 py-3">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-stone-500">Edit mode</div>
-                <p className="mt-1 text-xs text-stone-500">
-                  Expand the SQL editor when you need more room to read or write the query.
-                </p>
-              </div>
-              <button
-                type="button"
-                aria-pressed={expanded}
-                onClick={() => setExpanded((current) => !current)}
-                className={`relative inline-flex h-7 w-14 shrink-0 items-center rounded-full px-1 transition ${
-                  expanded ? 'bg-stone-900' : 'bg-stone-300'
-                }`}
-              >
-                <span
-                  className={`h-5 w-5 rounded-full bg-white shadow-sm transition ${
-                    expanded ? 'translate-x-7' : 'translate-x-0'
-                  }`}
-                />
-                <span className="sr-only">Edit mode</span>
-              </button>
-            </div>
-          </div>
-
-          <div className="mt-4 space-y-2">{metadata}</div>
-        </div>
-
-        <div className="flex min-h-0 flex-1 flex-col px-4 py-4">
-          {extraEditorContent}
-          <div className="mb-2 flex items-center justify-between">
-            <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500">SQL Query</label>
-            {nodeResult && (
-              <span className="text-xs text-gray-400">
-                {nodeResult.status === 'running' ? 'Running...' : `Status: ${nodeResult.status}`}
-              </span>
-            )}
-          </div>
-          <div className="min-h-0 flex-1">
-            <SqlEditor
-              value={queryValue}
-              onChange={onQueryChange}
-              upstreamTables={availableUpstreamTables}
-              height="100%"
-              containerClassName="h-full"
-            />
-          </div>
-        </div>
-
-        <div className="border-t border-gray-200 bg-white px-4 py-4">
-          <p className="mb-3 text-xs text-gray-500">{description}</p>
-          <button
-            type="button"
-            onClick={onExecute}
-            disabled={!canExecute}
-            className={`w-full rounded-lg px-4 py-2 text-sm font-medium transition ${
-              canExecute
-                ? enabledButtonClassName
-                : 'bg-gray-100 text-gray-400'
-            }`}
-          >
-            {nodeResult?.status === 'running' ? 'Running...' : actionLabel}
-          </button>
-        </div>
-      </div>
-    )
+  const handleDeleteNode = () => {
+    if (!node) return
+    setMenuOpen(false)
+    const confirmed = window.confirm(`Delete "${label}"? This cannot be undone.`)
+    if (!confirmed) return
+    deleteNode(node.id)
   }
 
   if (!node) {
@@ -311,9 +174,173 @@ export default function NodeConfigPanel() {
     )
   }
 
-  if (node.type === 'db_source') {
-    const canExecute = Boolean(dbQuery.trim()) && nodeResult?.status !== 'running'
+  const dbType = ((config.db_type as string | undefined) ?? 'postgres') as DbType
+  const dbConnection = config.connection as DatabaseConnectionConfig | undefined
+  const dbQuery = (config.query as string | undefined) ?? ''
+  const transformQuery = (config.sql as string | undefined) ?? ''
+  const canExecuteDb = Boolean(dbQuery.trim()) && nodeResult?.status !== 'running'
+  const canExecuteTransform = Boolean(transformQuery.trim()) && nodeResult?.status !== 'running'
 
+  const renderActionsMenu = () => (
+    <div ref={menuRef} className="relative shrink-0">
+      <button
+        type="button"
+        aria-label={`More options for ${label}`}
+        aria-expanded={menuOpen}
+        onClick={() => setMenuOpen((current) => !current)}
+        className="rounded-lg px-2 py-1 text-lg leading-none text-stone-500 transition hover:bg-stone-100 hover:text-stone-700"
+      >
+        ⋯
+      </button>
+
+      {menuOpen && (
+        <div
+          data-testid="node-config-actions-menu"
+          className="absolute right-0 top-10 z-10 min-w-32 rounded-xl border border-stone-200 bg-white p-1.5 text-sm text-stone-700 shadow-lg"
+        >
+          <button
+            type="button"
+            onClick={() => {
+              openEditNodeEditor(node.id)
+              setMenuOpen(false)
+            }}
+            className="block w-full rounded-lg px-3 py-2 text-left transition hover:bg-stone-100"
+          >
+            Edit
+          </button>
+          <button
+            type="button"
+            onClick={handleDeleteNode}
+            className="block w-full rounded-lg px-3 py-2 text-left text-red-600 transition hover:bg-red-50"
+          >
+            Delete
+          </button>
+        </div>
+      )}
+    </div>
+  )
+
+  const renderQueryPanel = ({
+    expanded,
+    setExpanded,
+    title,
+    defaultLabel,
+    queryValue,
+    onQueryChange,
+    canExecute,
+    actionLabel,
+    enabledButtonClassName,
+    description,
+    metadata,
+    extraEditorContent,
+    onExecute,
+  }: {
+    expanded: boolean
+    setExpanded: Dispatch<SetStateAction<boolean>>
+    title: string
+    defaultLabel: string
+    queryValue: string
+    onQueryChange: (query: string) => void
+    canExecute: boolean
+    actionLabel: string
+    enabledButtonClassName: string
+    description: string
+    metadata: ReactNode
+    extraEditorContent?: ReactNode
+    onExecute: () => void
+  }) => (
+    <div
+      data-testid="node-config-panel"
+      data-layout-state={expanded ? 'expanded' : 'collapsed'}
+      className="flex min-h-0 shrink-0 flex-col overflow-hidden border-l border-gray-200 bg-white"
+      style={expanded
+        ? {
+            width: NODE_CONFIG_PANEL_EXPANDED_WIDTH,
+            minWidth: NODE_CONFIG_PANEL_EXPANDED_MIN_WIDTH,
+            maxWidth: NODE_CONFIG_PANEL_EXPANDED_MAX_WIDTH,
+          }
+        : { width: `${NODE_CONFIG_PANEL_WIDTH_PX}px` }}
+    >
+      <div className="border-b border-gray-200 px-4 py-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-gray-400">{title}</div>
+            <h3 className="mt-2 truncate text-base font-semibold text-gray-900">
+              {label || defaultLabel}
+            </h3>
+          </div>
+          {renderActionsMenu()}
+        </div>
+
+        <div className="mt-4 rounded-2xl border border-stone-200 bg-stone-50 px-3 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-stone-500">Edit mode</div>
+              <p className="mt-1 text-xs text-stone-500">
+                Expand the SQL editor when you need more room to read or write the query.
+              </p>
+            </div>
+            <button
+              type="button"
+              aria-pressed={expanded}
+              onClick={() => setExpanded((current) => !current)}
+              className={`relative inline-flex h-7 w-14 shrink-0 items-center rounded-full px-1 transition ${
+                expanded ? 'bg-stone-900' : 'bg-stone-300'
+              }`}
+            >
+              <span
+                className={`h-5 w-5 rounded-full bg-white shadow-sm transition ${
+                  expanded ? 'translate-x-7' : 'translate-x-0'
+                }`}
+              />
+              <span className="sr-only">Edit mode</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 space-y-2">{metadata}</div>
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col px-4 py-4">
+        {extraEditorContent}
+        <div className="mb-2 flex items-center justify-between">
+          <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500">SQL Query</label>
+          {nodeResult && (
+            <span className="text-xs text-gray-400">
+              {nodeResult.status === 'running' ? 'Running...' : `Status: ${nodeResult.status}`}
+            </span>
+          )}
+        </div>
+        <div className="min-h-0 flex-1">
+          <SqlEditor
+            value={queryValue}
+            onChange={onQueryChange}
+            upstreamTables={availableUpstreamTables}
+            height="100%"
+            containerClassName="h-full"
+          />
+        </div>
+      </div>
+
+      <div className="border-t border-gray-200 bg-white px-4 py-4">
+        <p className="mb-3 text-xs text-gray-500">{description}</p>
+        <button
+          type="button"
+          onClick={onExecute}
+          disabled={!canExecute}
+          className={`w-full rounded-lg px-4 py-2 text-sm font-medium transition ${
+            canExecute
+              ? enabledButtonClassName
+              : 'bg-gray-100 text-gray-400'
+          }`}
+        >
+          {nodeResult?.status === 'running' ? 'Running...' : actionLabel}
+        </button>
+      </div>
+    </div>
+  )
+
+  if (node.type === 'db_source') {
     return renderQueryPanel({
       expanded: isDbEditMode,
       setExpanded: setIsDbEditMode,
@@ -321,10 +348,9 @@ export default function NodeConfigPanel() {
       defaultLabel: 'Database Source',
       queryValue: dbQuery,
       onQueryChange: (query) => updateNodeData(node.id, { config: { ...config, query } }),
-      canExecute,
+      canExecute: canExecuteDb,
       actionLabel: 'Execute',
       enabledButtonClassName: 'bg-emerald-500 text-white hover:bg-emerald-600',
-      overlayTestId: 'db-edit-overlay',
       description: 'Execute this source query and open its preview.',
       metadata: (
         <>
@@ -349,8 +375,6 @@ export default function NodeConfigPanel() {
   }
 
   if (node.type === 'transform') {
-    const canExecute = Boolean(transformSql) && nodeResult?.status !== 'running'
-
     return renderQueryPanel({
       expanded: isTransformEditMode,
       setExpanded: setIsTransformEditMode,
@@ -358,10 +382,9 @@ export default function NodeConfigPanel() {
       defaultLabel: 'Transform',
       queryValue: transformQuery,
       onQueryChange: (query) => updateNodeData(node.id, { config: { ...config, sql: query } }),
-      canExecute,
+      canExecute: canExecuteTransform,
       actionLabel: 'Run and Preview',
       enabledButtonClassName: 'bg-purple-500 text-white hover:bg-purple-600',
-      overlayTestId: 'transform-edit-overlay',
       description: 'Execute this transform and open its preview. Missing upstream tables will prompt before running dependencies.',
       metadata: (
         <div>
@@ -394,126 +417,107 @@ export default function NodeConfigPanel() {
       className="min-h-0 shrink-0 overflow-y-auto border-l border-gray-200 bg-white"
       style={{ width: `${NODE_CONFIG_PANEL_WIDTH_PX}px` }}
     >
-      <div className="p-4 border-b border-gray-200">
-        <div className="flex justify-between items-center mb-3">
-          <h3 className="font-semibold text-sm text-gray-800">Node Config</h3>
-          <button
-            onClick={() => deleteNode(node.id)}
-            className="text-red-500 hover:text-red-700 text-xs"
-          >
-            Delete
-          </button>
+      <div className="border-b border-gray-200 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-gray-400">
+              {getNodeTitle(node.type)}
+            </div>
+            <h3 className="mt-2 truncate text-base font-semibold text-gray-900">{label}</h3>
+          </div>
+          {renderActionsMenu()}
         </div>
 
-        {node.type === 'csv_source' ? (
-          <>
-            <div className="flex justify-between items-center mb-3">
-              <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Metadata</span>
-              {isCsvEditing ? (
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={discardCsvChanges}
-                    className="text-xs text-gray-500 hover:text-gray-700"
-                  >
-                    Discard
-                  </button>
-                  <button
-                    type="button"
-                    onClick={saveCsvChanges}
-                    disabled={!hasCsvMetadataChanges}
-                    className={`rounded px-2 py-1 text-xs font-medium transition ${
-                      hasCsvMetadataChanges
-                        ? 'bg-blue-500 text-white hover:bg-blue-600'
-                        : 'bg-gray-100 text-gray-400'
-                    }`}
-                  >
-                    Save
-                  </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={startCsvEditing}
-                  className="text-xs text-blue-500 hover:text-blue-700"
-                >
-                  Edit
-                </button>
-              )}
+        <div className="mt-4 space-y-3">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Table</div>
+            <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
+              {tableName}
             </div>
+          </div>
 
-            <label htmlFor={labelInputId} className="block text-xs text-gray-500 mb-1">Label</label>
-            {isCsvEditing ? (
-              <input
-                id={labelInputId}
-                type="text"
-                value={csvDraft.label}
-                onChange={(e) => setCsvDraft((current) => ({ ...current, label: e.target.value }))}
-                className="w-full border border-gray-300 rounded px-2 py-1 text-sm mb-3"
-              />
-            ) : (
-              <div className="mb-3 rounded border border-gray-200 bg-gray-50 px-2 py-1.5 text-sm text-gray-700">
-                {(d.label as string) || 'CSV Source'}
+          {node.type === 'db_source' && dbConnection && (
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Connection</div>
+              <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
+                {getConnectionSummary(dbType, dbConnection)}
               </div>
-            )}
+            </div>
+          )}
 
-            <label htmlFor={tableNameInputId} className="block text-xs text-gray-500 mb-1">Table Name</label>
-            {isCsvEditing ? (
-              <input
-                id={tableNameInputId}
-                type="text"
-                value={csvDraft.tableName}
-                onChange={(e) => setCsvDraft((current) => ({ ...current, tableName: e.target.value }))}
-                className="w-full border border-gray-300 rounded px-2 py-1 text-sm font-mono"
-              />
-            ) : (
-              <div className="rounded border border-gray-200 bg-gray-50 px-2 py-1.5 text-sm font-mono text-gray-700">
-                {tableName}
-              </div>
-            )}
-          </>
-        ) : (
-          <>
-            <label htmlFor={labelInputId} className="block text-xs text-gray-500 mb-1">Label</label>
-            <input
-              id={labelInputId}
-              type="text"
-              value={(d.label as string) || ''}
-              onChange={(e) => updateNodeData(node.id, {
-                label: e.target.value,
-                labelMode: e.target.value === autoLabel ? 'auto' : 'custom',
-              })}
-              className="w-full border border-gray-300 rounded px-2 py-1 text-sm mb-3"
-            />
-
-            <label htmlFor={tableNameInputId} className="block text-xs text-gray-500 mb-1">Table Name</label>
-            <input
-              id={tableNameInputId}
-              type="text"
-              value={tableName}
-              onChange={(e) => updateNodeData(node.id, { tableName: e.target.value })}
-              className="w-full border border-gray-300 rounded px-2 py-1 text-sm font-mono"
-            />
-          </>
-        )}
+          {nodeResult && (
+            <div className="text-xs text-gray-500">
+              {nodeResult.status === 'running' ? 'Running...' : `Status: ${nodeResult.status}`}
+            </div>
+          )}
+        </div>
       </div>
 
-      <div className="p-4">
-        {node.type === 'csv_source' && (
+      <div className="space-y-6 p-4">
+        {node.type === 'db_source' && (
+          <>
+            <QueryPreview title="SQL Query" value={dbQuery} emptyLabel="No query defined" />
+            <button
+              type="button"
+              onClick={() => { void executeSingleNode(node.id, { loadPreviewOnSuccess: true }) }}
+              disabled={!canExecuteDb}
+              className={`w-full rounded-lg px-4 py-2 text-sm font-medium transition ${
+                canExecuteDb
+                  ? 'bg-emerald-500 text-white hover:bg-emerald-600'
+                  : 'bg-gray-100 text-gray-400'
+              }`}
+            >
+              {nodeResult?.status === 'running' ? 'Running...' : 'Execute'}
+            </button>
+          </>
+        )}
+
+        {node.type === 'transform' && (
+          <>
+            {availableUpstreamTables.length > 0 && (
+              <div>
+                <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">Available Tables</div>
+                <div className="flex flex-wrap gap-1">
+                  {availableUpstreamTables.map((upstreamTable) => (
+                    <span key={upstreamTable} className="rounded bg-purple-100 px-2 py-0.5 text-xs font-mono text-purple-700">
+                      {upstreamTable}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            <QueryPreview title="SQL Query" value={transformQuery} emptyLabel="No SQL defined" />
+            <button
+              type="button"
+              onClick={() => { void runTransformPreview(node.id) }}
+              disabled={!canExecuteTransform}
+              className={`w-full rounded-lg px-4 py-2 text-sm font-medium transition ${
+                canExecuteTransform
+                  ? 'bg-purple-500 text-white hover:bg-purple-600'
+                  : 'bg-gray-100 text-gray-400'
+              }`}
+            >
+              {nodeResult?.status === 'running' ? 'Running...' : 'Run and Preview'}
+            </button>
+          </>
+        )}
+
+        {node.type === 'csv_source' && csvConfig && (
           <div className="space-y-6">
             <div>
-              <label className="block text-xs text-gray-500 mb-2">CSV File</label>
+              <label className="mb-2 block text-xs text-gray-500">CSV File</label>
               <input ref={fileInputRef} type="file" accept=".csv" onChange={handleCsvUpload} className="hidden" />
               <button
+                type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="w-full border-2 border-dashed border-gray-300 rounded-lg p-4 text-sm text-gray-500 hover:border-blue-400 hover:text-blue-500 transition"
+                className="w-full rounded-lg border-2 border-dashed border-gray-300 p-4 text-sm text-gray-500 transition hover:border-blue-400 hover:text-blue-500"
               >
-                {csvConfig?.original_filename || 'Click to upload CSV'}
+                {csvConfig.original_filename || 'Click to upload CSV'}
               </button>
             </div>
 
             <div>
-              <div className="flex items-center justify-between mb-2">
+              <div className="mb-2 flex items-center justify-between">
                 <label className="block text-xs text-gray-500">Preprocessing</label>
                 <button
                   type="button"
@@ -537,6 +541,7 @@ export default function NodeConfigPanel() {
                   />
                 </button>
               </div>
+
               {csvPreprocessing.enabled && (
                 <>
                   <p className="mb-3 text-xs text-gray-500">
@@ -544,38 +549,39 @@ export default function NodeConfigPanel() {
                   </p>
                   <div className="space-y-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
                     <div>
-                      <label className="block text-xs text-gray-500 mb-1">Runtime</label>
+                      <label htmlFor="csv-runtime" className="mb-1 block text-xs text-gray-500">Runtime</label>
                       <select
+                        id="csv-runtime"
                         value={csvPreprocessing.runtime}
-                        onChange={(e) => updateCsvConfig({
+                        onChange={(event) => updateCsvConfig({
                           preprocessing: {
                             ...csvPreprocessing,
-                            runtime: e.target.value as CsvPreprocessingConfig['runtime'],
+                            runtime: event.target.value as CsvPreprocessingConfig['runtime'],
                           },
                         })}
-                        className="w-full border border-gray-300 rounded px-2 py-1 text-sm"
+                        className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
                       >
                         <option value="python">Python</option>
                         <option value="bash">Bash</option>
                       </select>
                     </div>
                     <div>
-                      <label htmlFor={preprocessingEditorId} className="block text-xs text-gray-500 mb-1">Script</label>
+                      <label htmlFor="csv-script" className="mb-1 block text-xs text-gray-500">Script</label>
                       <textarea
-                        id={preprocessingEditorId}
+                        id="csv-script"
                         value={csvPreprocessing.script}
-                        onChange={(e) => updateCsvConfig({
+                        onChange={(event) => updateCsvConfig({
                           preprocessing: {
                             ...csvPreprocessing,
-                            script: e.target.value,
+                            script: event.target.value,
                           },
                         })}
                         rows={8}
                         spellCheck={false}
                         className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm font-mono"
                         placeholder={csvPreprocessing.runtime === 'bash'
-                          ? 'tail -n +3 "$1"'
-                          : 'import sys\nfrom pathlib import Path\nlines = Path(sys.argv[1]).read_text().splitlines()[2:]\nsys.stdout.write("\\n".join(lines))'}
+                          ? 'tail -n +3 \"$1\"'
+                          : 'import sys\nfrom pathlib import Path\nlines = Path(sys.argv[1]).read_text().splitlines()[2:]\nsys.stdout.write(\"\\n\".join(lines))'}
                       />
                     </div>
                   </div>
@@ -584,7 +590,7 @@ export default function NodeConfigPanel() {
             </div>
 
             <div>
-              <div className="flex items-center justify-between mb-2">
+              <div className="mb-2 flex items-center justify-between">
                 <label className="block text-xs text-gray-500">Run Node</label>
                 {nodeResult && (
                   <span className="text-xs text-gray-400">
@@ -598,7 +604,7 @@ export default function NodeConfigPanel() {
               <div className="grid grid-cols-3 gap-3">
                 <button
                   type="button"
-                  onClick={() => csvConfig?.file_path && void loadCsvPreview(node.id, csvConfig.file_path)}
+                  onClick={() => csvConfig.file_path && void loadCsvPreview(node.id, csvConfig.file_path)}
                   disabled={!canPreviewCsv}
                   className={`rounded px-3 py-2 text-sm font-medium transition ${
                     canPreviewCsv
@@ -610,7 +616,7 @@ export default function NodeConfigPanel() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => csvConfig?.file_path && void loadPreprocessedCsvPreview(node.id, csvConfig.file_path, csvPreprocessing)}
+                  onClick={() => csvConfig.file_path && void loadPreprocessedCsvPreview(node.id, csvConfig.file_path, csvPreprocessing)}
                   disabled={!canRunPreprocess}
                   className={`rounded px-3 py-2 text-sm font-medium transition ${
                     canRunPreprocess
@@ -633,6 +639,7 @@ export default function NodeConfigPanel() {
                   {nodeResult?.status === 'running' ? 'Running...' : 'Load data'}
                 </button>
               </div>
+
               {csvPreprocessing.enabled && !csvPreprocessing.script.trim() && (
                 <p className="mt-2 text-xs text-amber-600">
                   Add a preprocessing script before running Preprocess.
@@ -653,8 +660,16 @@ export default function NodeConfigPanel() {
         )}
 
         {node.type === 'export' && (
-          <div className="text-sm text-gray-500">
-            Connect this node to a source to export its data as CSV.
+          <div className="space-y-3">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Format</div>
+              <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                {(config.format as string | undefined) ?? 'csv'}
+              </div>
+            </div>
+            <div className="text-sm text-gray-500">
+              Connect this node to a source to export its data as CSV.
+            </div>
           </div>
         )}
       </div>

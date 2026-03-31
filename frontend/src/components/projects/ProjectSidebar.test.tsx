@@ -96,7 +96,9 @@ describe('ProjectSidebar', () => {
     }))
 
     const createdId = mockSavePipeline.mock.calls[0][0].id
-    expect(screen.getByTestId('location')).toHaveTextContent(`/projects/${createdId}`)
+    await waitFor(() => {
+      expect(screen.getByTestId('location')).toHaveTextContent(`/projects/${createdId}`)
+    })
   })
 
   it('warns before switching projects when the current project has unsaved changes', async () => {

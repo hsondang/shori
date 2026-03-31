@@ -15,6 +15,8 @@ import type {
   CsvSourceConfig,
   CsvTextPreviewData,
   MaterializedPreviewTab,
+  NodeEditorDraft,
+  NodeEditorMode,
   NodeLabelMode,
   NodeType,
   NodeExecutionResult,
@@ -67,12 +69,22 @@ interface PipelineState {
   csvPreprocessArtifacts: Record<string, string>
   selectPreviewTab: (nodeId: string) => void
 
+  // Node editor
+  nodeEditorMode: NodeEditorMode
+  nodeEditorDraft: NodeEditorDraft | null
+  editingNodeId: string | null
+
   // Actions
   addNode: (type: NodeType, position: { x: number; y: number }) => void
   addDatabaseConnection: (connection: SavedDatabaseConnectionInput) => string
   updateDatabaseConnection: (id: string, connection: SavedDatabaseConnectionInput) => void
   deleteDatabaseConnection: (id: string) => void
   addDatabaseSourceFromConnection: (connectionId: string, position: { x: number; y: number }) => string | null
+  openCreateNodeEditor: (draft: NodeEditorDraft) => void
+  openEditNodeEditor: (nodeId: string) => void
+  updateNodeEditorDraft: (patch: Partial<NodeEditorDraft>) => void
+  closeNodeEditor: () => void
+  commitNodeEditor: () => string | null
   updateNodeData: (nodeId: string, data: Record<string, unknown>) => void
   deleteNode: (nodeId: string) => void
   executePipeline: (force?: boolean) => Promise<void>
@@ -94,6 +106,14 @@ const initialPipeline = createBlankPipelineDefinition()
 function generateNodeId(): string {
   nodeCounter++
   return `node_${nodeCounter}_${Date.now().toString(36)}`
+}
+
+function cloneValue<T>(value: T): T {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(value)
+  }
+
+  return JSON.parse(JSON.stringify(value)) as T
 }
 
 function defaultLabel(type: NodeType): string {
@@ -124,6 +144,42 @@ function defaultConfig(type: NodeType): Record<string, unknown> {
 
 function defaultAutoLabel(type: NodeType): string {
   return defaultLabel(type)
+}
+
+export function buildNodeDraft(
+  type: NodeType,
+  position: { x: number; y: number },
+  overrides: Partial<NodeEditorDraft> = {},
+): NodeEditorDraft {
+  const id = overrides.id ?? generateNodeId()
+  const autoLabel = overrides.autoLabel ?? defaultAutoLabel(type)
+  const label = overrides.label ?? autoLabel
+
+  return {
+    id,
+    type,
+    position: overrides.position ?? position,
+    label,
+    autoLabel,
+    labelMode: overrides.labelMode ?? deriveLabelMode(label, autoLabel),
+    tableName: overrides.tableName ?? id,
+    config: cloneValue(overrides.config ?? defaultConfig(type)),
+  }
+}
+
+function buildNodeFromDraft(draft: NodeEditorDraft): Node {
+  return {
+    id: draft.id,
+    type: draft.type,
+    position: draft.position,
+    data: {
+      label: draft.label,
+      autoLabel: draft.autoLabel,
+      labelMode: draft.labelMode,
+      tableName: draft.tableName,
+      config: cloneValue(draft.config),
+    },
+  }
 }
 
 function deriveLabelMode(label: string, autoLabel: string): NodeLabelMode {
@@ -162,6 +218,21 @@ function getNodeLabelMetadata(node: Node): { label: string; autoLabel: string; l
     label,
     autoLabel: autoLabel ?? inferred.autoLabel,
     labelMode: labelMode ?? inferred.labelMode,
+  }
+}
+
+function nodeToDraft(node: Node): NodeEditorDraft {
+  const { label, autoLabel, labelMode } = getNodeLabelMetadata(node)
+
+  return {
+    id: node.id,
+    type: node.type as NodeType,
+    position: cloneValue(node.position),
+    label,
+    autoLabel,
+    labelMode,
+    tableName: getTableName(node),
+    config: cloneValue(getNodeConfig(node)),
   }
 }
 
@@ -242,6 +313,9 @@ function hydratePipelineState(pipeline: PipelineDefinition) {
     activePreviewTarget: null,
     transientPreview: getEmptyTransientPreview(),
     csvPreprocessArtifacts: {},
+    nodeEditorMode: 'closed' as const,
+    nodeEditorDraft: null,
+    editingNodeId: null,
     savedPipelineSnapshot: snapshotPipelineDefinition(pipeline),
     hasUnsavedChanges: false,
   }
@@ -282,6 +356,42 @@ function invalidateCsvPreprocessArtifact(nodeId: string | undefined) {
 function getCsvConfig(node: Node): CsvSourceConfig | null {
   if (node.type !== 'csv_source') return null
   return getNodeConfig(node) as unknown as CsvSourceConfig
+}
+
+export function buildDatabaseSourceDraftFromConnection(
+  connection: SavedDatabaseConnection,
+  position: { x: number; y: number },
+): NodeEditorDraft {
+  const config = connection.db_type === 'oracle'
+    ? {
+        db_type: 'oracle',
+        connection: {
+          host: connection.host,
+          port: connection.port,
+          service_name: connection.service_name,
+          user: connection.user,
+          password: connection.password,
+        },
+        query: '',
+      }
+    : {
+        db_type: 'postgres',
+        connection: {
+          host: connection.host,
+          port: connection.port,
+          database: connection.database,
+          user: connection.user,
+          password: connection.password,
+        },
+        query: '',
+      }
+
+  return buildNodeDraft('db_source', position, {
+    label: connection.name,
+    autoLabel: connection.name,
+    labelMode: 'auto',
+    config,
+  })
 }
 
 function hasCsvLoadInputsChanged(
@@ -367,6 +477,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   activePreviewTarget: null,
   transientPreview: getEmptyTransientPreview(),
   csvPreprocessArtifacts: {},
+  nodeEditorMode: 'closed',
+  nodeEditorDraft: null,
+  editingNodeId: null,
 
   setPipelineName: (name) => {
     set({ pipelineName: name })
@@ -408,23 +521,99 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     set({ activePreviewTarget: { kind: 'tab', nodeId } })
   },
 
-  addNode: (type, position) => {
-    const id = generateNodeId()
-    const tableName = id
-    const autoLabel = defaultAutoLabel(type)
-    const newNode: Node = {
-      id,
-      type,
-      position,
-      data: {
-        label: autoLabel,
-        autoLabel,
-        labelMode: 'auto',
-        tableName,
-        config: defaultConfig(type),
-      },
+  openCreateNodeEditor: (draft) => {
+    set({
+      nodeEditorMode: 'create',
+      nodeEditorDraft: cloneValue(draft),
+      editingNodeId: null,
+      selectedNodeId: null,
+    })
+  },
+
+  openEditNodeEditor: (nodeId) => {
+    const node = get().nodes.find((candidate) => candidate.id === nodeId)
+    if (!node) return
+
+    set({
+      nodeEditorMode: 'edit',
+      nodeEditorDraft: nodeToDraft(node),
+      editingNodeId: nodeId,
+      selectedNodeId: nodeId,
+    })
+  },
+
+  updateNodeEditorDraft: (patch) => {
+    set((state) => {
+      if (!state.nodeEditorDraft) return state
+
+      const nextDraft = {
+        ...state.nodeEditorDraft,
+        ...patch,
+      }
+      const label = typeof patch.label === 'string' ? patch.label : nextDraft.label
+      const autoLabel = typeof patch.autoLabel === 'string' ? patch.autoLabel : nextDraft.autoLabel
+      const labelMode = patch.labelMode === 'auto' || patch.labelMode === 'custom'
+        ? patch.labelMode
+        : deriveLabelMode(label, autoLabel)
+
+      return {
+        nodeEditorDraft: {
+          ...nextDraft,
+          label,
+          autoLabel,
+          labelMode,
+          position: patch.position ? cloneValue(patch.position) : nextDraft.position,
+          config: patch.config ? cloneValue(patch.config) : nextDraft.config,
+        },
+      }
+    })
+  },
+
+  closeNodeEditor: () => {
+    set({
+      nodeEditorMode: 'closed',
+      nodeEditorDraft: null,
+      editingNodeId: null,
+    })
+  },
+
+  commitNodeEditor: () => {
+    const { nodeEditorMode, nodeEditorDraft, editingNodeId } = get()
+    if (!nodeEditorDraft || nodeEditorMode === 'closed') return null
+
+    if (nodeEditorMode === 'create') {
+      const newNode = buildNodeFromDraft(nodeEditorDraft)
+      set((state) => ({
+        nodes: [...state.nodes, newNode],
+        selectedNodeId: newNode.id,
+        nodeEditorMode: 'closed',
+        nodeEditorDraft: null,
+        editingNodeId: null,
+      }))
+      const state = get()
+      set({
+        hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
+      })
+      return newNode.id
     }
-    set({ nodes: [...get().nodes, newNode] })
+
+    if (!editingNodeId) return null
+
+    get().updateNodeData(editingNodeId, {
+      label: nodeEditorDraft.label,
+      autoLabel: nodeEditorDraft.autoLabel,
+      labelMode: nodeEditorDraft.labelMode,
+      tableName: nodeEditorDraft.tableName,
+      config: cloneValue(nodeEditorDraft.config),
+    })
+    get().closeNodeEditor()
+    set({ selectedNodeId: editingNodeId })
+    return editingNodeId
+  },
+
+  addNode: (type, position) => {
+    const newNode = buildNodeFromDraft(buildNodeDraft(type, position))
+    set({ nodes: [...get().nodes, newNode], selectedNodeId: newNode.id })
     const state = get()
     set({
       hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
@@ -467,44 +656,14 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     const savedConnection = get().databaseConnections.find((item) => item.id === connectionId)
     if (!savedConnection) return null
 
-    const id = generateNodeId()
-    const connection = savedConnection.db_type === 'oracle'
-      ? {
-          host: savedConnection.host,
-          port: savedConnection.port,
-          service_name: savedConnection.service_name,
-          user: savedConnection.user,
-          password: savedConnection.password,
-        }
-      : {
-          host: savedConnection.host,
-          port: savedConnection.port,
-          database: savedConnection.database,
-          user: savedConnection.user,
-          password: savedConnection.password,
-        }
-    const newNode: Node = {
-      id,
-      type: 'db_source',
-      position,
-      data: {
-        label: savedConnection.name,
-        autoLabel: savedConnection.name,
-        labelMode: 'auto',
-        tableName: id,
-        config: {
-          db_type: savedConnection.db_type,
-          connection,
-          query: '',
-        },
-      },
-    }
-    set({ nodes: [...get().nodes, newNode] })
+    const draft = buildDatabaseSourceDraftFromConnection(savedConnection, position)
+    const newNode = buildNodeFromDraft(draft)
+    set({ nodes: [...get().nodes, newNode], selectedNodeId: newNode.id })
     const state = get()
     set({
       hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
     })
-    return id
+    return newNode.id
   },
 
   updateNodeData: (nodeId, data) => {
@@ -620,6 +779,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         csvPreprocessArtifacts,
         selectedNodeId: state.selectedNodeId === nodeId ? null : state.selectedNodeId,
         errorDialogNodeId: state.errorDialogNodeId === nodeId ? null : state.errorDialogNodeId,
+        nodeEditorMode: state.editingNodeId === nodeId ? 'closed' : state.nodeEditorMode,
+        nodeEditorDraft: state.editingNodeId === nodeId ? null : state.nodeEditorDraft,
+        editingNodeId: state.editingNodeId === nodeId ? null : state.editingNodeId,
       }
     })
     const state = get()

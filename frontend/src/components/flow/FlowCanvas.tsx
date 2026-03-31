@@ -7,12 +7,16 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { usePipelineStore } from '../../store/pipelineStore'
+import {
+  buildDatabaseSourceDraftFromConnection,
+  buildNodeDraft,
+  usePipelineStore,
+} from '../../store/pipelineStore'
 import CsvSourceNode from './nodes/CsvSourceNode'
 import DatabaseSourceNode from './nodes/DatabaseSourceNode'
 import TransformNode from './nodes/TransformNode'
 import ExportNode from './nodes/ExportNode'
-import type { NodeType } from '../../types/pipeline'
+import type { NodeType, SavedDatabaseConnection } from '../../types/pipeline'
 import { DATABASE_CONNECTION_MIME, NODE_TYPE_MIME } from '../../lib/dragData'
 
 const nodeTypes = {
@@ -28,8 +32,8 @@ export default function FlowCanvas() {
   const onNodesChange = usePipelineStore((s) => s.onNodesChange)
   const onEdgesChange = usePipelineStore((s) => s.onEdgesChange)
   const onConnect = usePipelineStore((s) => s.onConnect)
-  const addNode = usePipelineStore((s) => s.addNode)
-  const addDatabaseSourceFromConnection = usePipelineStore((s) => s.addDatabaseSourceFromConnection)
+  const databaseConnections = usePipelineStore((s) => s.databaseConnections)
+  const openCreateNodeEditor = usePipelineStore((s) => s.openCreateNodeEditor)
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
   const rfInstance = useRef<ReactFlowInstance | null>(null)
 
@@ -49,15 +53,17 @@ export default function FlowCanvas() {
       })
       const connectionId = e.dataTransfer.getData(DATABASE_CONNECTION_MIME)
       if (connectionId) {
-        addDatabaseSourceFromConnection(connectionId, position)
+        const savedConnection = databaseConnections.find((item) => item.id === connectionId) as SavedDatabaseConnection | undefined
+        if (!savedConnection) return
+        openCreateNodeEditor(buildDatabaseSourceDraftFromConnection(savedConnection, position))
         return
       }
 
       const type = e.dataTransfer.getData(NODE_TYPE_MIME) as NodeType
       if (!type) return
-      addNode(type, position)
+      openCreateNodeEditor(buildNodeDraft(type, position))
     },
-    [addDatabaseSourceFromConnection, addNode]
+    [databaseConnections, openCreateNodeEditor]
   )
 
   const onPaneClick = useCallback(() => {

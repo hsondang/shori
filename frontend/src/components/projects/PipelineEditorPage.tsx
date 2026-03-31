@@ -5,6 +5,7 @@ import FlowCanvas from '../flow/FlowCanvas'
 import NodeErrorDialog from '../flow/NodeErrorDialog'
 import NodeConfigPanel from '../panels/NodeConfigPanel'
 import DataPreviewPanel from '../panels/DataPreviewPanel'
+import NodeEditorModal from '../panels/NodeEditorModal'
 import { usePipelineStore } from '../../store/pipelineStore'
 import {
   clampPreviewHeight,
@@ -215,6 +216,7 @@ export default function PipelineEditorPage() {
           )}
         </div>
       </section>
+      <NodeEditorModal />
       <NodeErrorDialog />
     </div>
   )

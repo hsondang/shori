@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { act } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -54,9 +54,9 @@ describe('Toolbar', () => {
     const dropdown = screen.getByTestId('database-source-dropdown')
     await user.click(within(dropdown).getByRole('button', { name: 'Add' }))
     const modal = screen.getByTestId('database-source-modal')
-    await user.type(within(modal).getByLabelText(/connection name/i), 'Analytics Postgres')
-    await user.type(screen.getByPlaceholderText('Host'), 'localhost')
-    await user.type(screen.getByPlaceholderText('Database'), 'analytics')
+    fireEvent.change(within(modal).getByLabelText(/connection name/i), { target: { value: 'Analytics Postgres' } })
+    fireEvent.change(screen.getByPlaceholderText('Host'), { target: { value: 'localhost' } })
+    fireEvent.change(screen.getByPlaceholderText('Database'), { target: { value: 'analytics' } })
     await user.click(within(modal).getByRole('button', { name: 'Save' }))
 
     const preset = screen.getByText('Analytics Postgres').closest('div[draggable="true"]')

@@ -18,6 +18,10 @@ vi.mock('../panels/NodeConfigPanel', () => ({
   default: () => <aside data-testid="node-config-panel">Node Config Panel</aside>,
 }))
 
+vi.mock('../panels/NodeEditorModal', () => ({
+  default: () => <div data-testid="node-editor-modal">Node Editor Modal</div>,
+}))
+
 vi.mock('../panels/DataPreviewPanel', () => ({
   default: () => <div data-testid="data-preview-panel">Data Preview Panel</div>,
 }))
@@ -56,6 +60,7 @@ describe('PipelineEditorPage', () => {
     expect(screen.getByTestId('data-preview-panel')).toBeInTheDocument()
     expect(screen.getByTestId('preview-panel-shell')).toHaveAttribute('data-layout-state', 'expanded')
     expect(screen.getByTestId('preview-resize-handle')).toBeInTheDocument()
+    expect(screen.getByTestId('node-editor-modal')).toBeInTheDocument()
     expect(screen.getByTestId('node-error-dialog')).toBeInTheDocument()
     expect(container.querySelector('.pl-\\[3\\.5rem\\]')).toBeNull()
   })
