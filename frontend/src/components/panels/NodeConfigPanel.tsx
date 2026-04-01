@@ -7,6 +7,7 @@ import {
   useState,
   type ChangeEvent,
   type Dispatch,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type SetStateAction,
 } from 'react'
@@ -21,13 +22,12 @@ import type {
   DbType,
 } from '../../types/pipeline'
 import {
-  NODE_CONFIG_PANEL_EXPANDED_MAX_WIDTH,
-  NODE_CONFIG_PANEL_EXPANDED_MIN_WIDTH,
-  NODE_CONFIG_PANEL_EXPANDED_WIDTH,
+  clampNodeConfigPanelWidth,
+  getDefaultExpandedNodeConfigPanelWidth,
   NODE_CONFIG_PANEL_WIDTH_PX,
 } from '../projects/pipelineEditorLayout'
 
-function getNodeTitle(type: string): string {
+function getNodeTitle(type?: string): string {
   switch (type) {
     case 'csv_source':
       return 'CSV Source'
@@ -40,6 +40,62 @@ function getNodeTitle(type: string): string {
     default:
       return 'Node'
   }
+}
+
+function QueryPreview({
+  title,
+  value,
+  emptyLabel,
+}: {
+  title: string
+  value: string
+  emptyLabel: string
+}) {
+  return (
+    <div>
+      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">{title}</div>
+      <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+        <pre className="m-0 whitespace-pre-wrap break-words text-sm text-gray-700">
+          {value.trim() || emptyLabel}
+        </pre>
+      </div>
+    </div>
+  )
+}
+
+function NodeConfigPanelShell({
+  widthPx,
+  layoutState,
+  onResizeStart,
+  children,
+}: {
+  widthPx: number
+  layoutState: 'collapsed' | 'expanded'
+  onResizeStart: (event: ReactMouseEvent<HTMLDivElement>) => void
+  children: ReactNode
+}) {
+  return (
+    <div
+      data-testid="node-config-panel"
+      data-layout-state={layoutState}
+      className="flex min-h-0 shrink-0 overflow-hidden bg-white"
+      style={{ width: `${widthPx}px` }}
+    >
+      <div
+        role="separator"
+        aria-label="Resize node configuration panel"
+        aria-orientation="vertical"
+        data-testid="node-config-panel-resize-handle"
+        onMouseDown={onResizeStart}
+        className="group flex w-3 shrink-0 cursor-col-resize items-center justify-center bg-white"
+      >
+        <div className="h-16 w-1 rounded-full bg-stone-200 transition group-hover:bg-stone-300" />
+      </div>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-l border-gray-200 bg-white">
+        {children}
+      </div>
+    </div>
+  )
 }
 
 export default function NodeConfigPanel() {
@@ -57,9 +113,14 @@ export default function NodeConfigPanel() {
   const nodeResults = usePipelineStore((s) => s.nodeResults)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const resizeStateRef = useRef<{ expanded: boolean; startX: number; startWidthPx: number } | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const [isDbEditMode, setIsDbEditMode] = useState(false)
   const [isTransformEditMode, setIsTransformEditMode] = useState(false)
+  const [collapsedWidthPx, setCollapsedWidthPx] = useState(NODE_CONFIG_PANEL_WIDTH_PX)
+  const [expandedWidthPx, setExpandedWidthPx] = useState(() =>
+    getDefaultExpandedNodeConfigPanelWidth(typeof window === 'undefined' ? 0 : window.innerWidth)
+  )
 
   const node = nodes.find((candidate) => candidate.id === selectedNodeId)
   const nodeId = node?.id ?? null
@@ -121,6 +182,46 @@ export default function NodeConfigPanel() {
     setIsTransformEditMode(false)
   }, [nodeId])
 
+  const setPanelWidthForMode = useCallback((requestedWidthPx: number, expanded: boolean) => {
+    const nextWidthPx = clampNodeConfigPanelWidth(requestedWidthPx, expanded)
+    if (expanded) {
+      setExpandedWidthPx(nextWidthPx)
+      return
+    }
+
+    setCollapsedWidthPx(nextWidthPx)
+  }, [])
+
+  const stopResize = useCallback(() => {
+    resizeStateRef.current = null
+    document.body.style.removeProperty('user-select')
+  }, [])
+
+  const handleResize = useCallback((event: MouseEvent) => {
+    const resizeState = resizeStateRef.current
+    if (!resizeState) {
+      return
+    }
+
+    const nextWidthPx = resizeState.startWidthPx + (resizeState.startX - event.clientX)
+    setPanelWidthForMode(nextWidthPx, resizeState.expanded)
+  }, [setPanelWidthForMode])
+
+  useEffect(() => {
+    const handleMouseUp = () => {
+      stopResize()
+    }
+
+    window.addEventListener('mousemove', handleResize)
+    window.addEventListener('mouseup', handleMouseUp)
+
+    return () => {
+      window.removeEventListener('mousemove', handleResize)
+      window.removeEventListener('mouseup', handleMouseUp)
+      stopResize()
+    }
+  }, [handleResize, stopResize])
+
   const updateCsvConfig = useCallback((patch: Partial<CsvSourceConfig>) => {
     if (!nodeId || !csvConfig) return
     updateNodeData(nodeId, {
@@ -161,16 +262,31 @@ export default function NodeConfigPanel() {
     deleteNode(node.id)
   }
 
+  const isQueryPanelExpanded = (node?.type === 'db_source' && isDbEditMode)
+    || (node?.type === 'transform' && isTransformEditMode)
+  const activeWidthPx = isQueryPanelExpanded ? expandedWidthPx : collapsedWidthPx
+
+  const startResize = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    resizeStateRef.current = {
+      expanded: isQueryPanelExpanded,
+      startX: event.clientX,
+      startWidthPx: activeWidthPx,
+    }
+    document.body.style.userSelect = 'none'
+    event.preventDefault()
+  }, [activeWidthPx, isQueryPanelExpanded])
+
   if (!node) {
     return (
-      <div
-        data-testid="node-config-panel"
-        data-layout-state="collapsed"
-        className="flex shrink-0 items-center justify-center border-l border-gray-200 bg-white p-4 text-sm text-gray-400"
-        style={{ width: `${NODE_CONFIG_PANEL_WIDTH_PX}px` }}
+      <NodeConfigPanelShell
+        widthPx={collapsedWidthPx}
+        layoutState="collapsed"
+        onResizeStart={startResize}
       >
-        Select a node to configure
-      </div>
+        <div className="flex flex-1 items-center justify-center p-4 text-sm text-gray-400">
+          Select a node to configure
+        </div>
+      </NodeConfigPanelShell>
     )
   }
 
@@ -249,17 +365,10 @@ export default function NodeConfigPanel() {
     extraEditorContent?: ReactNode
     onExecute: () => void
   }) => (
-    <div
-      data-testid="node-config-panel"
-      data-layout-state={expanded ? 'expanded' : 'collapsed'}
-      className="flex min-h-0 shrink-0 flex-col overflow-hidden border-l border-gray-200 bg-white"
-      style={expanded
-        ? {
-            width: NODE_CONFIG_PANEL_EXPANDED_WIDTH,
-            minWidth: NODE_CONFIG_PANEL_EXPANDED_MIN_WIDTH,
-            maxWidth: NODE_CONFIG_PANEL_EXPANDED_MAX_WIDTH,
-          }
-        : { width: `${NODE_CONFIG_PANEL_WIDTH_PX}px` }}
+    <NodeConfigPanelShell
+      widthPx={expanded ? expandedWidthPx : collapsedWidthPx}
+      layoutState={expanded ? 'expanded' : 'collapsed'}
+      onResizeStart={startResize}
     >
       <div className="border-b border-gray-200 px-4 py-4">
         <div className="flex items-start justify-between gap-3">
@@ -337,7 +446,7 @@ export default function NodeConfigPanel() {
           {nodeResult?.status === 'running' ? 'Running...' : actionLabel}
         </button>
       </div>
-    </div>
+    </NodeConfigPanelShell>
   )
 
   if (node.type === 'db_source') {
@@ -411,11 +520,10 @@ export default function NodeConfigPanel() {
   }
 
   return (
-    <div
-      data-testid="node-config-panel"
-      data-layout-state="collapsed"
-      className="min-h-0 shrink-0 overflow-y-auto border-l border-gray-200 bg-white"
-      style={{ width: `${NODE_CONFIG_PANEL_WIDTH_PX}px` }}
+    <NodeConfigPanelShell
+      widthPx={collapsedWidthPx}
+      layoutState="collapsed"
+      onResizeStart={startResize}
     >
       <div className="border-b border-gray-200 p-4">
         <div className="flex items-start justify-between gap-3">
@@ -453,7 +561,8 @@ export default function NodeConfigPanel() {
         </div>
       </div>
 
-      <div className="space-y-6 p-4">
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="space-y-6 p-4">
         {node.type === 'db_source' && (
           <>
             <QueryPreview title="SQL Query" value={dbQuery} emptyLabel="No query defined" />
@@ -672,7 +781,8 @@ export default function NodeConfigPanel() {
             </div>
           </div>
         )}
+        </div>
       </div>
-    </div>
+    </NodeConfigPanelShell>
   )
 }

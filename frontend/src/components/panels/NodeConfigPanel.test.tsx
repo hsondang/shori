@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { act } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -59,6 +59,11 @@ describe('NodeConfigPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.spyOn(window, 'confirm').mockReturnValue(true)
+    Object.defineProperty(window, 'innerWidth', {
+      configurable: true,
+      value: 1600,
+      writable: true,
+    })
     act(() => {
       usePipelineStore.getState().newPipeline()
     })
@@ -222,15 +227,12 @@ describe('NodeConfigPanel', () => {
     expect(screen.getByRole('button', { name: 'Execute' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Edit mode' })).toBeInTheDocument()
     expect(screen.getByTestId('node-config-panel')).toHaveAttribute('data-layout-state', 'collapsed')
+    expect(screen.getByTestId('node-config-panel')).toHaveStyle({ width: '320px' })
 
     await user.click(screen.getByRole('button', { name: 'Edit mode' }))
 
     expect(screen.getByTestId('node-config-panel')).toHaveAttribute('data-layout-state', 'expanded')
-    expect(screen.getByTestId('node-config-panel')).toHaveStyle({
-      width: '36vw',
-      minWidth: '28rem',
-      maxWidth: '44rem',
-    })
+    expect(screen.getByTestId('node-config-panel')).toHaveStyle({ width: '576px' })
 
     await user.clear(screen.getByLabelText('sql-editor'))
     await user.type(screen.getByLabelText('sql-editor'), 'SELECT id FROM events')
@@ -306,6 +308,156 @@ describe('NodeConfigPanel', () => {
 
     const updated = usePipelineStore.getState().nodes[1].data as Record<string, unknown>
     expect((updated.config as Record<string, unknown>).sql).toBe('select id from orders_table')
+  })
+
+  it('resizes the panel horizontally from the left-edge drag handle', () => {
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'export-node',
+            type: 'export',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Export Orders',
+              autoLabel: 'Export',
+              labelMode: 'custom',
+              tableName: 'orders_export',
+              config: { format: 'csv' },
+            },
+          },
+        ],
+        selectedNodeId: 'export-node',
+      })
+    })
+
+    renderPanel()
+
+    const panel = screen.getByTestId('node-config-panel')
+    const resizeHandle = screen.getByTestId('node-config-panel-resize-handle')
+
+    expect(panel).toHaveStyle({ width: '320px' })
+
+    fireEvent.mouseDown(resizeHandle, { clientX: 900 })
+    fireEvent.mouseMove(window, { clientX: 780 })
+    fireEvent.mouseUp(window)
+
+    expect(panel).toHaveStyle({ width: '440px' })
+  })
+
+  it('clamps resized widths to the configured min and max bounds', async () => {
+    const user = userEvent.setup()
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'db-node',
+            type: 'db_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Analytics DB',
+              autoLabel: 'Analytics DB',
+              labelMode: 'auto',
+              tableName: 'db_table',
+              config: {
+                db_type: 'postgres',
+                connection: {
+                  host: 'localhost',
+                  port: 5432,
+                  database: 'analytics',
+                  user: 'user',
+                  password: 'secret',
+                },
+                query: 'SELECT 1',
+              },
+            },
+          },
+        ],
+        selectedNodeId: 'db-node',
+      })
+    })
+
+    renderPanel()
+
+    const panel = screen.getByTestId('node-config-panel')
+    const resizeHandle = screen.getByTestId('node-config-panel-resize-handle')
+
+    fireEvent.mouseDown(resizeHandle, { clientX: 900 })
+    fireEvent.mouseMove(window, { clientX: 100 })
+    fireEvent.mouseUp(window)
+    expect(panel).toHaveStyle({ width: '704px' })
+
+    fireEvent.mouseDown(resizeHandle, { clientX: 900 })
+    fireEvent.mouseMove(window, { clientX: 1500 })
+    fireEvent.mouseUp(window)
+    expect(panel).toHaveStyle({ width: '320px' })
+
+    await user.click(screen.getByRole('button', { name: 'Edit mode' }))
+    expect(panel).toHaveStyle({ width: '576px' })
+
+    fireEvent.mouseDown(resizeHandle, { clientX: 900 })
+    fireEvent.mouseMove(window, { clientX: 1500 })
+    fireEvent.mouseUp(window)
+    expect(panel).toHaveStyle({ width: '448px' })
+  })
+
+  it('remembers independent widths for collapsed and expanded query modes', async () => {
+    const user = userEvent.setup()
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'db-node',
+            type: 'db_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Analytics DB',
+              autoLabel: 'Analytics DB',
+              labelMode: 'auto',
+              tableName: 'db_table',
+              config: {
+                db_type: 'postgres',
+                connection: {
+                  host: 'localhost',
+                  port: 5432,
+                  database: 'analytics',
+                  user: 'user',
+                  password: 'secret',
+                },
+                query: 'SELECT 1',
+              },
+            },
+          },
+        ],
+        selectedNodeId: 'db-node',
+      })
+    })
+
+    renderPanel()
+
+    const panel = screen.getByTestId('node-config-panel')
+    const resizeHandle = screen.getByTestId('node-config-panel-resize-handle')
+
+    fireEvent.mouseDown(resizeHandle, { clientX: 900 })
+    fireEvent.mouseMove(window, { clientX: 800 })
+    fireEvent.mouseUp(window)
+    expect(panel).toHaveStyle({ width: '420px' })
+
+    await user.click(screen.getByRole('button', { name: 'Edit mode' }))
+    expect(panel).toHaveStyle({ width: '576px' })
+
+    fireEvent.mouseDown(resizeHandle, { clientX: 900 })
+    fireEvent.mouseMove(window, { clientX: 826 })
+    fireEvent.mouseUp(window)
+    expect(panel).toHaveStyle({ width: '650px' })
+
+    await user.click(screen.getByRole('button', { name: 'Edit mode' }))
+    expect(panel).toHaveStyle({ width: '420px' })
+
+    await user.click(screen.getByRole('button', { name: 'Edit mode' }))
+    expect(panel).toHaveStyle({ width: '650px' })
   })
 
   it('prompts before deleting and only deletes after confirmation', async () => {

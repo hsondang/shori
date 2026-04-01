@@ -4,9 +4,9 @@ export const MIN_PREVIEW_HEIGHT_PX = 144
 export const MAX_PREVIEW_HEIGHT_RATIO = 0.45
 export const TOP_WORKSPACE_MIN_HEIGHT_PX = 240
 export const NODE_CONFIG_PANEL_WIDTH_PX = 320
-export const NODE_CONFIG_PANEL_EXPANDED_WIDTH = '36vw'
-export const NODE_CONFIG_PANEL_EXPANDED_MIN_WIDTH = '28rem'
-export const NODE_CONFIG_PANEL_EXPANDED_MAX_WIDTH = '44rem'
+export const NODE_CONFIG_PANEL_MAX_WIDTH_PX = 704
+export const NODE_CONFIG_PANEL_EXPANDED_MIN_WIDTH_PX = 448
+export const NODE_CONFIG_PANEL_EXPANDED_DEFAULT_WIDTH_RATIO = 0.36
 
 function getFallbackMaxPreviewHeight() {
   return Math.max(MIN_PREVIEW_HEIGHT_PX, DEFAULT_PREVIEW_HEIGHT_PX)
@@ -37,4 +37,31 @@ export function clampPreviewHeight(requestedHeightPx: number, editorHeightPx: nu
   }
 
   return Math.min(Math.max(requestedHeightPx, min), max)
+}
+
+export function getNodeConfigPanelWidthBounds(expanded: boolean) {
+  return {
+    min: expanded ? NODE_CONFIG_PANEL_EXPANDED_MIN_WIDTH_PX : NODE_CONFIG_PANEL_WIDTH_PX,
+    max: NODE_CONFIG_PANEL_MAX_WIDTH_PX,
+  }
+}
+
+export function clampNodeConfigPanelWidth(requestedWidthPx: number, expanded: boolean) {
+  const { min, max } = getNodeConfigPanelWidthBounds(expanded)
+  if (!Number.isFinite(requestedWidthPx)) {
+    return min
+  }
+
+  return Math.min(Math.max(requestedWidthPx, min), max)
+}
+
+export function getDefaultExpandedNodeConfigPanelWidth(viewportWidthPx: number) {
+  if (!Number.isFinite(viewportWidthPx) || viewportWidthPx <= 0) {
+    return NODE_CONFIG_PANEL_EXPANDED_MIN_WIDTH_PX
+  }
+
+  return clampNodeConfigPanelWidth(
+    Math.round(viewportWidthPx * NODE_CONFIG_PANEL_EXPANDED_DEFAULT_WIDTH_RATIO),
+    true
+  )
 }
