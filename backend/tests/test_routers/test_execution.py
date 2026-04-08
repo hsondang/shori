@@ -114,14 +114,13 @@ async def test_execute_cycle_returns_error(client, sample_csv_file):
 
 
 @pytest.mark.asyncio
-async def test_start_node_execution_returns_running_snapshot_and_poll_completes(client, pipeline_def, monkeypatch):
+async def test_start_node_execution_returns_terminal_snapshot_when_run_finishes_before_response(client, pipeline_def, monkeypatch):
     node = pipeline_def["nodes"][0]
 
-    async def fake_execute_single_node(self, node, on_node_start=None, on_node_finish=None):
+    async def fake_execute_single_node(self, node, on_node_start=None, on_node_finish=None, on_node_update=None):
         started_at = "2026-04-08T10:00:00+00:00"
         if on_node_start is not None:
             on_node_start(node.id, started_at)
-        await asyncio.sleep(0.01)
         result = NodeExecutionResult(
             node_id=node.id,
             status=NodeStatus.SUCCESS,
@@ -141,18 +140,10 @@ async def test_start_node_execution_returns_running_snapshot_and_poll_completes(
     start_resp = await client.post("/api/execute/node/start", json=node)
     assert start_resp.status_code == 200
     snapshot = start_resp.json()
-    assert snapshot["status"] == "running"
-    assert snapshot["node_results"][node["id"]]["status"] == "running"
+    assert snapshot["status"] == "success"
+    assert snapshot["node_results"][node["id"]]["status"] == "success"
     assert snapshot["node_results"][node["id"]]["started_at"] == "2026-04-08T10:00:00+00:00"
-
-    await asyncio.sleep(0.03)
-
-    status_resp = await client.get(f"/api/execute/runs/{snapshot['execution_id']}")
-    assert status_resp.status_code == 200
-    status = status_resp.json()
-    assert status["status"] == "success"
-    assert status["node_results"][node["id"]]["status"] == "success"
-    assert status["node_results"][node["id"]]["finished_at"] == "2026-04-08T10:00:01+00:00"
+    assert snapshot["node_results"][node["id"]]["finished_at"] == "2026-04-08T10:00:01+00:00"
 
 
 @pytest.mark.asyncio
@@ -294,7 +285,7 @@ async def test_start_pipeline_execution_exposes_live_node_progress(client, pipel
         "edges": [{"id": "e1", "source": "node-1", "target": "node-2"}],
     }
 
-    async def fake_execute_pipeline(self, pipeline, force_refresh=False, on_node_start=None, on_node_finish=None):
+    async def fake_execute_pipeline(self, pipeline, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None):
         first_start = "2026-04-08T10:00:00+00:00"
         second_start = "2026-04-08T10:00:02+00:00"
         first = NodeExecutionResult(

@@ -860,7 +860,7 @@ describe('pipelineStore', () => {
       expect(usePipelineStore.getState().executionClockNow).toBeGreaterThan(0)
 
       await act(async () => {
-        vi.advanceTimersByTime(2000)
+        vi.advanceTimersByTime(100)
       })
       expect(mockGetExecutionRunStatus).toHaveBeenCalledWith('exec-live')
       expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
@@ -869,7 +869,7 @@ describe('pipelineStore', () => {
       }))
 
       await act(async () => {
-        vi.advanceTimersByTime(2000)
+        vi.advanceTimersByTime(500)
       })
       expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
         node_id: node.id,
@@ -946,7 +946,7 @@ describe('pipelineStore', () => {
       }))
 
       await act(async () => {
-        vi.advanceTimersByTime(2000)
+        vi.advanceTimersByTime(100)
       })
 
       expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
@@ -956,12 +956,76 @@ describe('pipelineStore', () => {
       }))
 
       await act(async () => {
-        vi.advanceTimersByTime(2000)
+        vi.advanceTimersByTime(500)
       })
 
       expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
         node_id: node.id,
         status: 'success',
+      }))
+
+      vi.useRealTimers()
+    })
+
+    it('resolves a fast CSV run on the first short poll', async () => {
+      vi.useFakeTimers()
+
+      act(() => {
+        usePipelineStore.getState().addNode('csv_source', { x: 0, y: 0 })
+        usePipelineStore.getState().updateNodeData(usePipelineStore.getState().nodes[0].id, {
+          label: 'Orders CSV',
+          tableName: 'orders_table',
+          config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+        })
+      })
+
+      const node = usePipelineStore.getState().nodes[0]
+      mockStartNodeExecution.mockResolvedValueOnce(makeExecutionRun({
+        execution_id: 'exec-fast',
+        node_results: {
+          [node.id]: {
+            node_id: node.id,
+            status: 'running',
+            started_at: '2026-04-08T10:00:00Z',
+          },
+        },
+      }))
+      mockGetExecutionRunStatus.mockResolvedValueOnce(makeExecutionRun({
+        execution_id: 'exec-fast',
+        status: 'success',
+        finished_at: '2026-04-08T10:00:00.200Z',
+        node_results: {
+          [node.id]: {
+            node_id: node.id,
+            status: 'success',
+            row_count: 3,
+            column_count: 2,
+            columns: ['id', 'name'],
+            started_at: '2026-04-08T10:00:00Z',
+            finished_at: '2026-04-08T10:00:00.200Z',
+            execution_time_ms: 199,
+          },
+        },
+      }))
+
+      await act(async () => {
+        await usePipelineStore.getState().executeSingleNode(node.id)
+      })
+
+      expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
+        node_id: node.id,
+        status: 'running',
+      }))
+
+      await act(async () => {
+        vi.advanceTimersByTime(100)
+      })
+
+      expect(mockGetExecutionRunStatus).toHaveBeenCalledWith('exec-fast')
+      expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
+        node_id: node.id,
+        status: 'success',
+        execution_time_ms: 199,
       }))
 
       vi.useRealTimers()

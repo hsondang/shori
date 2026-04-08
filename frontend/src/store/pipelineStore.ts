@@ -473,7 +473,8 @@ function collectAncestorNodeIds(nodeId: string, edges: Edge[]): string[] {
   return [...visited]
 }
 
-const EXECUTION_POLL_INTERVAL_MS = 2000
+const EXECUTION_INITIAL_POLL_INTERVAL_MS = 100
+const EXECUTION_POLL_INTERVAL_MS = 500
 const EXECUTION_CLOCK_INTERVAL_MS = 1000
 const EXECUTION_TRACKING_ERROR = 'Execution status unavailable. The backend may have restarted or the run expired.'
 
@@ -640,6 +641,7 @@ function scheduleExecutionPoll(
   executionId: string,
   set: StoreSet,
   get: () => PipelineState,
+  delayMs = EXECUTION_INITIAL_POLL_INTERVAL_MS,
 ) {
   clearExecutionPoll(executionId)
   const timeoutId = setTimeout(async () => {
@@ -647,7 +649,8 @@ function scheduleExecutionPoll(
       const run = await api.getExecutionRunStatus(executionId)
       if (run.status === 'running') {
         applyExecutionRunSnapshot(run, set, get)
-        scheduleExecutionPoll(executionId, set, get)
+        // Keep visible status latency low; execution_time_ms still comes from the backend node runtime.
+        scheduleExecutionPoll(executionId, set, get, EXECUTION_POLL_INTERVAL_MS)
         return
       }
 
@@ -659,7 +662,7 @@ function scheduleExecutionPoll(
       }
       scheduleExecutionPoll(executionId, set, get)
     }
-  }, EXECUTION_POLL_INTERVAL_MS)
+  }, delayMs)
 
   executionPollTimeouts.set(executionId, timeoutId)
 }
