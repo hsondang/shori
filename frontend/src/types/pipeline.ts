@@ -1,6 +1,6 @@
 export type NodeType = 'csv_source' | 'db_source' | 'transform' | 'export'
 export type DbType = 'oracle' | 'postgres'
-export type NodeStatus = 'idle' | 'running' | 'success' | 'error'
+export type NodeStatus = 'idle' | 'connecting' | 'running' | 'success' | 'error'
 export type NodeLabelMode = 'auto' | 'custom'
 export type NodeEditorMode = 'closed' | 'create' | 'edit'
 
@@ -75,6 +75,17 @@ export interface NodeExecutionResult {
   columns?: string[]
   error?: string
   execution_time_ms?: number
+  started_at?: string
+  finished_at?: string
+}
+
+export interface ExecutionRunStatus {
+  execution_id: string
+  kind: 'node' | 'pipeline'
+  status: NodeStatus
+  started_at: string
+  finished_at?: string
+  node_results: Record<string, NodeExecutionResult>
 }
 
 export interface PipelineDefinition {

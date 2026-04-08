@@ -110,4 +110,27 @@ describe('Toolbar', () => {
     expect(screen.queryByTestId('database-source-modal')).not.toBeInTheDocument()
     expect(usePipelineStore.getState().databaseConnections).toEqual([])
   })
+
+  it('shows the active pipeline timer while a tracked run is live', () => {
+    act(() => {
+      usePipelineStore.setState({
+        activePipelineExecutionId: 'exec-1',
+        activeExecutions: {
+          'exec-1': {
+            execution_id: 'exec-1',
+            kind: 'pipeline',
+            status: 'running',
+            started_at: '2026-04-08T10:00:00Z',
+            node_results: {},
+          },
+        },
+        executionClockNow: Date.parse('2026-04-08T10:01:05Z'),
+      })
+    })
+
+    render(<Toolbar />)
+
+    expect(screen.getByText('Running pipeline · 01:05')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Running...' })).toBeDisabled()
+  })
 })

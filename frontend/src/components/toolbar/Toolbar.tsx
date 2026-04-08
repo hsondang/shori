@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { usePipelineStore } from '../../store/pipelineStore'
+import { getRunElapsedLabel } from '../../lib/executionTiming'
 import type { NodeType } from '../../types/pipeline'
 import { NODE_TYPE_MIME } from '../../lib/dragData'
 import DatabaseSourcePicker from './DatabaseSourcePicker'
@@ -15,9 +16,15 @@ export default function Toolbar() {
   const hasUnsavedChanges = usePipelineStore((s) => s.hasUnsavedChanges)
   const setPipelineName = usePipelineStore((s) => s.setPipelineName)
   const executePipeline = usePipelineStore((s) => s.executePipeline)
+  const activePipelineExecutionId = usePipelineStore((s) => s.activePipelineExecutionId)
+  const activeExecutions = usePipelineStore((s) => s.activeExecutions)
+  const executionClockNow = usePipelineStore((s) => s.executionClockNow)
   const savePipeline = usePipelineStore((s) => s.savePipeline)
   const [saving, setSaving] = useState(false)
-  const [executing, setExecuting] = useState(false)
+  const activePipelineExecution = activePipelineExecutionId
+    ? activeExecutions[activePipelineExecutionId] ?? null
+    : null
+  const pipelineElapsedLabel = getRunElapsedLabel(activePipelineExecution, executionClockNow)
 
   const handleSave = async () => {
     setSaving(true)
@@ -25,8 +32,7 @@ export default function Toolbar() {
   }
 
   const handleExecute = async (force: boolean) => {
-    setExecuting(true)
-    try { await executePipeline(force) } finally { setExecuting(false) }
+    await executePipeline(force)
   }
 
   const onDragStart = (e: React.DragEvent, type: NodeType) => {
@@ -72,16 +78,22 @@ export default function Toolbar() {
 
       <div className="h-6 w-px bg-gray-300" />
 
+      {activePipelineExecution && (
+        <div className="rounded border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700">
+          Running pipeline{pipelineElapsedLabel ? ` · ${pipelineElapsedLabel}` : ''}
+        </div>
+      )}
+
       <button
         onClick={() => handleExecute(false)}
-        disabled={executing}
+        disabled={Boolean(activePipelineExecution)}
         className="px-3 py-1 text-sm bg-green-500 text-white rounded hover:bg-green-600 disabled:opacity-50"
       >
-        {executing ? 'Running...' : 'Execute'}
+        {activePipelineExecution ? 'Running...' : 'Execute'}
       </button>
       <button
         onClick={() => handleExecute(true)}
-        disabled={executing}
+        disabled={Boolean(activePipelineExecution)}
         className="px-3 py-1 text-sm bg-orange-500 text-white rounded hover:bg-orange-600 disabled:opacity-50"
       >
         Force Refresh

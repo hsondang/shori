@@ -9,6 +9,7 @@ import app.config as config_module
 from app.main import app
 from app.services.csv_service import CsvPreprocessArtifactStore
 from app.services.duckdb_manager import DuckDBManager
+from app.services.execution_registry import ExecutionRegistry
 
 
 @pytest.fixture(autouse=True)
@@ -47,7 +48,9 @@ async def client():
         # Manually initialise app state so DuckDB is available without full lifespan
         app.state.duckdb = DuckDBManager()
         app.state.csv_preprocess_artifacts = CsvPreprocessArtifactStore()
+        app.state.execution_registry = ExecutionRegistry()
         yield ac
+        app.state.execution_registry.close()
         app.state.csv_preprocess_artifacts.close()
         app.state.duckdb.close()
 

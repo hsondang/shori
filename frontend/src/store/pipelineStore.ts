@@ -14,6 +14,7 @@ import type {
   CsvPreprocessingConfig,
   CsvSourceConfig,
   CsvTextPreviewData,
+  ExecutionRunStatus,
   MaterializedPreviewTab,
   NodeEditorDraft,
   NodeEditorMode,
@@ -53,6 +54,10 @@ interface PipelineState {
 
   // Execution results
   nodeResults: Record<string, NodeExecutionResult>
+  activeExecutions: Record<string, ExecutionRunStatus>
+  activeExecutionIdByNodeId: Record<string, string>
+  activePipelineExecutionId: string | null
+  executionClockNow: number
   errorDialogNodeId: string | null
 
   // Selected node
@@ -99,6 +104,10 @@ interface PipelineState {
   markProjectCatalogChanged: () => void
   confirmDiscardChanges: (nextProjectName?: string) => boolean
 }
+
+type StoreSet = (
+  partial: Partial<PipelineState> | ((state: PipelineState) => Partial<PipelineState>)
+) => void
 
 let nodeCounter = 0
 const initialPipeline = createBlankPipelineDefinition()
@@ -306,6 +315,10 @@ function hydratePipelineState(pipeline: PipelineDefinition) {
     pipelineName: pipeline.name,
     databaseConnections: pipeline.database_connections || [],
     nodeResults: {},
+    activeExecutions: {},
+    activeExecutionIdByNodeId: {},
+    activePipelineExecutionId: null,
+    executionClockNow: Date.now(),
     errorDialogNodeId: null,
     selectedNodeId: null,
     previewTabsByNodeId: {},
@@ -460,6 +473,197 @@ function collectAncestorNodeIds(nodeId: string, edges: Edge[]): string[] {
   return [...visited]
 }
 
+const EXECUTION_POLL_INTERVAL_MS = 2000
+const EXECUTION_CLOCK_INTERVAL_MS = 1000
+const EXECUTION_TRACKING_ERROR = 'Execution status unavailable. The backend may have restarted or the run expired.'
+
+const executionPollTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
+const executionPreviewTargets = new Map<string, { nodeId: string; tableName: string }>()
+const executionTrackedNodeIds = new Map<string, string[]>()
+let executionClockInterval: ReturnType<typeof setInterval> | null = null
+
+function isNotFoundError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const response = 'response' in error ? error.response : undefined
+  return typeof response === 'object' && response !== null && 'status' in response && response.status === 404
+}
+
+function clearExecutionPoll(executionId: string) {
+  const timeoutId = executionPollTimeouts.get(executionId)
+  if (timeoutId != null) {
+    clearTimeout(timeoutId)
+    executionPollTimeouts.delete(executionId)
+  }
+}
+
+function clearAllExecutionTracking() {
+  executionPollTimeouts.forEach((timeoutId) => clearTimeout(timeoutId))
+  executionPollTimeouts.clear()
+  executionPreviewTargets.clear()
+  executionTrackedNodeIds.clear()
+  if (executionClockInterval != null) {
+    clearInterval(executionClockInterval)
+    executionClockInterval = null
+  }
+}
+
+function syncExecutionClock(
+  set: StoreSet,
+  get: () => PipelineState,
+) {
+  const hasRunningExecutions = Object.values(get().activeExecutions).some((run) => run.status === 'running')
+  if (hasRunningExecutions) {
+    if (executionClockInterval == null) {
+      executionClockInterval = setInterval(() => {
+        usePipelineStore.setState({ executionClockNow: Date.now() })
+      }, EXECUTION_CLOCK_INTERVAL_MS)
+    }
+    set({ executionClockNow: Date.now() })
+    return
+  }
+
+  if (executionClockInterval != null) {
+    clearInterval(executionClockInterval)
+    executionClockInterval = null
+  }
+  set({ executionClockNow: Date.now() })
+}
+
+function applyExecutionRunSnapshot(
+  run: ExecutionRunStatus,
+  set: StoreSet,
+  get: () => PipelineState,
+) {
+  set((state) => {
+    const nodeResults = { ...state.nodeResults }
+    const activeExecutions = { ...state.activeExecutions }
+    const activeExecutionIdByNodeId = { ...state.activeExecutionIdByNodeId }
+
+    Object.entries(run.node_results).forEach(([nodeId, result]) => {
+      nodeResults[nodeId] = result
+      if (result.status === 'running') {
+        activeExecutionIdByNodeId[nodeId] = run.execution_id
+      } else if (activeExecutionIdByNodeId[nodeId] === run.execution_id) {
+        delete activeExecutionIdByNodeId[nodeId]
+      }
+    })
+
+    if (run.status === 'running') {
+      activeExecutions[run.execution_id] = run
+    } else {
+      delete activeExecutions[run.execution_id]
+      for (const nodeId of executionTrackedNodeIds.get(run.execution_id) ?? []) {
+        if (activeExecutionIdByNodeId[nodeId] === run.execution_id) {
+          delete activeExecutionIdByNodeId[nodeId]
+        }
+      }
+    }
+
+    return {
+      nodeResults,
+      activeExecutions,
+      activeExecutionIdByNodeId,
+      activePipelineExecutionId: state.activePipelineExecutionId === run.execution_id && run.status !== 'running'
+        ? null
+        : state.activePipelineExecutionId,
+      errorDialogNodeId: state.errorDialogNodeId && run.node_results[state.errorDialogNodeId]?.status !== 'error'
+        ? null
+        : state.errorDialogNodeId,
+    }
+  })
+  syncExecutionClock(set, get)
+}
+
+function failExecutionTracking(
+  executionId: string,
+  message: string,
+  set: StoreSet,
+  get: () => PipelineState,
+) {
+  clearExecutionPoll(executionId)
+  executionPreviewTargets.delete(executionId)
+
+  set((state) => {
+    const nodeResults = { ...state.nodeResults }
+    const activeExecutions = { ...state.activeExecutions }
+    const activeExecutionIdByNodeId = { ...state.activeExecutionIdByNodeId }
+    const trackedNodeIds = executionTrackedNodeIds.get(executionId)
+      ?? Object.keys(activeExecutions[executionId]?.node_results ?? {})
+
+    trackedNodeIds.forEach((nodeId) => {
+      const existing = nodeResults[nodeId]
+      nodeResults[nodeId] = {
+        node_id: nodeId,
+        status: 'error',
+        error: message,
+        started_at: existing?.started_at,
+        finished_at: new Date().toISOString(),
+      }
+      if (activeExecutionIdByNodeId[nodeId] === executionId) {
+        delete activeExecutionIdByNodeId[nodeId]
+      }
+    })
+
+    delete activeExecutions[executionId]
+
+    return {
+      nodeResults,
+      activeExecutions,
+      activeExecutionIdByNodeId,
+      activePipelineExecutionId: state.activePipelineExecutionId === executionId ? null : state.activePipelineExecutionId,
+      errorDialogNodeId: null,
+    }
+  })
+
+  executionTrackedNodeIds.delete(executionId)
+  syncExecutionClock(set, get)
+}
+
+async function finalizeExecutionRun(
+  run: ExecutionRunStatus,
+  set: StoreSet,
+  get: () => PipelineState,
+) {
+  clearExecutionPoll(run.execution_id)
+  applyExecutionRunSnapshot(run, set, get)
+
+  const previewTarget = executionPreviewTargets.get(run.execution_id)
+  executionPreviewTargets.delete(run.execution_id)
+  executionTrackedNodeIds.delete(run.execution_id)
+
+  if (previewTarget && run.node_results[previewTarget.nodeId]?.status === 'success') {
+    await get().loadTablePreview(previewTarget.nodeId, previewTarget.tableName, 0, { forceReload: true })
+  }
+}
+
+function scheduleExecutionPoll(
+  executionId: string,
+  set: StoreSet,
+  get: () => PipelineState,
+) {
+  clearExecutionPoll(executionId)
+  const timeoutId = setTimeout(async () => {
+    try {
+      const run = await api.getExecutionRunStatus(executionId)
+      if (run.status === 'running') {
+        applyExecutionRunSnapshot(run, set, get)
+        scheduleExecutionPoll(executionId, set, get)
+        return
+      }
+
+      await finalizeExecutionRun(run, set, get)
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        failExecutionTracking(executionId, EXECUTION_TRACKING_ERROR, set, get)
+        return
+      }
+      scheduleExecutionPoll(executionId, set, get)
+    }
+  }, EXECUTION_POLL_INTERVAL_MS)
+
+  executionPollTimeouts.set(executionId, timeoutId)
+}
+
 export const usePipelineStore = create<PipelineState>((set, get) => ({
   nodes: [],
   edges: [],
@@ -470,6 +674,10 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   hasUnsavedChanges: false,
   projectListRevision: 0,
   nodeResults: {},
+  activeExecutions: {},
+  activeExecutionIdByNodeId: {},
+  activePipelineExecutionId: null,
+  executionClockNow: Date.now(),
   errorDialogNodeId: null,
   selectedNodeId: null,
   previewTabsByNodeId: {},
@@ -793,16 +1001,6 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   executePipeline: async (force = false) => {
     const { nodes, edges, pipelineId, pipelineName } = get()
 
-    // Mark all nodes as running
-    const runningResults: Record<string, NodeExecutionResult> = {}
-    nodes.forEach((n) => {
-      runningResults[n.id] = { node_id: n.id, status: 'running' }
-    })
-    set({
-      nodeResults: runningResults,
-      errorDialogNodeId: null,
-    })
-
     const pipeline = {
       id: pipelineId,
       name: pipelineName,
@@ -812,8 +1010,15 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     }
 
     try {
-      const results = await api.executePipeline(pipeline, force)
-      set({ nodeResults: results })
+      const run = await api.startPipelineExecution(pipeline, force)
+      executionTrackedNodeIds.set(run.execution_id, nodes.map((node) => node.id))
+      set({ activePipelineExecutionId: run.execution_id, errorDialogNodeId: null })
+      applyExecutionRunSnapshot(run, set, get)
+      if (run.status === 'running') {
+        scheduleExecutionPoll(run.execution_id, set, get)
+      } else {
+        await finalizeExecutionRun(run, set, get)
+      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unknown error'
       const errorResults: Record<string, NodeExecutionResult> = {}
@@ -822,6 +1027,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       })
       set({
         nodeResults: errorResults,
+        activePipelineExecutionId: null,
         errorDialogNodeId: null,
       })
     }
@@ -832,28 +1038,21 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     if (!node) return
 
     const tableName = (node.data as Record<string, unknown>).tableName as string
-    set({
-      nodeResults: {
-        ...get().nodeResults,
-        [nodeId]: { node_id: nodeId, status: 'running' },
-      },
-      errorDialogNodeId: get().errorDialogNodeId === nodeId ? null : get().errorDialogNodeId,
-    })
 
     try {
-      const result = await api.executeNode(serializeNode(node))
+      const run = await api.startNodeExecution(serializeNode(node))
+      executionTrackedNodeIds.set(run.execution_id, [nodeId])
+      if (options?.loadPreviewOnSuccess) {
+        executionPreviewTargets.set(run.execution_id, { nodeId, tableName })
+      }
       set({
-        nodeResults: {
-          ...get().nodeResults,
-          [nodeId]: result,
-        },
-        errorDialogNodeId: get().errorDialogNodeId === nodeId && result.status !== 'error'
-          ? null
-          : get().errorDialogNodeId,
+        errorDialogNodeId: get().errorDialogNodeId === nodeId ? null : get().errorDialogNodeId,
       })
-
-      if (options?.loadPreviewOnSuccess && result.status === 'success') {
-        await get().loadTablePreview(nodeId, tableName, 0, { forceReload: true })
+      applyExecutionRunSnapshot(run, set, get)
+      if (run.status === 'running') {
+        scheduleExecutionPoll(run.execution_id, set, get)
+      } else {
+        await finalizeExecutionRun(run, set, get)
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unknown error'
@@ -901,15 +1100,6 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         if (!shouldRunUpstream) return
 
         const executingIds = new Set([...missingAncestorNodes.map((ancestorNode) => ancestorNode.id), nodeId])
-        const runningResults = { ...get().nodeResults }
-        executingIds.forEach((executingId) => {
-          runningResults[executingId] = { node_id: executingId, status: 'running' }
-        })
-        set({
-          nodeResults: runningResults,
-          errorDialogNodeId: get().errorDialogNodeId === nodeId ? null : get().errorDialogNodeId,
-        })
-
         const subpipeline: PipelineDefinition = {
           id: state.pipelineId,
           name: state.pipelineName,
@@ -920,19 +1110,18 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
             .map((edge) => ({ id: edge.id, source: edge.source, target: edge.target })),
         }
 
-        const results = await api.executePipeline(subpipeline, true)
+        const run = await api.startPipelineExecution(subpipeline, true)
+        executionTrackedNodeIds.set(run.execution_id, [...executingIds])
+        executionPreviewTargets.set(run.execution_id, { nodeId, tableName })
         set({
-          nodeResults: {
-            ...get().nodeResults,
-            ...results,
-          },
-          errorDialogNodeId: get().errorDialogNodeId === nodeId && results[nodeId]?.status !== 'error'
-            ? null
-            : get().errorDialogNodeId,
+          activePipelineExecutionId: run.execution_id,
+          errorDialogNodeId: get().errorDialogNodeId === nodeId ? null : get().errorDialogNodeId,
         })
-
-        if (results[nodeId]?.status === 'success') {
-          await get().loadTablePreview(nodeId, tableName, 0, { forceReload: true })
+        applyExecutionRunSnapshot(run, set, get)
+        if (run.status === 'running') {
+          scheduleExecutionPoll(run.execution_id, set, get)
+        } else {
+          await finalizeExecutionRun(run, set, get)
         }
         return
       }
@@ -1117,6 +1306,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       .filter((node) => node.type === 'csv_source')
       .forEach((node) => invalidateCsvPreprocessArtifact(node.id))
 
+    clearAllExecutionTracking()
     const pipeline = await api.loadPipeline(id)
     set(hydratePipelineState(pipeline))
   },
@@ -1126,6 +1316,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       .filter((node) => node.type === 'csv_source')
       .forEach((node) => invalidateCsvPreprocessArtifact(node.id))
 
+    clearAllExecutionTracking()
     nodeCounter = 0
     set(hydratePipelineState(createBlankPipelineDefinition()))
   },

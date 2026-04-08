@@ -55,10 +55,10 @@ export default function NodeEditorModal() {
 
   const isCreateMode = nodeEditorMode === 'create'
   const title = getNodeTypeTitle(draft.type)
-  const csvConfig = draft.type === 'csv_source' ? (draft.config as CsvSourceConfig) : null
+  const csvConfig = draft.type === 'csv_source' ? (draft.config as unknown as CsvSourceConfig) : null
   const dbConfig = draft.type === 'db_source' ? (draft.config as Record<string, unknown>) : null
   const transformConfig = draft.type === 'transform' ? (draft.config as Record<string, unknown>) : null
-  const exportConfig = draft.type === 'export' ? (draft.config as ExportConfig) : null
+  const exportConfig = draft.type === 'export' ? (draft.config as unknown as ExportConfig) : null
   const csvPreprocessing: CsvPreprocessingConfig = csvConfig?.preprocessing ?? {
     enabled: false,
     runtime: 'python',

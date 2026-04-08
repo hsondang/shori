@@ -299,3 +299,27 @@ async def test_execution_time_recorded(engine, sample_csv_file):
     result = await engine.execute_single_node(node)
     assert result.execution_time_ms is not None
     assert result.execution_time_ms >= 0
+    assert result.started_at is not None
+    assert result.finished_at is not None
+
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_reports_node_lifecycle_callbacks(engine, sample_csv_file):
+    node = _make_node("timed", NodeType.CSV_SOURCE, "timed_cb_t", {
+        "file_path": sample_csv_file,
+        "original_filename": "s.csv",
+    })
+    starts = []
+    finishes = []
+
+    results = await engine.execute_pipeline(
+        _make_pipeline([node]),
+        on_node_start=lambda node_id, started_at: starts.append((node_id, started_at)),
+        on_node_finish=lambda result: finishes.append(result),
+    )
+
+    assert results["timed"].status == NodeStatus.SUCCESS
+    assert starts == [("timed", results["timed"].started_at)]
+    assert len(finishes) == 1
+    assert finishes[0].node_id == "timed"
+    assert finishes[0].finished_at is not None

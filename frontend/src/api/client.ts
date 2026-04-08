@@ -3,6 +3,7 @@ import type {
   CsvPreprocessingConfig,
   DataPreview,
   DatabaseConnectionConfig,
+  ExecutionRunStatus,
   NodeExecutionResult,
   PipelineDefinition,
   ProjectSummary,
@@ -29,6 +30,26 @@ export async function executeNode(
   node: PipelineDefinition['nodes'][0]
 ): Promise<NodeExecutionResult> {
   const { data } = await api.post('/execute/node', node)
+  return data
+}
+
+export async function startPipelineExecution(
+  pipeline: PipelineDefinition,
+  force = false
+): Promise<ExecutionRunStatus> {
+  const { data } = await api.post(`/execute/pipeline/start?force=${force}`, pipeline)
+  return data
+}
+
+export async function startNodeExecution(
+  node: PipelineDefinition['nodes'][0]
+): Promise<ExecutionRunStatus> {
+  const { data } = await api.post('/execute/node/start', node)
+  return data
+}
+
+export async function getExecutionRunStatus(executionId: string): Promise<ExecutionRunStatus> {
+  const { data } = await api.get(`/execute/runs/${executionId}`)
   return data
 }
 

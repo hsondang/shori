@@ -4,6 +4,9 @@ import { usePipelineStore } from './pipelineStore'
 
 const mockExecutePipeline = vi.fn()
 const mockExecuteNode = vi.fn()
+const mockStartPipelineExecution = vi.fn()
+const mockStartNodeExecution = vi.fn()
+const mockGetExecutionRunStatus = vi.fn()
 const mockPreviewData = vi.fn()
 const mockPreviewCsvSource = vi.fn()
 const mockPreviewPreprocessedCsvSource = vi.fn()
@@ -18,6 +21,9 @@ const mockListPipelines = vi.fn()
 vi.mock('../api/client', () => ({
   executePipeline: (...args: any[]) => mockExecutePipeline(...args),
   executeNode: (...args: any[]) => mockExecuteNode(...args),
+  startPipelineExecution: (...args: any[]) => mockStartPipelineExecution(...args),
+  startNodeExecution: (...args: any[]) => mockStartNodeExecution(...args),
+  getExecutionRunStatus: (...args: any[]) => mockGetExecutionRunStatus(...args),
   previewData: (...args: any[]) => mockPreviewData(...args),
   previewCsvSource: (...args: any[]) => mockPreviewCsvSource(...args),
   previewPreprocessedCsvSource: (...args: any[]) => mockPreviewPreprocessedCsvSource(...args),
@@ -50,6 +56,17 @@ function makeCsvTextPreview(overrides: Record<string, unknown> = {}) {
     limit: 100,
     truncated: false,
     artifact_ready: false,
+    ...overrides,
+  }
+}
+
+function makeExecutionRun(overrides: Record<string, unknown> = {}) {
+  return {
+    execution_id: 'exec-1',
+    kind: 'node' as const,
+    status: 'running' as const,
+    started_at: '2026-04-08T10:00:00Z',
+    node_results: {},
     ...overrides,
   }
 }
@@ -680,14 +697,21 @@ describe('pipelineStore', () => {
       })
 
       const node = usePipelineStore.getState().nodes[0]
-      mockExecuteNode.mockResolvedValueOnce({
-        node_id: node.id,
+      mockStartNodeExecution.mockResolvedValueOnce(makeExecutionRun({
         status: 'success',
-        row_count: 3,
-        column_count: 2,
-        columns: ['id', 'name'],
-        execution_time_ms: 12,
-      })
+        node_results: {
+          [node.id]: {
+            node_id: node.id,
+            status: 'success',
+            row_count: 3,
+            column_count: 2,
+            columns: ['id', 'name'],
+            execution_time_ms: 12,
+            started_at: '2026-04-08T10:00:00Z',
+            finished_at: '2026-04-08T10:00:12Z',
+          },
+        },
+      }))
       mockPreviewData.mockResolvedValueOnce({
         kind: 'table',
         columns: ['id', 'name'],
@@ -702,7 +726,7 @@ describe('pipelineStore', () => {
         await usePipelineStore.getState().executeSingleNode(node.id, { loadPreviewOnSuccess: true })
       })
 
-      expect(mockExecuteNode).toHaveBeenCalledWith(expect.objectContaining({
+      expect(mockStartNodeExecution).toHaveBeenCalledWith(expect.objectContaining({
         id: node.id,
         label: 'Orders CSV',
         table_name: 'orders_table',
@@ -748,12 +772,16 @@ describe('pipelineStore', () => {
         })
       })
       const node = usePipelineStore.getState().nodes[0]
-      mockExecuteNode.mockRejectedValueOnce(new Error('boom'))
+      mockStartNodeExecution.mockRejectedValueOnce(new Error('boom'))
 
       await act(async () => {
         await usePipelineStore.getState().executeSingleNode(node.id, { loadPreviewOnSuccess: true })
       })
 
+      expect(mockStartNodeExecution).toHaveBeenCalledWith(expect.objectContaining({
+        id: node.id,
+        table_name: 'node_table',
+      }))
       expect(usePipelineStore.getState().nodeResults[node.id]).toEqual({
         node_id: node.id,
         status: 'error',
@@ -763,6 +791,180 @@ describe('pipelineStore', () => {
       expect(usePipelineStore.getState().previewTabsByNodeId[node.id]?.data).toEqual(expect.objectContaining({
         columns: ['existing'],
       }))
+    })
+
+    it('polls running executions and updates the local execution clock', async () => {
+      vi.useFakeTimers()
+
+      act(() => {
+        usePipelineStore.getState().addNode('csv_source', { x: 0, y: 0 })
+        usePipelineStore.getState().updateNodeData(usePipelineStore.getState().nodes[0].id, {
+          label: 'Orders CSV',
+          tableName: 'orders_table',
+          config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+        })
+      })
+
+      const node = usePipelineStore.getState().nodes[0]
+      mockStartNodeExecution.mockResolvedValueOnce(makeExecutionRun({
+        execution_id: 'exec-live',
+        node_results: {
+          [node.id]: {
+            node_id: node.id,
+            status: 'running',
+            started_at: '2026-04-08T10:00:00Z',
+          },
+        },
+      }))
+      mockGetExecutionRunStatus
+        .mockResolvedValueOnce(makeExecutionRun({
+          execution_id: 'exec-live',
+          node_results: {
+            [node.id]: {
+              node_id: node.id,
+              status: 'running',
+              started_at: '2026-04-08T10:00:00Z',
+            },
+          },
+        }))
+        .mockResolvedValueOnce(makeExecutionRun({
+          execution_id: 'exec-live',
+          status: 'success',
+          finished_at: '2026-04-08T10:00:05Z',
+          node_results: {
+            [node.id]: {
+              node_id: node.id,
+              status: 'success',
+              row_count: 3,
+              column_count: 2,
+              columns: ['id', 'name'],
+              started_at: '2026-04-08T10:00:00Z',
+              finished_at: '2026-04-08T10:00:05Z',
+              execution_time_ms: 5000,
+            },
+          },
+        }))
+
+      await act(async () => {
+        await usePipelineStore.getState().executeSingleNode(node.id)
+      })
+
+      expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
+        node_id: node.id,
+        status: 'running',
+      }))
+
+      await act(async () => {
+        vi.advanceTimersByTime(1000)
+      })
+      expect(usePipelineStore.getState().executionClockNow).toBeGreaterThan(0)
+
+      await act(async () => {
+        vi.advanceTimersByTime(2000)
+      })
+      expect(mockGetExecutionRunStatus).toHaveBeenCalledWith('exec-live')
+      expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
+        node_id: node.id,
+        status: 'running',
+      }))
+
+      await act(async () => {
+        vi.advanceTimersByTime(2000)
+      })
+      expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
+        node_id: node.id,
+        status: 'success',
+      }))
+
+      vi.useRealTimers()
+    })
+
+    it('tracks database nodes through connecting then running', async () => {
+      vi.useFakeTimers()
+
+      act(() => {
+        usePipelineStore.getState().addNode('db_source', { x: 0, y: 0 })
+        usePipelineStore.getState().updateNodeData(usePipelineStore.getState().nodes[0].id, {
+          label: 'Warehouse DB',
+          tableName: 'warehouse_table',
+          config: {
+            db_type: 'postgres',
+            connection: { host: 'localhost', port: 5432, database: 'warehouse', user: 'user', password: 'secret' },
+            query: 'SELECT 1',
+          },
+        })
+      })
+
+      const node = usePipelineStore.getState().nodes[0]
+      mockStartNodeExecution.mockResolvedValueOnce(makeExecutionRun({
+        execution_id: 'exec-db',
+        node_results: {
+          [node.id]: {
+            node_id: node.id,
+            status: 'connecting',
+            started_at: '2026-04-08T10:00:00Z',
+          },
+        },
+      }))
+      mockGetExecutionRunStatus
+        .mockResolvedValueOnce(makeExecutionRun({
+          execution_id: 'exec-db',
+          node_results: {
+            [node.id]: {
+              node_id: node.id,
+              status: 'running',
+              started_at: '2026-04-08T10:00:05Z',
+            },
+          },
+        }))
+        .mockResolvedValueOnce(makeExecutionRun({
+          execution_id: 'exec-db',
+          status: 'success',
+          finished_at: '2026-04-08T10:00:08Z',
+          node_results: {
+            [node.id]: {
+              node_id: node.id,
+              status: 'success',
+              row_count: 1,
+              column_count: 1,
+              columns: ['id'],
+              started_at: '2026-04-08T10:00:05Z',
+              finished_at: '2026-04-08T10:00:08Z',
+              execution_time_ms: 3000,
+            },
+          },
+        }))
+
+      await act(async () => {
+        await usePipelineStore.getState().executeSingleNode(node.id)
+      })
+
+      expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
+        node_id: node.id,
+        status: 'connecting',
+        started_at: '2026-04-08T10:00:00Z',
+      }))
+
+      await act(async () => {
+        vi.advanceTimersByTime(2000)
+      })
+
+      expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
+        node_id: node.id,
+        status: 'running',
+        started_at: '2026-04-08T10:00:05Z',
+      }))
+
+      await act(async () => {
+        vi.advanceTimersByTime(2000)
+      })
+
+      expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
+        node_id: node.id,
+        status: 'success',
+      }))
+
+      vi.useRealTimers()
     })
   })
 
@@ -972,13 +1174,21 @@ describe('pipelineStore', () => {
         column_types: ['INTEGER'],
         total_rows: 5,
       })
-      mockExecuteNode.mockResolvedValueOnce({
-        node_id: 'tx-node',
+      mockStartNodeExecution.mockResolvedValueOnce(makeExecutionRun({
+        execution_id: 'exec-transform',
         status: 'success',
-        row_count: 4,
-        column_count: 1,
-        columns: ['id'],
-      })
+        node_results: {
+          'tx-node': {
+            node_id: 'tx-node',
+            status: 'success',
+            row_count: 4,
+            column_count: 1,
+            columns: ['id'],
+            started_at: '2026-04-08T10:00:00Z',
+            finished_at: '2026-04-08T10:00:02Z',
+          },
+        },
+      }))
       mockPreviewData.mockResolvedValueOnce({
         kind: 'table',
         columns: ['id'],
@@ -994,11 +1204,11 @@ describe('pipelineStore', () => {
       })
 
       expect(mockGetTableSchema).toHaveBeenCalledWith('orders_table')
-      expect(mockExecuteNode).toHaveBeenCalledWith(expect.objectContaining({
+      expect(mockStartNodeExecution).toHaveBeenCalledWith(expect.objectContaining({
         id: 'tx-node',
         table_name: 'orders_filtered',
       }))
-      expect(mockExecutePipeline).not.toHaveBeenCalled()
+      expect(mockStartPipelineExecution).not.toHaveBeenCalled()
       expect(mockPreviewData).toHaveBeenCalledWith('orders_filtered', 0)
       expect(usePipelineStore.getState().previewTabsByNodeId['tx-node']?.data).toEqual(expect.objectContaining({
         rows: [[2], [3]],
@@ -1064,10 +1274,31 @@ describe('pipelineStore', () => {
         }
         return null
       })
-      mockExecutePipeline.mockResolvedValueOnce({
-        'mid-node': { node_id: 'mid-node', status: 'success', row_count: 5, column_count: 1, columns: ['id'] },
-        'tx-node': { node_id: 'tx-node', status: 'success', row_count: 4, column_count: 1, columns: ['id'] },
-      })
+      mockStartPipelineExecution.mockResolvedValueOnce(makeExecutionRun({
+        execution_id: 'exec-pipeline',
+        kind: 'pipeline',
+        status: 'success',
+        node_results: {
+          'mid-node': {
+            node_id: 'mid-node',
+            status: 'success',
+            row_count: 5,
+            column_count: 1,
+            columns: ['id'],
+            started_at: '2026-04-08T10:00:00Z',
+            finished_at: '2026-04-08T10:00:02Z',
+          },
+          'tx-node': {
+            node_id: 'tx-node',
+            status: 'success',
+            row_count: 4,
+            column_count: 1,
+            columns: ['id'],
+            started_at: '2026-04-08T10:00:02Z',
+            finished_at: '2026-04-08T10:00:04Z',
+          },
+        },
+      }))
       mockPreviewData.mockResolvedValueOnce({
         kind: 'table',
         columns: ['id'],
@@ -1083,7 +1314,7 @@ describe('pipelineStore', () => {
       })
 
       expect(window.confirm).toHaveBeenCalled()
-      expect(mockExecutePipeline).toHaveBeenCalledWith(expect.objectContaining({
+      expect(mockStartPipelineExecution).toHaveBeenCalledWith(expect.objectContaining({
         nodes: [
           expect.objectContaining({ id: 'mid-node' }),
           expect.objectContaining({ id: 'tx-node' }),
@@ -1092,7 +1323,7 @@ describe('pipelineStore', () => {
           { id: 'edge-2', source: 'mid-node', target: 'tx-node' },
         ],
       }), true)
-      expect(mockExecuteNode).not.toHaveBeenCalled()
+      expect(mockStartNodeExecution).not.toHaveBeenCalled()
       expect(mockPreviewData).toHaveBeenCalledWith('orders_final', 0)
       expect(usePipelineStore.getState().nodeResults.other).toEqual(
         expect.objectContaining({ node_id: 'other', status: 'success' })
@@ -1139,8 +1370,8 @@ describe('pipelineStore', () => {
         await usePipelineStore.getState().runTransformPreview('tx-node')
       })
 
-      expect(mockExecutePipeline).not.toHaveBeenCalled()
-      expect(mockExecuteNode).not.toHaveBeenCalled()
+      expect(mockStartPipelineExecution).not.toHaveBeenCalled()
+      expect(mockStartNodeExecution).not.toHaveBeenCalled()
       expect(mockPreviewData).not.toHaveBeenCalled()
     })
   })

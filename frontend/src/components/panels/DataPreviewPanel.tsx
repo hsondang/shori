@@ -19,6 +19,8 @@ const defaultLabels = {
   export: 'Export',
 } as const
 
+type DefaultLabelKey = keyof typeof defaultLabels
+
 export default function DataPreviewPanel() {
   const previewTabsByNodeId = usePipelineStore((s) => s.previewTabsByNodeId)
   const previewTabOrder = usePipelineStore((s) => s.previewTabOrder)
@@ -51,7 +53,7 @@ export default function DataPreviewPanel() {
       : node?.type === 'db_source'
         ? 'auto'
         : node?.type
-          ? (label === defaultLabels[node.type] ? 'auto' : 'custom')
+          ? (label === defaultLabels[node.type as DefaultLabelKey] ? 'auto' : 'custom')
           : 'auto'
     const tableName = typeof data.tableName === 'string' ? data.tableName : tab.tableNameAtLoad
 
@@ -170,8 +172,9 @@ export default function DataPreviewPanel() {
       return renderEmptyState()
     }
 
-    const totalPages = Math.max(1, Math.ceil(activeTab.data.total_rows / activeTab.data.limit))
-    const currentPage = Math.floor(activeTab.data.offset / activeTab.data.limit) + 1
+    const activeData = activeTab.data
+    const totalPages = Math.max(1, Math.ceil(activeData.total_rows / activeData.limit))
+    const currentPage = Math.floor(activeData.offset / activeData.limit) + 1
     const paginationDisabled = activeTab.isStale
 
     return (
@@ -180,7 +183,7 @@ export default function DataPreviewPanel() {
           <div className="text-sm font-medium text-gray-700">
             <span className="font-mono text-purple-600">{getTabTitle(activeTab)}</span>
             <span className="ml-2 text-gray-400">
-              {activeTab.data.total_rows.toLocaleString()} rows × {activeTab.data.columns.length} cols
+              {activeData.total_rows.toLocaleString()} rows × {activeData.columns.length} cols
             </span>
             {activeTab.isStale && (
               <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber-700">
@@ -191,7 +194,7 @@ export default function DataPreviewPanel() {
           <div className="flex items-center gap-2 text-xs">
             <button
               disabled={paginationDisabled || currentPage <= 1}
-              onClick={() => loadTablePreview(activeTab.nodeId, currentTableName, activeTab.data.offset - activeTab.data.limit)}
+              onClick={() => loadTablePreview(activeTab.nodeId, currentTableName, activeData.offset - activeData.limit)}
               className="rounded border border-gray-300 px-2 py-1 hover:bg-gray-100 disabled:opacity-30"
             >
               Prev
@@ -199,7 +202,7 @@ export default function DataPreviewPanel() {
             <span className="text-gray-500">Page {currentPage} of {totalPages}</span>
             <button
               disabled={paginationDisabled || currentPage >= totalPages}
-              onClick={() => loadTablePreview(activeTab.nodeId, currentTableName, activeTab.data.offset + activeTab.data.limit)}
+              onClick={() => loadTablePreview(activeTab.nodeId, currentTableName, activeData.offset + activeData.limit)}
               className="rounded border border-gray-300 px-2 py-1 hover:bg-gray-100 disabled:opacity-30"
             >
               Next
@@ -210,16 +213,16 @@ export default function DataPreviewPanel() {
           <table className="w-full text-xs">
             <thead className="sticky top-0 bg-gray-50">
               <tr>
-                {activeTab.data.columns.map((col, i) => (
+                {activeData.columns.map((col, i) => (
                   <th key={i} className="whitespace-nowrap border-b border-gray-200 px-3 py-1.5 text-left font-medium text-gray-600">
                     {col}
-                    <span className="ml-1 font-normal text-gray-400">{activeTab.data.column_types[i]}</span>
+                    <span className="ml-1 font-normal text-gray-400">{activeData.column_types[i]}</span>
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {activeTab.data.rows.map((row, rowIndex) => (
+              {activeData.rows.map((row, rowIndex) => (
                 <tr key={rowIndex} className="hover:bg-blue-50">
                   {row.map((cell, cellIndex) => (
                     <td key={cellIndex} className="max-w-[200px] truncate border-b border-gray-100 px-3 py-1 whitespace-nowrap">

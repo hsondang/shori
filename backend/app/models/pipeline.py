@@ -13,6 +13,7 @@ class NodeType(str, Enum):
 
 class NodeStatus(str, Enum):
     IDLE = "idle"
+    CONNECTING = "connecting"
     RUNNING = "running"
     SUCCESS = "success"
     ERROR = "error"
@@ -116,3 +117,14 @@ class NodeExecutionResult(BaseModel):
     columns: Optional[list[str]] = None
     error: Optional[str] = None
     execution_time_ms: Optional[float] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+
+
+class ExecutionRunStatus(BaseModel):
+    execution_id: str
+    kind: Literal["node", "pipeline"]
+    status: NodeStatus
+    started_at: str
+    finished_at: Optional[str] = None
+    node_results: dict[str, NodeExecutionResult] = Field(default_factory=dict)

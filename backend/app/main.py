@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.services.csv_service import CsvPreprocessArtifactStore
 from app.services.duckdb_manager import DuckDBManager
+from app.services.execution_registry import ExecutionRegistry
 from app.routers import pipelines, execution, data, upload
 
 
@@ -12,7 +13,9 @@ from app.routers import pipelines, execution, data, upload
 async def lifespan(app: FastAPI):
     app.state.duckdb = DuckDBManager()
     app.state.csv_preprocess_artifacts = CsvPreprocessArtifactStore()
+    app.state.execution_registry = ExecutionRegistry()
     yield
+    app.state.execution_registry.close()
     app.state.csv_preprocess_artifacts.close()
     app.state.duckdb.close()
 

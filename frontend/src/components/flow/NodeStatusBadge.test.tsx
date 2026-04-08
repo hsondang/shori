@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi } from 'vitest'
 import NodeStatusBadge from './NodeStatusBadge'
 import type { NodeExecutionResult } from '../../types/pipeline'
+import { usePipelineStore } from '../../store/pipelineStore'
 
 function badge(overrides: Partial<NodeExecutionResult> = {}) {
   return render(
@@ -18,7 +19,19 @@ describe('NodeStatusBadge', () => {
 
   it('shows running status text', () => {
     badge({ status: 'running' })
-    expect(screen.getByText(/running/)).toBeInTheDocument()
+    expect(screen.getByText(/Running/)).toBeInTheDocument()
+  })
+
+  it('shows connecting status text without a timer', () => {
+    badge({ status: 'connecting', started_at: '2026-04-08T10:00:00Z' })
+    expect(screen.getByText('Connecting')).toBeInTheDocument()
+    expect(screen.queryByText(/00:/)).not.toBeInTheDocument()
+  })
+
+  it('shows a running timer when started_at is present', () => {
+    usePipelineStore.setState({ executionClockNow: Date.parse('2026-04-08T10:01:05Z') })
+    badge({ status: 'running', started_at: '2026-04-08T10:00:00Z' })
+    expect(screen.getByText(/Running · 01:05/)).toBeInTheDocument()
   })
 
   it('shows success status text', () => {

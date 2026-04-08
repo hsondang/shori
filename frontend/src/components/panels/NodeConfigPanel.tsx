@@ -14,6 +14,7 @@ import {
 import { usePipelineStore } from '../../store/pipelineStore'
 import { getConnectionSummary } from '../../lib/databaseConnections'
 import { getCsvPreprocessFingerprint } from '../../lib/csvPreprocessing'
+import { getResultElapsedLabel } from '../../lib/executionTiming'
 import SqlEditor from './SqlEditor'
 import type {
   CsvPreprocessingConfig,
@@ -111,6 +112,7 @@ export default function NodeConfigPanel() {
   const loadPreprocessedCsvPreview = usePipelineStore((s) => s.loadPreprocessedCsvPreview)
   const csvPreprocessArtifacts = usePipelineStore((s) => s.csvPreprocessArtifacts)
   const nodeResults = usePipelineStore((s) => s.nodeResults)
+  const executionClockNow = usePipelineStore((s) => s.executionClockNow)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const resizeStateRef = useRef<{ expanded: boolean; startX: number; startWidthPx: number } | null>(null)
@@ -296,6 +298,12 @@ export default function NodeConfigPanel() {
   const transformQuery = (config.sql as string | undefined) ?? ''
   const canExecuteDb = Boolean(dbQuery.trim()) && nodeResult?.status !== 'running'
   const canExecuteTransform = Boolean(transformQuery.trim()) && nodeResult?.status !== 'running'
+  const nodeRunningElapsed = nodeResult ? getResultElapsedLabel(nodeResult, executionClockNow) : null
+  const nodeStatusLabel = nodeResult?.status === 'running'
+    ? `Running${nodeRunningElapsed ? ` · ${nodeRunningElapsed}` : ''}`
+    : nodeResult?.status === 'connecting'
+      ? 'Connecting'
+    : (nodeResult ? `Status: ${nodeResult.status}` : null)
 
   const renderActionsMenu = () => (
     <div ref={menuRef} className="relative shrink-0">
@@ -416,7 +424,7 @@ export default function NodeConfigPanel() {
           <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500">SQL Query</label>
           {nodeResult && (
             <span className="text-xs text-gray-400">
-              {nodeResult.status === 'running' ? 'Running...' : `Status: ${nodeResult.status}`}
+              {nodeStatusLabel}
             </span>
           )}
         </div>
@@ -555,7 +563,7 @@ export default function NodeConfigPanel() {
 
           {nodeResult && (
             <div className="text-xs text-gray-500">
-              {nodeResult.status === 'running' ? 'Running...' : `Status: ${nodeResult.status}`}
+              {nodeStatusLabel}
             </div>
           )}
         </div>
@@ -703,7 +711,7 @@ export default function NodeConfigPanel() {
                 <label className="block text-xs text-gray-500">Run Node</label>
                 {nodeResult && (
                   <span className="text-xs text-gray-400">
-                    {nodeResult.status === 'running' ? 'Running...' : `Status: ${nodeResult.status}`}
+                    {nodeStatusLabel}
                   </span>
                 )}
               </div>
