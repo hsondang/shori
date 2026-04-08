@@ -24,32 +24,6 @@ def _get_registry(request: Request):
     return request.app.state.execution_registry
 
 
-@router.post("/pipeline/{pipeline_id}")
-async def execute_pipeline(pipeline_id: str, request: Request, force: bool = False):
-    try:
-        pipeline = get_store().load(pipeline_id)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Pipeline not found")
-
-    engine = _get_engine(request)
-    results = await engine.execute_pipeline(pipeline, force_refresh=force)
-    return results
-
-
-@router.post("/pipeline")
-async def execute_pipeline_inline(pipeline: PipelineDefinition, request: Request, force: bool = False):
-    engine = _get_engine(request)
-    results = await engine.execute_pipeline(pipeline, force_refresh=force)
-    return results
-
-
-@router.post("/node")
-async def execute_node(node: NodeDefinition, request: Request):
-    engine = _get_engine(request)
-    result = await engine.execute_single_node(node)
-    return result
-
-
 @router.post("/pipeline/start")
 async def start_pipeline_execution(pipeline: PipelineDefinition, request: Request, force: bool = False):
     engine = _get_engine(request)
@@ -87,6 +61,7 @@ async def start_pipeline_execution(pipeline: PipelineDefinition, request: Reques
     task = asyncio.create_task(runner())
     registry.attach_task(run.execution_id, task)
     await started.wait()
+    await asyncio.sleep(0)
 
     snapshot = registry.get_run(run.execution_id)
     if snapshot is None:
@@ -130,11 +105,38 @@ async def start_node_execution(node: NodeDefinition, request: Request):
     task = asyncio.create_task(runner())
     registry.attach_task(run.execution_id, task)
     await started.wait()
+    await asyncio.sleep(0)
 
     snapshot = registry.get_run(run.execution_id)
     if snapshot is None:
         raise HTTPException(status_code=500, detail="Execution run disappeared before it could be tracked")
     return snapshot
+
+
+@router.post("/pipeline/{pipeline_id}")
+async def execute_pipeline(pipeline_id: str, request: Request, force: bool = False):
+    try:
+        pipeline = get_store().load(pipeline_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+
+    engine = _get_engine(request)
+    results = await engine.execute_pipeline(pipeline, force_refresh=force)
+    return results
+
+
+@router.post("/pipeline")
+async def execute_pipeline_inline(pipeline: PipelineDefinition, request: Request, force: bool = False):
+    engine = _get_engine(request)
+    results = await engine.execute_pipeline(pipeline, force_refresh=force)
+    return results
+
+
+@router.post("/node")
+async def execute_node(node: NodeDefinition, request: Request):
+    engine = _get_engine(request)
+    result = await engine.execute_single_node(node)
+    return result
 
 
 @router.get("/runs/{execution_id}")

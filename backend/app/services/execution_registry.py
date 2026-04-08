@@ -58,6 +58,9 @@ class ExecutionRegistry:
                 if exc is not None:
                     self._fail_run_unlocked(execution_id, f"Execution crashed: {exc}")
                     run = self._runs.get(execution_id)
+                elif self._can_finalize_run_unlocked(run):
+                    self._finalize_run_unlocked(execution_id)
+                    run = self._runs.get(execution_id)
             return run.model_copy(deep=True) if run is not None else None
 
     def mark_node_running(self, execution_id: str, node_id: str, started_at: str) -> None:
@@ -99,13 +102,7 @@ class ExecutionRegistry:
 
     def finalize_run(self, execution_id: str) -> None:
         with self._lock:
-            run = self._runs.get(execution_id)
-            if run is None:
-                return
-            has_error = any(result.status == NodeStatus.ERROR for result in run.node_results.values())
-            run.status = NodeStatus.ERROR if has_error else NodeStatus.SUCCESS
-            run.finished_at = utc_now_iso()
-            self._completed_at[execution_id] = time.monotonic()
+            self._finalize_run_unlocked(execution_id)
 
     def fail_run(self, execution_id: str, error: str) -> None:
         with self._lock:
@@ -136,6 +133,22 @@ class ExecutionRegistry:
             )
         run.status = NodeStatus.ERROR
         run.finished_at = finished_at
+        self._completed_at[execution_id] = time.monotonic()
+
+    def _can_finalize_run_unlocked(self, run: ExecutionRunStatus) -> bool:
+        if not self._node_ids.get(run.execution_id):
+            return False
+        if len(run.node_results) < len(self._node_ids[run.execution_id]):
+            return False
+        return all(result.status in {NodeStatus.SUCCESS, NodeStatus.ERROR} for result in run.node_results.values())
+
+    def _finalize_run_unlocked(self, execution_id: str) -> None:
+        run = self._runs.get(execution_id)
+        if run is None:
+            return
+        has_error = any(result.status == NodeStatus.ERROR for result in run.node_results.values())
+        run.status = NodeStatus.ERROR if has_error else NodeStatus.SUCCESS
+        run.finished_at = utc_now_iso()
         self._completed_at[execution_id] = time.monotonic()
 
     def _cleanup_expired_unlocked(self) -> None:
