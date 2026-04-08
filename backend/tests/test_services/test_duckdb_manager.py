@@ -1,3 +1,4 @@
+import csv
 import pathlib
 
 import pandas as pd
@@ -17,6 +18,27 @@ def test_register_csv_drops_existing(duckdb_mgr, sample_csv_file):
     duckdb_mgr.register_csv("t", sample_csv_file)
     stats = duckdb_mgr.register_csv("t", sample_csv_file)
     assert stats["row_count"] == 5  # no duplicate rows
+
+
+def test_register_csv_uses_full_file_sampling_for_mixed_type_ids(duckdb_mgr, tmp_path):
+    path = tmp_path / "mixed_ids.csv"
+    with path.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Lead ID", "name"])
+        for index in range(20481):
+            writer.writerow([1000000 + index, f"User {index}"])
+        writer.writerow(["1C251002482142vKqu", "Late Mixed Type"])
+
+    stats = duckdb_mgr.register_csv("mixed_ids", str(path))
+    describe_rows = duckdb_mgr.conn.execute('DESCRIBE "mixed_ids"').fetchall()
+    column_types = {name: type_name for name, type_name, *_ in describe_rows}
+    last_lead_id = duckdb_mgr.conn.execute(
+        'SELECT "Lead ID" FROM "mixed_ids" ORDER BY rowid DESC LIMIT 1'
+    ).fetchone()[0]
+
+    assert stats["row_count"] == 20482
+    assert column_types["Lead ID"] == "VARCHAR"
+    assert last_lead_id == "1C251002482142vKqu"
 
 
 def test_register_dataframe(duckdb_mgr):

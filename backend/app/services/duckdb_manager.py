@@ -12,7 +12,8 @@ class DuckDBManager:
         with self._lock:
             self.conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
             self.conn.execute(
-                f'CREATE TABLE "{table_name}" AS SELECT * FROM read_csv_auto(?)',
+                # Scan the full CSV before inferring types so late mixed-type IDs stay text.
+                f'CREATE TABLE "{table_name}" AS SELECT * FROM read_csv_auto(?, sample_size=-1)',
                 [file_path],
             )
             return self._table_stats(table_name)
