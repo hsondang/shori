@@ -64,17 +64,27 @@ class OracleService:
             dsn=dsn,
         )
 
-    def _execute_query_sync(self, config: dict) -> pd.DataFrame:
-        conn_config = config["connection"]
-        connection = self._connect(conn_config)
+    def _fetch_query_sync(self, connection, query: str) -> pd.DataFrame:
         cursor = connection.cursor()
         try:
-            cursor.execute(config["query"])
+            cursor.execute(query)
             columns = [col[0] for col in cursor.description]
             rows = cursor.fetchall()
             return pd.DataFrame(rows, columns=columns)
         finally:
             cursor.close()
+
+    async def connect(self, config: dict):
+        return await asyncio.to_thread(self._connect, config["connection"])
+
+    async def fetch_query(self, connection, query: str) -> pd.DataFrame:
+        return await asyncio.to_thread(self._fetch_query_sync, connection, query)
+
+    def _execute_query_sync(self, config: dict) -> pd.DataFrame:
+        connection = self._connect(config["connection"])
+        try:
+            return self._fetch_query_sync(connection, config["query"])
+        finally:
             connection.close()
 
     async def execute_query(self, config: dict) -> pd.DataFrame:

@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import {
   ReactFlow,
   Background,
@@ -70,6 +70,29 @@ export default function FlowCanvas() {
     setSelectedNodeId(null)
   }, [setSelectedNodeId])
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return
+      const activeElement = document.activeElement
+      if (
+        activeElement instanceof HTMLInputElement
+        || activeElement instanceof HTMLTextAreaElement
+        || activeElement instanceof HTMLSelectElement
+        || activeElement?.getAttribute('contenteditable') === 'true'
+      ) {
+        return
+      }
+
+      const selectedEdges = edges.filter((edge) => edge.selected)
+      if (selectedEdges.length === 0) return
+      event.preventDefault()
+      onEdgesChange(selectedEdges.map((edge) => ({ id: edge.id, type: 'remove' })))
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [edges, onEdgesChange])
+
   return (
     <ReactFlow
       nodes={nodes}
@@ -83,7 +106,7 @@ export default function FlowCanvas() {
       onPaneClick={onPaneClick}
       nodeTypes={nodeTypes}
       fitView
-      deleteKeyCode="Delete"
+      deleteKeyCode={['Delete', 'Backspace']}
       className="bg-gray-50"
     >
       <Background />

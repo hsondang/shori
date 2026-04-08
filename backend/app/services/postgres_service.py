@@ -3,22 +3,28 @@ import pandas as pd
 
 
 class PostgresService:
-    async def execute_query(self, config: dict) -> pd.DataFrame:
+    async def connect(self, config: dict) -> asyncpg.Connection:
         conn_config = config["connection"]
-        connection = await asyncpg.connect(
+        return await asyncpg.connect(
             host=conn_config["host"],
             port=conn_config["port"],
             database=conn_config["database"],
             user=conn_config["user"],
             password=conn_config["password"],
         )
+
+    async def fetch_query(self, connection: asyncpg.Connection, query: str) -> pd.DataFrame:
+        rows = await connection.fetch(query)
+        if not rows:
+            return pd.DataFrame()
+        columns = list(rows[0].keys())
+        data = [list(row.values()) for row in rows]
+        return pd.DataFrame(data, columns=columns)
+
+    async def execute_query(self, config: dict) -> pd.DataFrame:
+        connection = await self.connect(config)
         try:
-            rows = await connection.fetch(config["query"])
-            if not rows:
-                return pd.DataFrame()
-            columns = list(rows[0].keys())
-            data = [list(row.values()) for row in rows]
-            return pd.DataFrame(data, columns=columns)
+            return await self.fetch_query(connection, config["query"])
         finally:
             await connection.close()
 

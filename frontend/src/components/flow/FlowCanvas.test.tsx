@@ -32,12 +32,16 @@ vi.mock('@xyflow/react', async () => {
       onDrop,
       onDragOver,
       onPaneClick,
+      onConnect,
+      onEdgesChange,
       children,
     }: {
       onInit?: (instance: { screenToFlowPosition: (position: { x: number; y: number }) => { x: number; y: number } }) => void
       onDrop?: (event: React.DragEvent) => void
       onDragOver?: (event: React.DragEvent) => void
       onPaneClick?: () => void
+      onConnect?: (connection: { source?: string; target?: string }) => void
+      onEdgesChange?: (changes: Array<{ id: string; type: string }>) => void
       children?: React.ReactNode
     }) => {
       React.useEffect(() => {
@@ -48,6 +52,27 @@ vi.mock('@xyflow/react', async () => {
 
       return (
         <div data-testid="flow-canvas" onDrop={onDrop} onDragOver={onDragOver} onClick={onPaneClick}>
+          <button
+            type="button"
+            data-testid="connect-self"
+            onClick={() => onConnect?.({ source: 'node-1', target: 'node-1' })}
+          >
+            Connect self
+          </button>
+          <button
+            type="button"
+            data-testid="connect-two-nodes"
+            onClick={() => onConnect?.({ source: 'node-1', target: 'node-2' })}
+          >
+            Connect nodes
+          </button>
+          <button
+            type="button"
+            data-testid="remove-edge"
+            onClick={() => onEdgesChange?.([{ id: 'edge-1', type: 'remove' }])}
+          >
+            Remove edge
+          </button>
           {children}
         </div>
       )
@@ -55,6 +80,10 @@ vi.mock('@xyflow/react', async () => {
     Background: () => <div data-testid="flow-background" />,
     Controls: () => <div data-testid="flow-controls" />,
     MiniMap: () => <div data-testid="flow-minimap" />,
+    applyEdgeChanges: (
+      changes: Array<{ id: string; type: string }>,
+      edges: Array<{ id: string }>
+    ) => edges.filter((edge) => !changes.some((change) => change.type === 'remove' && change.id === edge.id)),
     Handle: () => null,
     Position: { Left: 'left', Right: 'right' },
   }
@@ -174,5 +203,85 @@ describe('FlowCanvas', () => {
     expect(data.tableName).toBe('warehouse_orders')
     expect((config.connection as Record<string, unknown>).host).toBe('localhost')
     expect(config.query).toBe('SELECT * FROM orders')
+  })
+
+  it('rejects self-loop connections', async () => {
+    const user = userEvent.setup()
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [{
+          id: 'node-1',
+          type: 'transform',
+          position: { x: 0, y: 0 },
+          data: {
+            label: 'Transform',
+            autoLabel: 'Transform',
+            labelMode: 'auto',
+            tableName: 'tx_table',
+            config: { sql: 'SELECT 1' },
+          },
+        }],
+        edges: [],
+      })
+    })
+
+    renderCanvas()
+    await user.click(screen.getByTestId('connect-self'))
+
+    expect(usePipelineStore.getState().edges).toEqual([])
+  })
+
+  it('removes the selected edge when Delete is pressed', async () => {
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'node-1',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: { label: 'CSV', autoLabel: 'CSV', labelMode: 'auto', tableName: 'src', config: { file_path: '/tmp/a.csv', original_filename: 'a.csv' } },
+          },
+          {
+            id: 'node-2',
+            type: 'transform',
+            position: { x: 100, y: 0 },
+            data: { label: 'Transform', autoLabel: 'Transform', labelMode: 'auto', tableName: 'tx', config: { sql: 'SELECT * FROM src' } },
+          },
+        ],
+        edges: [{ id: 'edge-1', source: 'node-1', target: 'node-2', selected: true }],
+      })
+    })
+
+    renderCanvas()
+    fireEvent.keyDown(window, { key: 'Delete' })
+
+    expect(usePipelineStore.getState().edges).toEqual([])
+  })
+
+  it('removes the selected edge when Backspace is pressed', async () => {
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'node-1',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: { label: 'CSV', autoLabel: 'CSV', labelMode: 'auto', tableName: 'src', config: { file_path: '/tmp/a.csv', original_filename: 'a.csv' } },
+          },
+          {
+            id: 'node-2',
+            type: 'transform',
+            position: { x: 100, y: 0 },
+            data: { label: 'Transform', autoLabel: 'Transform', labelMode: 'auto', tableName: 'tx', config: { sql: 'SELECT * FROM src' } },
+          },
+        ],
+        edges: [{ id: 'edge-1', source: 'node-1', target: 'node-2', selected: true }],
+      })
+    })
+
+    renderCanvas()
+    fireEvent.keyDown(window, { key: 'Backspace' })
+
+    expect(usePipelineStore.getState().edges).toEqual([])
   })
 })

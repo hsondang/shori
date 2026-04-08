@@ -133,8 +133,20 @@ class PipelineEngine:
             elif node.type == NodeType.DB_SOURCE:
                 db_type = node.config.get("db_type", "postgres")
                 svc = self.oracle if db_type == "oracle" else self.postgres
-                df = await svc.execute_query(node.config)
-                stats = self.duckdb.register_dataframe(node.table_name, df)
+                connection = await svc.connect(node.config)
+                query_started_at = utc_now_iso()
+                try:
+                    df = await svc.fetch_query(connection, node.config["query"])
+                finally:
+                    close = getattr(connection, "close")
+                    maybe_awaitable = close()
+                    if asyncio.iscoroutine(maybe_awaitable):
+                        await maybe_awaitable
+                stats = await asyncio.to_thread(
+                    self.duckdb.register_dataframe,
+                    node.table_name,
+                    df,
+                )
             elif node.type == NodeType.TRANSFORM:
                 stats = await asyncio.to_thread(
                     self.duckdb.execute_transform,
@@ -153,7 +165,7 @@ class PipelineEngine:
                 column_count=stats["column_count"],
                 columns=stats["columns"],
                 execution_time_ms=elapsed,
-                started_at=effective_started_at,
+                started_at=query_started_at if node.type == NodeType.DB_SOURCE else effective_started_at,
                 finished_at=utc_now_iso(),
             )
         except Exception as e:

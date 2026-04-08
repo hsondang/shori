@@ -714,6 +714,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   },
 
   onConnect: (connection) => {
+    if (!connection.source || !connection.target || connection.source === connection.target) {
+      return
+    }
     set({ edges: addEdge({ ...connection, id: `edge_${Date.now()}` }, get().edges) })
     const state = get()
     set({

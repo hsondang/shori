@@ -223,7 +223,11 @@ async def test_execute_pipeline_uses_reviewed_preprocess_for_csv_sources(engine,
 @pytest.mark.asyncio
 async def test_execute_db_source_postgres_mocked(engine):
     df = pd.DataFrame({"col1": [1, 2], "col2": ["a", "b"]})
-    with patch.object(engine.postgres, "execute_query", new=AsyncMock(return_value=df)):
+    connection = AsyncMock()
+    with (
+        patch.object(engine.postgres, "connect", new=AsyncMock(return_value=connection)),
+        patch.object(engine.postgres, "fetch_query", new=AsyncMock(return_value=df)),
+    ):
         node = _make_node("pg", NodeType.DB_SOURCE, "pg_t", {
             "db_type": "postgres",
             "connection": {"host": "h", "port": 5432, "database": "d", "user": "u", "password": "p"},
@@ -232,6 +236,53 @@ async def test_execute_db_source_postgres_mocked(engine):
         result = await engine.execute_single_node(node)
     assert result.status == NodeStatus.SUCCESS
     assert result.row_count == 2
+
+
+@pytest.mark.asyncio
+async def test_execute_db_source_reports_connecting_before_running(engine):
+    df = pd.DataFrame({"col1": [1], "col2": ["a"]})
+    connection = AsyncMock()
+    updates = []
+    finishes = []
+
+    with (
+        patch.object(engine.postgres, "connect", new=AsyncMock(return_value=connection)),
+        patch.object(engine.postgres, "fetch_query", new=AsyncMock(return_value=df)),
+    ):
+        node = _make_node("pg", NodeType.DB_SOURCE, "pg_connecting_t", {
+            "db_type": "postgres",
+            "connection": {"host": "h", "port": 5432, "database": "d", "user": "u", "password": "p"},
+            "query": "SELECT 1",
+        })
+        result = await engine.execute_single_node(
+            node,
+            on_node_update=lambda current: updates.append(current),
+            on_node_finish=lambda current: finishes.append(current),
+        )
+
+    assert updates[0].status == NodeStatus.CONNECTING
+    assert result.status == NodeStatus.SUCCESS
+    assert finishes[0].started_at == result.started_at
+
+
+@pytest.mark.asyncio
+async def test_execute_db_source_connection_failure_stays_in_connecting_phase(engine):
+    updates = []
+
+    with patch.object(engine.postgres, "connect", new=AsyncMock(side_effect=RuntimeError("connect boom"))):
+        node = _make_node("pg", NodeType.DB_SOURCE, "pg_connect_fail_t", {
+            "db_type": "postgres",
+            "connection": {"host": "h", "port": 5432, "database": "d", "user": "u", "password": "p"},
+            "query": "SELECT 1",
+        })
+        result = await engine.execute_single_node(
+            node,
+            on_node_update=lambda current: updates.append(current),
+        )
+
+    assert updates[0].status == NodeStatus.CONNECTING
+    assert result.status == NodeStatus.ERROR
+    assert result.error == "connect boom"
 
 
 @pytest.mark.asyncio
