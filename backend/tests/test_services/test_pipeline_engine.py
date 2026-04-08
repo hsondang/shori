@@ -261,7 +261,10 @@ async def test_execute_db_source_reports_connecting_before_running(engine):
         )
 
     assert updates[0].status == NodeStatus.CONNECTING
+    assert updates[1].status == NodeStatus.RUNNING
+    assert updates[1].started_at is not None
     assert result.status == NodeStatus.SUCCESS
+    assert result.started_at == updates[1].started_at
     assert finishes[0].started_at == result.started_at
 
 
@@ -283,6 +286,31 @@ async def test_execute_db_source_connection_failure_stays_in_connecting_phase(en
     assert updates[0].status == NodeStatus.CONNECTING
     assert result.status == NodeStatus.ERROR
     assert result.error == "connect boom"
+
+
+@pytest.mark.asyncio
+async def test_execute_db_source_query_failure_reports_running_phase(engine):
+    connection = AsyncMock()
+    updates = []
+
+    with (
+        patch.object(engine.postgres, "connect", new=AsyncMock(return_value=connection)),
+        patch.object(engine.postgres, "fetch_query", new=AsyncMock(side_effect=RuntimeError("query boom"))),
+    ):
+        node = _make_node("pg", NodeType.DB_SOURCE, "pg_query_fail_t", {
+            "db_type": "postgres",
+            "connection": {"host": "h", "port": 5432, "database": "d", "user": "u", "password": "p"},
+            "query": "SELECT 1",
+        })
+        result = await engine.execute_single_node(
+            node,
+            on_node_update=lambda current: updates.append(current),
+        )
+
+    assert [update.status for update in updates] == [NodeStatus.CONNECTING, NodeStatus.RUNNING]
+    assert result.status == NodeStatus.ERROR
+    assert result.error == "query boom"
+    assert result.started_at == updates[1].started_at
 
 
 @pytest.mark.asyncio

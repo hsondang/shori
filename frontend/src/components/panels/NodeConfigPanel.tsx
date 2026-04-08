@@ -296,7 +296,8 @@ export default function NodeConfigPanel() {
   const dbConnection = config.connection as DatabaseConnectionConfig | undefined
   const dbQuery = (config.query as string | undefined) ?? ''
   const transformQuery = (config.sql as string | undefined) ?? ''
-  const canExecuteDb = Boolean(dbQuery.trim()) && nodeResult?.status !== 'running'
+  const isDbNodeBusy = nodeResult?.status === 'connecting' || nodeResult?.status === 'running'
+  const canExecuteDb = Boolean(dbQuery.trim()) && !isDbNodeBusy
   const canExecuteTransform = Boolean(transformQuery.trim()) && nodeResult?.status !== 'running'
   const nodeRunningElapsed = nodeResult ? getResultElapsedLabel(nodeResult, executionClockNow) : null
   const nodeStatusLabel = nodeResult?.status === 'running'
@@ -451,7 +452,7 @@ export default function NodeConfigPanel() {
               : 'bg-gray-100 text-gray-400'
           }`}
         >
-          {nodeResult?.status === 'running' ? 'Running...' : actionLabel}
+          {nodeResult?.status === 'connecting' ? 'Connecting...' : nodeResult?.status === 'running' ? 'Running...' : actionLabel}
         </button>
       </div>
     </NodeConfigPanelShell>
@@ -584,7 +585,7 @@ export default function NodeConfigPanel() {
                   : 'bg-gray-100 text-gray-400'
               }`}
             >
-              {nodeResult?.status === 'running' ? 'Running...' : 'Execute'}
+              {nodeResult?.status === 'connecting' ? 'Connecting...' : nodeResult?.status === 'running' ? 'Running...' : 'Execute'}
             </button>
           </>
         )}
