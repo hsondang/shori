@@ -241,6 +241,50 @@ describe('NodeConfigPanel', () => {
     expect((updated.config as Record<string, unknown>).query).toBe('SELECT id FROM events')
   })
 
+  it('disables database execution while connecting and shows the connecting label', () => {
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'db-node',
+            type: 'db_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Analytics DB',
+              autoLabel: 'Analytics DB',
+              labelMode: 'auto',
+              tableName: 'db_table',
+              config: {
+                db_type: 'postgres',
+                connection: {
+                  host: 'localhost',
+                  port: 5432,
+                  database: 'analytics',
+                  user: 'user',
+                  password: 'secret',
+                },
+                query: 'SELECT 1',
+              },
+            },
+          },
+        ],
+        nodeResults: {
+          'db-node': {
+            node_id: 'db-node',
+            status: 'connecting',
+            started_at: '2026-04-08T10:00:00Z',
+          },
+        },
+        selectedNodeId: 'db-node',
+      })
+    })
+
+    renderPanel()
+
+    expect(screen.getByRole('button', { name: 'Connecting...' })).toBeDisabled()
+    expect(screen.getByText('Connecting')).toBeInTheDocument()
+  })
+
   it('keeps inline transform query editing and run controls in the sidebar', async () => {
     const user = userEvent.setup()
 

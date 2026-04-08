@@ -29,6 +29,14 @@ def make_connecting_result(node_id: str, started_at: str) -> NodeExecutionResult
     )
 
 
+def make_running_result(node_id: str, started_at: str) -> NodeExecutionResult:
+    return NodeExecutionResult(
+        node_id=node_id,
+        status=NodeStatus.RUNNING,
+        started_at=started_at,
+    )
+
+
 class PipelineEngine:
     def __init__(
         self,
@@ -86,7 +94,7 @@ class PipelineEngine:
                 on_node_start(node.id, started_at)
             if node.type == NodeType.DB_SOURCE and on_node_update is not None:
                 on_node_update(make_connecting_result(node.id, started_at))
-            result = await self._execute_node(node, started_at=started_at)
+            result = await self._execute_node(node, started_at=started_at, on_node_update=on_node_update)
             results[node_id] = result
             self.node_results[node_id] = result
             if on_node_finish is not None:
@@ -106,7 +114,7 @@ class PipelineEngine:
             on_node_start(node.id, started_at)
         if node.type == NodeType.DB_SOURCE and on_node_update is not None:
             on_node_update(make_connecting_result(node.id, started_at))
-        result = await self._execute_node(node, started_at=started_at)
+        result = await self._execute_node(node, started_at=started_at, on_node_update=on_node_update)
         self.node_results[node.id] = result
         if on_node_finish is not None:
             on_node_finish(result)
@@ -117,9 +125,11 @@ class PipelineEngine:
         node: NodeDefinition,
         *,
         started_at: str | None = None,
+        on_node_update: Callable[[NodeExecutionResult], None] | None = None,
     ) -> NodeExecutionResult:
         start = time.time()
         effective_started_at = started_at or utc_now_iso()
+        current_started_at = effective_started_at
         try:
             if node.type == NodeType.CSV_SOURCE:
                 stats = await asyncio.to_thread(
@@ -135,6 +145,9 @@ class PipelineEngine:
                 svc = self.oracle if db_type == "oracle" else self.postgres
                 connection = await svc.connect(node.config)
                 query_started_at = utc_now_iso()
+                current_started_at = query_started_at
+                if on_node_update is not None:
+                    on_node_update(make_running_result(node.id, query_started_at))
                 try:
                     df = await svc.fetch_query(connection, node.config["query"])
                 finally:
@@ -165,7 +178,7 @@ class PipelineEngine:
                 column_count=stats["column_count"],
                 columns=stats["columns"],
                 execution_time_ms=elapsed,
-                started_at=query_started_at if node.type == NodeType.DB_SOURCE else effective_started_at,
+                started_at=current_started_at,
                 finished_at=utc_now_iso(),
             )
         except Exception as e:
@@ -175,6 +188,6 @@ class PipelineEngine:
                 status=NodeStatus.ERROR,
                 error=str(e),
                 execution_time_ms=elapsed,
-                started_at=effective_started_at,
+                started_at=current_started_at,
                 finished_at=utc_now_iso(),
             )
