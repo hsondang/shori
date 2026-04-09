@@ -29,6 +29,13 @@ export default function SqlEditor({
           wordWrap: 'on',
           tabSize: 2,
           automaticLayout: true,
+          quickSuggestions: false,
+          suggestOnTriggerCharacters: false,
+          parameterHints: { enabled: false },
+          inlineSuggest: { enabled: false },
+          wordBasedSuggestions: 'off',
+          tabCompletion: 'off',
+          acceptSuggestionOnEnter: 'off',
         }}
         theme="vs-dark"
       />
