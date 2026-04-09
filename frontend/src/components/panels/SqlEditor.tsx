@@ -1,4 +1,5 @@
 import Editor from '@monaco-editor/react'
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 
 interface SqlEditorProps {
   value: string
@@ -14,8 +15,16 @@ export default function SqlEditor({
   height = '200px',
   containerClassName = '',
 }: SqlEditorProps) {
+  const stopKeyboardPropagation = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    event.stopPropagation()
+  }
+
   return (
-    <div className={`overflow-hidden rounded border border-gray-300 ${containerClassName}`.trim()}>
+    <div
+      className={`nokey nopan nowheel overflow-hidden rounded border border-gray-300 ${containerClassName}`.trim()}
+      onKeyDown={stopKeyboardPropagation}
+      onKeyUp={stopKeyboardPropagation}
+    >
       <Editor
         height={height}
         defaultLanguage="sql"
