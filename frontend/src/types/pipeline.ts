@@ -1,6 +1,6 @@
 export type NodeType = 'csv_source' | 'db_source' | 'transform' | 'export'
 export type DbType = 'oracle' | 'postgres'
-export type NodeStatus = 'idle' | 'connecting' | 'running' | 'success' | 'error'
+export type NodeStatus = 'idle' | 'connecting' | 'running' | 'success' | 'error' | 'cancelled'
 export type NodeLabelMode = 'auto' | 'custom'
 export type NodeEditorMode = 'closed' | 'create' | 'edit'
 
@@ -20,6 +20,14 @@ export interface OracleConnectionConfig {
   password: string
 }
 
+export type OracleFetchMode = 'fetchall' | 'fetchmany'
+
+export interface OracleFetchConfig {
+  mode: OracleFetchMode
+  arraysize: number
+  prefetchrows: number
+}
+
 export type DatabaseConnectionConfig = PostgresConnectionConfig | OracleConnectionConfig
 
 export interface CsvSourceConfig {
@@ -34,11 +42,20 @@ export interface CsvPreprocessingConfig {
   script: string
 }
 
-export interface DatabaseSourceConfig {
-  db_type: DbType
-  connection: DatabaseConnectionConfig
+export interface PostgresDatabaseSourceConfig {
+  db_type: 'postgres'
+  connection: PostgresConnectionConfig
   query: string
 }
+
+export interface OracleDatabaseSourceConfig {
+  db_type: 'oracle'
+  connection: OracleConnectionConfig
+  query: string
+  fetch_config?: OracleFetchConfig
+}
+
+export type DatabaseSourceConfig = PostgresDatabaseSourceConfig | OracleDatabaseSourceConfig
 
 export type SavedDatabaseConnection =
   | ({ id: string; name: string; db_type: 'postgres' } & PostgresConnectionConfig)

@@ -14,6 +14,7 @@ import type {
   CsvPreprocessingConfig,
   CsvSourceConfig,
   CsvTextPreviewData,
+  DatabaseSourceConfig,
   ExecutionRunStatus,
   MaterializedPreviewTab,
   NodeEditorDraft,
@@ -29,7 +30,7 @@ import type {
 } from '../types/pipeline'
 import * as api from '../api/client'
 import { getCsvPreprocessFingerprint } from '../lib/csvPreprocessing'
-import { defaultConnectionConfig } from '../lib/databaseConnections'
+import { defaultDatabaseSourceConfig, defaultOracleFetchConfig } from '../lib/databaseConnections'
 import {
   createBlankPipelineDefinition,
   snapshotPipelineDefinition,
@@ -103,6 +104,7 @@ interface PipelineState {
   newPipeline: () => void
   markProjectCatalogChanged: () => void
   confirmDiscardChanges: (nextProjectName?: string) => boolean
+  abortDatabaseNodeExecution: (nodeId: string) => Promise<void>
 }
 
 type StoreSet = (
@@ -145,7 +147,7 @@ function defaultConfig(type: NodeType): Record<string, unknown> {
         script: '',
       },
     }
-    case 'db_source': return { db_type: 'postgres', connection: defaultConnectionConfig('postgres'), query: '' }
+    case 'db_source': return defaultDatabaseSourceConfig('postgres')
     case 'transform': return { sql: '' }
     case 'export': return { format: 'csv' }
   }
@@ -375,7 +377,7 @@ export function buildDatabaseSourceDraftFromConnection(
   connection: SavedDatabaseConnection,
   position: { x: number; y: number },
 ): NodeEditorDraft {
-  const config = connection.db_type === 'oracle'
+  const config: DatabaseSourceConfig = connection.db_type === 'oracle'
     ? {
         db_type: 'oracle',
         connection: {
@@ -386,6 +388,7 @@ export function buildDatabaseSourceDraftFromConnection(
           password: connection.password,
         },
         query: '',
+        fetch_config: defaultOracleFetchConfig(),
       }
     : {
         db_type: 'postgres',
@@ -479,8 +482,10 @@ const EXECUTION_CLOCK_INTERVAL_MS = 1000
 const EXECUTION_TRACKING_ERROR = 'Execution status unavailable. The backend may have restarted or the run expired.'
 
 const executionPollTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
+const executionPollAbortControllers = new Map<string, AbortController>()
 const executionPreviewTargets = new Map<string, { nodeId: string; tableName: string }>()
 const executionTrackedNodeIds = new Map<string, string[]>()
+const abortedExecutionIds = new Set<string>()
 let executionClockInterval: ReturnType<typeof setInterval> | null = null
 
 function isNotFoundError(error: unknown): boolean {
@@ -489,19 +494,35 @@ function isNotFoundError(error: unknown): boolean {
   return typeof response === 'object' && response !== null && 'status' in response && response.status === 404
 }
 
+function isRequestAbortedError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const code = 'code' in error ? error.code : undefined
+  const name = 'name' in error ? error.name : undefined
+  const message = 'message' in error ? error.message : undefined
+  return code === 'ERR_CANCELED' || name === 'CanceledError' || message === 'canceled'
+}
+
 function clearExecutionPoll(executionId: string) {
   const timeoutId = executionPollTimeouts.get(executionId)
   if (timeoutId != null) {
     clearTimeout(timeoutId)
     executionPollTimeouts.delete(executionId)
   }
+  const controller = executionPollAbortControllers.get(executionId)
+  if (controller != null) {
+    controller.abort()
+    executionPollAbortControllers.delete(executionId)
+  }
 }
 
 function clearAllExecutionTracking() {
   executionPollTimeouts.forEach((timeoutId) => clearTimeout(timeoutId))
   executionPollTimeouts.clear()
+  executionPollAbortControllers.forEach((controller) => controller.abort())
+  executionPollAbortControllers.clear()
   executionPreviewTargets.clear()
   executionTrackedNodeIds.clear()
+  abortedExecutionIds.clear()
   if (executionClockInterval != null) {
     clearInterval(executionClockInterval)
     executionClockInterval = null
@@ -535,6 +556,10 @@ function applyExecutionRunSnapshot(
   set: StoreSet,
   get: () => PipelineState,
 ) {
+  if (abortedExecutionIds.has(run.execution_id) && run.status !== 'cancelled') {
+    return
+  }
+
   set((state) => {
     const nodeResults = { ...state.nodeResults }
     const activeExecutions = { ...state.activeExecutions }
@@ -542,7 +567,7 @@ function applyExecutionRunSnapshot(
 
     Object.entries(run.node_results).forEach(([nodeId, result]) => {
       nodeResults[nodeId] = result
-      if (result.status === 'running') {
+      if (result.status === 'connecting' || result.status === 'running') {
         activeExecutionIdByNodeId[nodeId] = run.execution_id
       } else if (activeExecutionIdByNodeId[nodeId] === run.execution_id) {
         delete activeExecutionIdByNodeId[nodeId]
@@ -625,6 +650,12 @@ async function finalizeExecutionRun(
   set: StoreSet,
   get: () => PipelineState,
 ) {
+  if (run.status === 'cancelled') {
+    abortedExecutionIds.add(run.execution_id)
+  } else if (abortedExecutionIds.has(run.execution_id)) {
+    return
+  }
+
   clearExecutionPoll(run.execution_id)
   applyExecutionRunSnapshot(run, set, get)
 
@@ -645,8 +676,11 @@ function scheduleExecutionPoll(
 ) {
   clearExecutionPoll(executionId)
   const timeoutId = setTimeout(async () => {
+    const controller = new AbortController()
+    executionPollAbortControllers.set(executionId, controller)
     try {
-      const run = await api.getExecutionRunStatus(executionId)
+      const run = await api.getExecutionRunStatus(executionId, controller.signal)
+      executionPollAbortControllers.delete(executionId)
       if (run.status === 'running') {
         applyExecutionRunSnapshot(run, set, get)
         // Keep visible status latency low; execution_time_ms still comes from the backend node runtime.
@@ -656,6 +690,10 @@ function scheduleExecutionPoll(
 
       await finalizeExecutionRun(run, set, get)
     } catch (error) {
+      executionPollAbortControllers.delete(executionId)
+      if (isRequestAbortedError(error)) {
+        return
+      }
       if (isNotFoundError(error)) {
         failExecutionTracking(executionId, EXECUTION_TRACKING_ERROR, set, get)
         return
@@ -1068,6 +1106,39 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
           [nodeId]: { node_id: nodeId, status: 'error', error: message },
         },
         errorDialogNodeId: null,
+      })
+    }
+  },
+
+  abortDatabaseNodeExecution: async (nodeId) => {
+    const executionId = get().activeExecutionIdByNodeId[nodeId]
+    if (!executionId) return
+
+    abortedExecutionIds.add(executionId)
+    clearExecutionPoll(executionId)
+
+    try {
+      const run = await api.abortExecutionRun(executionId)
+      await finalizeExecutionRun(run, set, get)
+    } catch (err) {
+      abortedExecutionIds.delete(executionId)
+      const activeRun = get().activeExecutions[executionId]
+      if (activeRun?.status === 'running') {
+        scheduleExecutionPoll(executionId, set, get)
+        return
+      }
+
+      const message = getRequestErrorMessage(err, 'Unable to abort execution')
+      set({
+        nodeResults: {
+          ...get().nodeResults,
+          [nodeId]: {
+            ...(get().nodeResults[nodeId] ?? { node_id: nodeId }),
+            status: 'error',
+            error: message,
+            finished_at: new Date().toISOString(),
+          },
+        },
       })
     }
   },

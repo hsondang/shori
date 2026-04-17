@@ -26,6 +26,13 @@ class DuckDBManager:
             )
             return self._table_stats(table_name)
 
+    def append_dataframe(self, table_name: str, df) -> dict:
+        with self._lock:
+            self.conn.execute(
+                f'INSERT INTO "{table_name}" SELECT * FROM df'
+            )
+            return self._table_stats(table_name)
+
     def execute_transform(self, table_name: str, sql: str) -> dict:
         with self._lock:
             self.conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
@@ -76,6 +83,10 @@ class DuckDBManager:
                 [table_name],
             ).fetchone()
             return result[0] > 0
+
+    def table_stats(self, table_name: str) -> dict:
+        with self._lock:
+            return self._table_stats(table_name)
 
     def _table_stats(self, table_name: str) -> dict:
         count = self.conn.execute(

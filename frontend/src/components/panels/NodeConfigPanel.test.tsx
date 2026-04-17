@@ -11,6 +11,7 @@ const mockExecuteNode = vi.fn()
 const mockPreviewData = vi.fn()
 const mockPreviewCsvSource = vi.fn()
 const mockPreviewPreprocessedCsvSource = vi.fn()
+const mockAbortExecutionRun = vi.fn()
 const mockDeleteTable = vi.fn((..._args: any[]) => Promise.resolve({ deleted: true }))
 const mockDeletePreprocessedCsvArtifact = vi.fn((..._args: any[]) => Promise.resolve({ deleted: true }))
 const mockTestDbConnection = vi.fn()
@@ -38,6 +39,7 @@ vi.mock('../../api/client', () => ({
   previewData: (...args: any[]) => mockPreviewData(...args),
   previewCsvSource: (...args: any[]) => mockPreviewCsvSource(...args),
   previewPreprocessedCsvSource: (...args: any[]) => mockPreviewPreprocessedCsvSource(...args),
+  abortExecutionRun: (...args: any[]) => mockAbortExecutionRun(...args),
   deleteTable: (...args: any[]) => mockDeleteTable(...args),
   deletePreprocessedCsvArtifact: (...args: any[]) => mockDeletePreprocessedCsvArtifact(...args),
   savePipeline: vi.fn(),
@@ -234,6 +236,163 @@ describe('NodeConfigPanel', () => {
     expect((updated.config as Record<string, unknown>).query).toBe('SELECT id FROM analytics_table')
   })
 
+  it('shows oracle advanced configuration in the shared modal and saves fetch config', async () => {
+    const user = userEvent.setup()
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'oracle-node',
+            type: 'db_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Warehouse Oracle',
+              autoLabel: 'Warehouse Oracle',
+              labelMode: 'auto',
+              tableName: 'warehouse_table',
+              config: {
+                db_type: 'oracle',
+                connection: {
+                  host: 'orahost',
+                  port: 1521,
+                  service_name: 'ORCL',
+                  user: 'user',
+                  password: 'secret',
+                },
+                query: 'SELECT 1 FROM dual',
+              },
+            },
+          },
+        ],
+        selectedNodeId: 'oracle-node',
+      })
+    })
+
+    renderPanel()
+
+    await user.click(screen.getByRole('button', { name: 'More options for Warehouse Oracle' }))
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+
+    const modal = screen.getByTestId('node-editor-modal')
+    expect(within(modal).getByText('Advanced Configuration')).toBeInTheDocument()
+    expect(within(modal).getByLabelText('Fetch Mode')).toHaveValue('fetchall')
+    expect(within(modal).getByLabelText('Arraysize')).toHaveValue(100)
+    expect(within(modal).getByLabelText('Prefetchrows')).toHaveValue(2)
+
+    await user.selectOptions(within(modal).getByLabelText('Fetch Mode'), 'fetchmany')
+    fireEvent.change(within(modal).getByLabelText('Arraysize'), { target: { value: '1000' } })
+    fireEvent.change(within(modal).getByLabelText('Prefetchrows'), { target: { value: '5' } })
+    await user.click(within(modal).getByRole('button', { name: 'Save' }))
+
+    const updated = usePipelineStore.getState().nodes[0].data as Record<string, unknown>
+    expect((updated.config as Record<string, unknown>).fetch_config).toEqual({
+      mode: 'fetchmany',
+      arraysize: 1000,
+      prefetchrows: 5,
+    })
+  })
+
+  it('hides oracle advanced configuration for postgres and resets oracle fetch config when switching db type', async () => {
+    const user = userEvent.setup()
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'db-node',
+            type: 'db_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Analytics DB',
+              autoLabel: 'Analytics DB',
+              labelMode: 'auto',
+              tableName: 'analytics_table',
+              config: {
+                db_type: 'postgres',
+                connection: {
+                  host: 'localhost',
+                  port: 5432,
+                  database: 'analytics',
+                  user: 'user',
+                  password: 'secret',
+                },
+                query: 'SELECT 1',
+              },
+            },
+          },
+        ],
+        selectedNodeId: 'db-node',
+      })
+    })
+
+    renderPanel()
+
+    await user.click(screen.getByRole('button', { name: 'More options for Analytics DB' }))
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+
+    const modal = screen.getByTestId('node-editor-modal')
+    expect(within(modal).queryByText('Advanced Configuration')).not.toBeInTheDocument()
+
+    await user.selectOptions(within(modal).getByLabelText('Database Type'), 'oracle')
+    expect(within(modal).getByText('Advanced Configuration')).toBeInTheDocument()
+    expect(within(modal).getByLabelText('Arraysize')).toHaveValue(100)
+    expect(within(modal).getByLabelText('Prefetchrows')).toHaveValue(2)
+
+    await user.selectOptions(within(modal).getByLabelText('Database Type'), 'postgres')
+    expect(within(modal).queryByText('Advanced Configuration')).not.toBeInTheDocument()
+    await user.click(within(modal).getByRole('button', { name: 'Save' }))
+
+    const updated = usePipelineStore.getState().nodes[0].data as Record<string, unknown>
+    expect((updated.config as Record<string, unknown>).db_type).toBe('postgres')
+    expect(updated.config).not.toHaveProperty('fetch_config')
+  })
+
+  it('blocks saving invalid oracle fetch settings in the shared modal', async () => {
+    const user = userEvent.setup()
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'oracle-node',
+            type: 'db_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Warehouse Oracle',
+              autoLabel: 'Warehouse Oracle',
+              labelMode: 'auto',
+              tableName: 'warehouse_table',
+              config: {
+                db_type: 'oracle',
+                connection: {
+                  host: 'orahost',
+                  port: 1521,
+                  service_name: 'ORCL',
+                  user: 'user',
+                  password: 'secret',
+                },
+                query: 'SELECT 1 FROM dual',
+              },
+            },
+          },
+        ],
+        selectedNodeId: 'oracle-node',
+      })
+    })
+
+    renderPanel()
+
+    await user.click(screen.getByRole('button', { name: 'More options for Warehouse Oracle' }))
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+
+    const modal = screen.getByTestId('node-editor-modal')
+    fireEvent.change(within(modal).getByLabelText('Arraysize'), { target: { value: '0' } })
+
+    expect(within(modal).getByText('Arraysize must be an integer greater than or equal to 1.')).toBeInTheDocument()
+    expect(within(modal).getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
   it('keeps inline database query editing and edit mode in the sidebar', async () => {
     const user = userEvent.setup()
 
@@ -288,7 +447,25 @@ describe('NodeConfigPanel', () => {
     expect((updated.config as Record<string, unknown>).query).toBe('SELECT id FROM events')
   })
 
-  it('disables database execution while connecting and shows the connecting label', () => {
+  it('shows Abort for a busy database node and aborts the tracked execution', async () => {
+    const user = userEvent.setup()
+    mockAbortExecutionRun.mockResolvedValueOnce({
+      execution_id: 'exec-1',
+      kind: 'node',
+      status: 'cancelled',
+      started_at: '2026-04-08T10:00:00Z',
+      finished_at: '2026-04-08T10:00:02Z',
+      node_results: {
+        'db-node': {
+          node_id: 'db-node',
+          status: 'cancelled',
+          error: 'Execution aborted by user.',
+          started_at: '2026-04-08T10:00:00Z',
+          finished_at: '2026-04-08T10:00:02Z',
+        },
+      },
+    })
+
     act(() => {
       usePipelineStore.setState({
         nodes: [
@@ -322,14 +499,36 @@ describe('NodeConfigPanel', () => {
             started_at: '2026-04-08T10:00:00Z',
           },
         },
+        activeExecutions: {
+          'exec-1': {
+            execution_id: 'exec-1',
+            kind: 'node',
+            status: 'running',
+            started_at: '2026-04-08T10:00:00Z',
+            node_results: {
+              'db-node': {
+                node_id: 'db-node',
+                status: 'connecting',
+                started_at: '2026-04-08T10:00:00Z',
+              },
+            },
+          },
+        },
+        activeExecutionIdByNodeId: {
+          'db-node': 'exec-1',
+        },
         selectedNodeId: 'db-node',
       })
     })
 
     renderPanel()
 
-    expect(screen.getByRole('button', { name: 'Connecting...' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Abort' })).toBeInTheDocument()
     expect(screen.getByText('Connecting')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Abort' }))
+
+    expect(mockAbortExecutionRun).toHaveBeenCalledWith('exec-1')
   })
 
   it('keeps inline transform query editing and run controls in the sidebar', async () => {

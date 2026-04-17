@@ -13,7 +13,8 @@ from app.models.pipeline import (
 )
 from app.services.csv_service import CsvPreprocessArtifactStore, register_csv_source
 from app.services.duckdb_manager import DuckDBManager
-from app.services.oracle_service import OracleService
+from app.services.execution_registry import ExecutionCancelled, ExecutionController
+from app.services.oracle_service import OracleService, normalize_fetch_config
 from app.services.postgres_service import PostgresService
 
 
@@ -77,12 +78,15 @@ class PipelineEngine:
         on_node_start: Callable[[str, str], None] | None = None,
         on_node_finish: Callable[[NodeExecutionResult], None] | None = None,
         on_node_update: Callable[[NodeExecutionResult], None] | None = None,
+        execution_controller: ExecutionController | None = None,
     ) -> dict[str, NodeExecutionResult]:
         order = self.topological_sort(pipeline)
         node_map = {n.id: n for n in pipeline.nodes}
         results: dict[str, NodeExecutionResult] = {}
 
         for node_id in order:
+            if execution_controller is not None:
+                execution_controller.raise_if_cancelled()
             node = node_map[node_id]
             if not force_refresh and self.duckdb.table_exists(node.table_name):
                 if node_id in self.node_results:
@@ -94,7 +98,12 @@ class PipelineEngine:
                 on_node_start(node.id, started_at)
             if node.type == NodeType.DB_SOURCE and on_node_update is not None:
                 on_node_update(make_connecting_result(node.id, started_at))
-            result = await self._execute_node(node, started_at=started_at, on_node_update=on_node_update)
+            result = await self._execute_node(
+                node,
+                started_at=started_at,
+                on_node_update=on_node_update,
+                execution_controller=execution_controller,
+            )
             results[node_id] = result
             self.node_results[node_id] = result
             if on_node_finish is not None:
@@ -108,13 +117,21 @@ class PipelineEngine:
         on_node_start: Callable[[str, str], None] | None = None,
         on_node_finish: Callable[[NodeExecutionResult], None] | None = None,
         on_node_update: Callable[[NodeExecutionResult], None] | None = None,
+        execution_controller: ExecutionController | None = None,
     ) -> NodeExecutionResult:
+        if execution_controller is not None:
+            execution_controller.raise_if_cancelled()
         started_at = utc_now_iso()
         if on_node_start is not None:
             on_node_start(node.id, started_at)
         if node.type == NodeType.DB_SOURCE and on_node_update is not None:
             on_node_update(make_connecting_result(node.id, started_at))
-        result = await self._execute_node(node, started_at=started_at, on_node_update=on_node_update)
+        result = await self._execute_node(
+            node,
+            started_at=started_at,
+            on_node_update=on_node_update,
+            execution_controller=execution_controller,
+        )
         self.node_results[node.id] = result
         if on_node_finish is not None:
             on_node_finish(result)
@@ -126,11 +143,14 @@ class PipelineEngine:
         *,
         started_at: str | None = None,
         on_node_update: Callable[[NodeExecutionResult], None] | None = None,
+        execution_controller: ExecutionController | None = None,
     ) -> NodeExecutionResult:
         start = time.time()
         effective_started_at = started_at or utc_now_iso()
         current_started_at = effective_started_at
         try:
+            if execution_controller is not None:
+                execution_controller.raise_if_cancelled()
             if node.type == NodeType.CSV_SOURCE:
                 stats = await asyncio.to_thread(
                     register_csv_source,
@@ -144,22 +164,39 @@ class PipelineEngine:
                 db_type = node.config.get("db_type", "postgres")
                 svc = self.oracle if db_type == "oracle" else self.postgres
                 connection = await svc.connect(node.config)
+                if execution_controller is not None:
+                    execution_controller.raise_if_cancelled()
+                    execution_controller.set_abort_callback(lambda: svc.abort_query(connection))
                 query_started_at = utc_now_iso()
                 current_started_at = query_started_at
                 if on_node_update is not None:
                     on_node_update(make_running_result(node.id, query_started_at))
                 try:
-                    df = await svc.fetch_query(connection, node.config["query"])
+                    if execution_controller is not None:
+                        execution_controller.raise_if_cancelled()
+                    if db_type == "oracle" and normalize_fetch_config(node.config.get("fetch_config"))["mode"] == "fetchmany":
+                        stats = await self.oracle.load_query_to_duckdb(
+                            connection,
+                            node.config["query"],
+                            node.table_name,
+                            self.duckdb,
+                            node.config.get("fetch_config"),
+                        )
+                    else:
+                        fetch_config = node.config.get("fetch_config") if db_type == "oracle" else None
+                        df = await svc.fetch_query(connection, node.config["query"], fetch_config)
+                        stats = await asyncio.to_thread(
+                            self.duckdb.register_dataframe,
+                            node.table_name,
+                            df,
+                        )
                 finally:
+                    if execution_controller is not None:
+                        execution_controller.clear_abort_callback()
                     close = getattr(connection, "close")
                     maybe_awaitable = close()
                     if asyncio.iscoroutine(maybe_awaitable):
                         await maybe_awaitable
-                stats = await asyncio.to_thread(
-                    self.duckdb.register_dataframe,
-                    node.table_name,
-                    df,
-                )
             elif node.type == NodeType.TRANSFORM:
                 stats = await asyncio.to_thread(
                     self.duckdb.execute_transform,
@@ -181,6 +218,8 @@ class PipelineEngine:
                 started_at=current_started_at,
                 finished_at=utc_now_iso(),
             )
+        except ExecutionCancelled:
+            raise
         except Exception as e:
             elapsed = (time.time() - start) * 1000
             return NodeExecutionResult(

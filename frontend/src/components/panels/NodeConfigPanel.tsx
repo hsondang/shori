@@ -107,6 +107,7 @@ export default function NodeConfigPanel() {
   const deleteNode = usePipelineStore((s) => s.deleteNode)
   const openEditNodeEditor = usePipelineStore((s) => s.openEditNodeEditor)
   const executeSingleNode = usePipelineStore((s) => s.executeSingleNode)
+  const abortDatabaseNodeExecution = usePipelineStore((s) => s.abortDatabaseNodeExecution)
   const runTransformPreview = usePipelineStore((s) => s.runTransformPreview)
   const loadCsvPreview = usePipelineStore((s) => s.loadCsvPreview)
   const loadPreprocessedCsvPreview = usePipelineStore((s) => s.loadPreprocessedCsvPreview)
@@ -355,10 +356,14 @@ export default function NodeConfigPanel() {
     canExecute,
     actionLabel,
     enabledButtonClassName,
+    isBusy = false,
+    busyActionLabel,
+    busyButtonClassName,
     description,
     metadata,
     extraEditorContent,
     onExecute,
+    onBusyAction,
   }: {
     expanded: boolean
     setExpanded: Dispatch<SetStateAction<boolean>>
@@ -369,10 +374,14 @@ export default function NodeConfigPanel() {
     canExecute: boolean
     actionLabel: string
     enabledButtonClassName: string
+    isBusy?: boolean
+    busyActionLabel?: string
+    busyButtonClassName?: string
     description: string
     metadata: ReactNode
     extraEditorContent?: ReactNode
     onExecute: () => void
+    onBusyAction?: () => void
   }) => (
     <NodeConfigPanelShell
       widthPx={expanded ? expandedWidthPx : collapsedWidthPx}
@@ -444,15 +453,23 @@ export default function NodeConfigPanel() {
         <p className="mb-3 text-xs text-gray-500">{description}</p>
         <button
           type="button"
-          onClick={onExecute}
-          disabled={!canExecute}
+          onClick={isBusy ? onBusyAction : onExecute}
+          disabled={isBusy ? !onBusyAction : !canExecute}
           className={`w-full rounded-lg px-4 py-2 text-sm font-medium transition ${
-            canExecute
-              ? enabledButtonClassName
-              : 'bg-gray-100 text-gray-400'
+            isBusy
+              ? (busyButtonClassName ?? 'bg-red-500 text-white hover:bg-red-600')
+              : canExecute
+                ? enabledButtonClassName
+                : 'bg-gray-100 text-gray-400'
           }`}
         >
-          {nodeResult?.status === 'connecting' ? 'Connecting...' : nodeResult?.status === 'running' ? 'Running...' : actionLabel}
+          {isBusy
+            ? (busyActionLabel ?? 'Abort')
+            : nodeResult?.status === 'connecting'
+              ? 'Connecting...'
+              : nodeResult?.status === 'running'
+                ? 'Running...'
+                : actionLabel}
         </button>
       </div>
     </NodeConfigPanelShell>
@@ -469,6 +486,9 @@ export default function NodeConfigPanel() {
       canExecute: canExecuteDb,
       actionLabel: 'Execute',
       enabledButtonClassName: 'bg-emerald-500 text-white hover:bg-emerald-600',
+      isBusy: isDbNodeBusy,
+      busyActionLabel: 'Abort',
+      busyButtonClassName: 'bg-red-500 text-white hover:bg-red-600',
       description: 'Execute this source query and open its preview.',
       metadata: (
         <>
@@ -489,6 +509,7 @@ export default function NodeConfigPanel() {
         </>
       ),
       onExecute: () => { void executeSingleNode(node.id, { loadPreviewOnSuccess: true }) },
+      onBusyAction: () => { void abortDatabaseNodeExecution(node.id) },
     })
   }
 

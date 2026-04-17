@@ -8,6 +8,7 @@ const statusColors = {
   running: 'bg-yellow-100 text-yellow-700',
   success: 'bg-green-100 text-green-700',
   error: 'bg-red-100 text-red-700',
+  cancelled: 'bg-stone-200 text-stone-700',
 }
 
 export default function NodeStatusBadge({
@@ -23,7 +24,9 @@ export default function NodeStatusBadge({
     ? `Running${runningElapsed ? ` · ${runningElapsed}` : ''}`
     : result.status === 'connecting'
       ? 'Connecting'
-    : result.status
+      : result.status === 'cancelled'
+        ? 'Cancelled'
+      : result.status
 
   return (
     <div className="space-y-0.5">

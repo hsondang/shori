@@ -7,6 +7,7 @@ const mockExecuteNode = vi.fn()
 const mockStartPipelineExecution = vi.fn()
 const mockStartNodeExecution = vi.fn()
 const mockGetExecutionRunStatus = vi.fn()
+const mockAbortExecutionRun = vi.fn()
 const mockPreviewData = vi.fn()
 const mockPreviewCsvSource = vi.fn()
 const mockPreviewPreprocessedCsvSource = vi.fn()
@@ -24,6 +25,7 @@ vi.mock('../api/client', () => ({
   startPipelineExecution: (...args: any[]) => mockStartPipelineExecution(...args),
   startNodeExecution: (...args: any[]) => mockStartNodeExecution(...args),
   getExecutionRunStatus: (...args: any[]) => mockGetExecutionRunStatus(...args),
+  abortExecutionRun: (...args: any[]) => mockAbortExecutionRun(...args),
   previewData: (...args: any[]) => mockPreviewData(...args),
   previewCsvSource: (...args: any[]) => mockPreviewCsvSource(...args),
   previewPreprocessedCsvSource: (...args: any[]) => mockPreviewPreprocessedCsvSource(...args),
@@ -135,6 +137,32 @@ describe('pipelineStore', () => {
         database: 'analytics',
         user: 'user',
         password: 'secret',
+      })
+    })
+
+    it('adds an oracle db_source node from a saved connection with default fetch config', () => {
+      let connectionId = ''
+      act(() => {
+        connectionId = usePipelineStore.getState().addDatabaseConnection({
+          name: 'Warehouse Oracle',
+          db_type: 'oracle',
+          host: 'orahost',
+          port: 1521,
+          service_name: 'ORCL',
+          user: 'user',
+          password: 'secret',
+        })
+      })
+
+      act(() => usePipelineStore.getState().addDatabaseSourceFromConnection(connectionId, { x: 10, y: 20 }))
+
+      const config = (usePipelineStore.getState().nodes[0].data as Record<string, unknown>).config as Record<string, unknown>
+      expect(config).toHaveProperty('db_type', 'oracle')
+      expect(config).toHaveProperty('fetch_config')
+      expect(config.fetch_config).toEqual({
+        mode: 'fetchall',
+        arraysize: 100,
+        prefetchrows: 2,
       })
     })
 
@@ -861,8 +889,9 @@ describe('pipelineStore', () => {
 
       await act(async () => {
         vi.advanceTimersByTime(100)
+        await Promise.resolve()
       })
-      expect(mockGetExecutionRunStatus).toHaveBeenCalledWith('exec-live')
+      expect(mockGetExecutionRunStatus).toHaveBeenCalledWith('exec-live', expect.any(AbortSignal))
       expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
         node_id: node.id,
         status: 'running',
@@ -947,6 +976,7 @@ describe('pipelineStore', () => {
 
       await act(async () => {
         vi.advanceTimersByTime(100)
+        await Promise.resolve()
       })
 
       expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
@@ -957,11 +987,166 @@ describe('pipelineStore', () => {
 
       await act(async () => {
         vi.advanceTimersByTime(500)
+        await Promise.resolve()
       })
 
       expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
         node_id: node.id,
         status: 'success',
+      }))
+
+      vi.useRealTimers()
+    })
+
+    it('aborts a running database node and keeps the cancelled snapshot terminal', async () => {
+      vi.useFakeTimers()
+
+      act(() => {
+        usePipelineStore.getState().addNode('db_source', { x: 0, y: 0 })
+        usePipelineStore.getState().updateNodeData(usePipelineStore.getState().nodes[0].id, {
+          label: 'Warehouse DB',
+          tableName: 'warehouse_table',
+          config: {
+            db_type: 'postgres',
+            connection: { host: 'localhost', port: 5432, database: 'warehouse', user: 'user', password: 'secret' },
+            query: 'SELECT 1',
+          },
+        })
+      })
+
+      const node = usePipelineStore.getState().nodes[0]
+      let resolvePoll: ((value: ReturnType<typeof makeExecutionRun>) => void) | null = null
+      mockStartNodeExecution.mockResolvedValueOnce(makeExecutionRun({
+        execution_id: 'exec-abort',
+        node_results: {
+          [node.id]: {
+            node_id: node.id,
+            status: 'running',
+            started_at: '2026-04-08T10:00:00Z',
+          },
+        },
+      }))
+      mockGetExecutionRunStatus.mockImplementationOnce(() => new Promise((resolve) => {
+        resolvePoll = resolve as (value: ReturnType<typeof makeExecutionRun>) => void
+      }))
+      mockAbortExecutionRun.mockResolvedValueOnce(makeExecutionRun({
+        execution_id: 'exec-abort',
+        status: 'cancelled',
+        finished_at: '2026-04-08T10:00:04Z',
+        node_results: {
+          [node.id]: {
+            node_id: node.id,
+            status: 'cancelled',
+            error: 'Execution aborted by user.',
+            started_at: '2026-04-08T10:00:00Z',
+            finished_at: '2026-04-08T10:00:04Z',
+          },
+        },
+      }))
+
+      await act(async () => {
+        await usePipelineStore.getState().executeSingleNode(node.id)
+      })
+
+      await act(async () => {
+        vi.advanceTimersByTime(100)
+      })
+
+      await act(async () => {
+        await usePipelineStore.getState().abortDatabaseNodeExecution(node.id)
+      })
+
+      expect(mockAbortExecutionRun).toHaveBeenCalledWith('exec-abort')
+      expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
+        node_id: node.id,
+        status: 'cancelled',
+      }))
+
+      await act(async () => {
+        resolvePoll?.(makeExecutionRun({
+          execution_id: 'exec-abort',
+          status: 'success',
+          finished_at: '2026-04-08T10:00:05Z',
+          node_results: {
+            [node.id]: {
+              node_id: node.id,
+              status: 'success',
+              row_count: 1,
+              column_count: 1,
+              columns: ['id'],
+              started_at: '2026-04-08T10:00:00Z',
+              finished_at: '2026-04-08T10:00:05Z',
+            },
+          },
+        }))
+        await Promise.resolve()
+      })
+
+      expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
+        node_id: node.id,
+        status: 'cancelled',
+      }))
+
+      vi.useRealTimers()
+    })
+
+    it('aborts a database node that belongs to a pipeline run and clears the pipeline indicator', async () => {
+      vi.useFakeTimers()
+
+      act(() => {
+        usePipelineStore.getState().addNode('db_source', { x: 0, y: 0 })
+        usePipelineStore.getState().updateNodeData(usePipelineStore.getState().nodes[0].id, {
+          label: 'Warehouse DB',
+          tableName: 'warehouse_table',
+          config: {
+            db_type: 'postgres',
+            connection: { host: 'localhost', port: 5432, database: 'warehouse', user: 'user', password: 'secret' },
+            query: 'SELECT 1',
+          },
+        })
+      })
+
+      const node = usePipelineStore.getState().nodes[0]
+      mockStartPipelineExecution.mockResolvedValueOnce(makeExecutionRun({
+        execution_id: 'exec-pipeline-abort',
+        kind: 'pipeline',
+        node_results: {
+          [node.id]: {
+            node_id: node.id,
+            status: 'connecting',
+            started_at: '2026-04-08T10:00:00Z',
+          },
+        },
+      }))
+      mockAbortExecutionRun.mockResolvedValueOnce(makeExecutionRun({
+        execution_id: 'exec-pipeline-abort',
+        kind: 'pipeline',
+        status: 'cancelled',
+        finished_at: '2026-04-08T10:00:02Z',
+        node_results: {
+          [node.id]: {
+            node_id: node.id,
+            status: 'cancelled',
+            error: 'Execution aborted by user.',
+            started_at: '2026-04-08T10:00:00Z',
+            finished_at: '2026-04-08T10:00:02Z',
+          },
+        },
+      }))
+
+      await act(async () => {
+        await usePipelineStore.getState().executePipeline(false)
+      })
+
+      expect(usePipelineStore.getState().activePipelineExecutionId).toBe('exec-pipeline-abort')
+
+      await act(async () => {
+        await usePipelineStore.getState().abortDatabaseNodeExecution(node.id)
+      })
+
+      expect(usePipelineStore.getState().activePipelineExecutionId).toBeNull()
+      expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
+        status: 'cancelled',
       }))
 
       vi.useRealTimers()
@@ -1019,9 +1204,10 @@ describe('pipelineStore', () => {
 
       await act(async () => {
         vi.advanceTimersByTime(100)
+        await Promise.resolve()
       })
 
-      expect(mockGetExecutionRunStatus).toHaveBeenCalledWith('exec-fast')
+      expect(mockGetExecutionRunStatus).toHaveBeenCalledWith('exec-fast', expect.any(AbortSignal))
       expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
         node_id: node.id,
         status: 'success',

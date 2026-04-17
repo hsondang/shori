@@ -39,6 +39,11 @@ describe('NodeStatusBadge', () => {
     expect(screen.getByText(/success/)).toBeInTheDocument()
   })
 
+  it('shows cancelled status text', () => {
+    badge({ status: 'cancelled' })
+    expect(screen.getByText(/Cancelled/)).toBeInTheDocument()
+  })
+
   it('shows error status text', () => {
     badge({ status: 'error', error: 'Something broke' })
     expect(screen.getByText(/error/)).toBeInTheDocument()
