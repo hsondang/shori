@@ -117,7 +117,7 @@ async def test_execute_cycle_returns_error(client, sample_csv_file):
 async def test_start_node_execution_returns_terminal_snapshot_when_run_finishes_before_response(client, pipeline_def, monkeypatch):
     node = pipeline_def["nodes"][0]
 
-    async def fake_execute_single_node(self, node, on_node_start=None, on_node_finish=None, on_node_update=None):
+    async def fake_execute_single_node(self, node, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
         started_at = "2026-04-08T10:00:00+00:00"
         if on_node_start is not None:
             on_node_start(node.id, started_at)
@@ -161,7 +161,7 @@ async def test_start_db_node_execution_shows_connecting_then_running(client, mon
         },
     }
 
-    async def fake_execute_single_node(self, node, on_node_start=None, on_node_finish=None, on_node_update=None):
+    async def fake_execute_single_node(self, node, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
         connect_started = "2026-04-08T10:00:00+00:00"
         query_started = "2026-04-08T10:00:02+00:00"
         if on_node_start is not None:
@@ -230,7 +230,7 @@ async def test_start_db_node_execution_reports_connect_failure(client, monkeypat
         },
     }
 
-    async def fake_execute_single_node(self, node, on_node_start=None, on_node_finish=None, on_node_update=None):
+    async def fake_execute_single_node(self, node, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
         connect_started = "2026-04-08T10:00:00+00:00"
         if on_node_start is not None:
             on_node_start(node.id, connect_started)
@@ -285,7 +285,7 @@ async def test_start_pipeline_execution_exposes_live_node_progress(client, pipel
         "edges": [{"id": "e1", "source": "node-1", "target": "node-2"}],
     }
 
-    async def fake_execute_pipeline(self, pipeline, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None):
+    async def fake_execute_pipeline(self, pipeline, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
         first_start = "2026-04-08T10:00:00+00:00"
         second_start = "2026-04-08T10:00:02+00:00"
         first = NodeExecutionResult(
@@ -351,3 +351,141 @@ async def test_start_pipeline_execution_exposes_live_node_progress(client, pipel
 async def test_get_execution_run_status_returns_404_for_missing_run(client):
     resp = await client.get("/api/execute/runs/does-not-exist")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_abort_db_node_execution_returns_cancelled_snapshot(client, monkeypatch):
+    node = {
+        "id": "db-node",
+        "type": "db_source",
+        "table_name": "db_table",
+        "label": "DB",
+        "position": {"x": 0, "y": 0},
+        "config": {
+            "db_type": "postgres",
+            "connection": {"host": "h", "port": 5432, "database": "d", "user": "u", "password": "p"},
+            "query": "SELECT 1",
+        },
+    }
+    running = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_execute_single_node(self, node, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
+        connect_started = "2026-04-08T10:00:00+00:00"
+        query_started = "2026-04-08T10:00:02+00:00"
+        if on_node_start is not None:
+            on_node_start(node.id, connect_started)
+        if on_node_update is not None:
+            on_node_update(NodeExecutionResult(
+                node_id=node.id,
+                status=NodeStatus.CONNECTING,
+                started_at=connect_started,
+            ))
+        if on_node_update is not None:
+            on_node_update(NodeExecutionResult(
+                node_id=node.id,
+                status=NodeStatus.RUNNING,
+                started_at=query_started,
+            ))
+        running.set()
+        await release.wait()
+
+    monkeypatch.setattr(PipelineEngine, "execute_single_node", fake_execute_single_node)
+
+    start_resp = await client.post("/api/execute/node/start", json=node)
+    assert start_resp.status_code == 200
+    started = start_resp.json()
+
+    await running.wait()
+    abort_resp = await client.post(f"/api/execute/runs/{started['execution_id']}/abort")
+    release.set()
+
+    assert abort_resp.status_code == 200
+    aborted = abort_resp.json()
+    assert aborted["status"] == "cancelled"
+    assert aborted["node_results"]["db-node"]["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_abort_pipeline_run_cancels_current_and_downstream_nodes(client, pipeline_def, monkeypatch):
+    pipeline = {
+        **pipeline_def,
+        "nodes": [
+            pipeline_def["nodes"][0],
+            {
+                "id": "db-node",
+                "type": "db_source",
+                "table_name": "db_table",
+                "label": "DB",
+                "position": {"x": 300, "y": 0},
+                "config": {
+                    "db_type": "postgres",
+                    "connection": {"host": "h", "port": 5432, "database": "d", "user": "u", "password": "p"},
+                    "query": "SELECT 1",
+                },
+            },
+            {
+                "id": "node-3",
+                "type": "transform",
+                "table_name": "filtered_table",
+                "label": "Filter",
+                "position": {"x": 600, "y": 0},
+                "config": {"sql": "SELECT * FROM db_table"},
+            },
+        ],
+        "edges": [
+            {"id": "e1", "source": "node-1", "target": "db-node"},
+            {"id": "e2", "source": "db-node", "target": "node-3"},
+        ],
+    }
+    db_running = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_execute_pipeline(self, pipeline, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
+        first_start = "2026-04-08T10:00:00+00:00"
+        db_connecting = "2026-04-08T10:00:02+00:00"
+        db_running_at = "2026-04-08T10:00:03+00:00"
+        if on_node_start is not None:
+            on_node_start("node-1", first_start)
+        if on_node_finish is not None:
+            on_node_finish(NodeExecutionResult(
+                node_id="node-1",
+                status=NodeStatus.SUCCESS,
+                row_count=5,
+                column_count=3,
+                columns=["id", "name", "value"],
+                started_at=first_start,
+                finished_at="2026-04-08T10:00:01+00:00",
+            ))
+        if on_node_start is not None:
+            on_node_start("db-node", db_connecting)
+        if on_node_update is not None:
+            on_node_update(NodeExecutionResult(
+                node_id="db-node",
+                status=NodeStatus.CONNECTING,
+                started_at=db_connecting,
+            ))
+            on_node_update(NodeExecutionResult(
+                node_id="db-node",
+                status=NodeStatus.RUNNING,
+                started_at=db_running_at,
+            ))
+        db_running.set()
+        await release.wait()
+
+    monkeypatch.setattr(PipelineEngine, "execute_pipeline", fake_execute_pipeline)
+
+    start_resp = await client.post("/api/execute/pipeline/start", json=pipeline)
+    assert start_resp.status_code == 200
+    started = start_resp.json()
+
+    await db_running.wait()
+    abort_resp = await client.post(f"/api/execute/runs/{started['execution_id']}/abort")
+    release.set()
+
+    assert abort_resp.status_code == 200
+    aborted = abort_resp.json()
+    assert aborted["status"] == "cancelled"
+    assert aborted["node_results"]["node-1"]["status"] == "success"
+    assert aborted["node_results"]["db-node"]["status"] == "cancelled"
+    assert aborted["node_results"]["node-3"]["status"] == "cancelled"

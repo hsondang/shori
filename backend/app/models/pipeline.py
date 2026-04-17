@@ -17,6 +17,7 @@ class NodeStatus(str, Enum):
     RUNNING = "running"
     SUCCESS = "success"
     ERROR = "error"
+    CANCELLED = "cancelled"
 
 
 class OracleConnectionConfig(BaseModel):

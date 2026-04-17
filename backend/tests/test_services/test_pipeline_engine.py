@@ -1,4 +1,5 @@
-from unittest.mock import AsyncMock, patch
+import asyncio
+from unittest.mock import AsyncMock, Mock, patch
 
 import pandas as pd
 import pytest
@@ -6,12 +7,14 @@ import pytest
 from app.models.pipeline import (
     EdgeDefinition,
     NodeDefinition,
+    NodeExecutionResult,
     NodeStatus,
     NodeType,
     PipelineDefinition,
     Position,
 )
 from app.services.duckdb_manager import DuckDBManager
+from app.services.execution_registry import ExecutionCancelled, ExecutionRegistry
 from app.services.pipeline_engine import PipelineEngine
 
 
@@ -311,6 +314,121 @@ async def test_execute_db_source_query_failure_reports_running_phase(engine):
     assert result.status == NodeStatus.ERROR
     assert result.error == "query boom"
     assert result.started_at == updates[1].started_at
+
+
+@pytest.mark.asyncio
+async def test_execute_db_source_postgres_registers_abort_callback(engine):
+    connection = Mock()
+    connection.is_closed.return_value = False
+    connection.terminate = Mock()
+    connection.close = AsyncMock()
+    query_started = asyncio.Event()
+    allow_finish = asyncio.Event()
+    registry = ExecutionRegistry(retention_seconds=60)
+    run = registry.create_run("node", ["pg"])
+    controller = registry.create_controller(run.execution_id)
+
+    async def fetch_query(_connection, _query):
+        query_started.set()
+        await allow_finish.wait()
+        return pd.DataFrame({"col1": [1]})
+
+    with (
+        patch.object(engine.postgres, "connect", new=AsyncMock(return_value=connection)),
+        patch.object(engine.postgres, "fetch_query", new=AsyncMock(side_effect=fetch_query)),
+    ):
+        node = _make_node("pg", NodeType.DB_SOURCE, "pg_abort_t", {
+            "db_type": "postgres",
+            "connection": {"host": "h", "port": 5432, "database": "d", "user": "u", "password": "p"},
+            "query": "SELECT pg_sleep(10)",
+        })
+        task = asyncio.create_task(engine.execute_single_node(node, execution_controller=controller))
+        registry.attach_task(run.execution_id, task)
+        await query_started.wait()
+
+        snapshot = registry.abort_run(run.execution_id)
+        allow_finish.set()
+
+        assert snapshot is not None
+        assert snapshot.status == NodeStatus.CANCELLED
+        connection.terminate.assert_called_once()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_execute_db_source_oracle_registers_abort_callback(engine):
+    connection = Mock()
+    connection.cancel = Mock()
+    connection.close = AsyncMock()
+    query_started = asyncio.Event()
+    allow_finish = asyncio.Event()
+    registry = ExecutionRegistry(retention_seconds=60)
+    run = registry.create_run("node", ["oracle"])
+    controller = registry.create_controller(run.execution_id)
+
+    async def fetch_query(_connection, _query):
+        query_started.set()
+        await allow_finish.wait()
+        return pd.DataFrame({"col1": [1]})
+
+    with (
+        patch.object(engine.oracle, "connect", new=AsyncMock(return_value=connection)),
+        patch.object(engine.oracle, "fetch_query", new=AsyncMock(side_effect=fetch_query)),
+    ):
+        node = _make_node("oracle", NodeType.DB_SOURCE, "oracle_abort_t", {
+            "db_type": "oracle",
+            "connection": {"host": "h", "port": 1521, "service_name": "svc", "user": "u", "password": "p"},
+            "query": "SELECT 1 FROM dual",
+        })
+        task = asyncio.create_task(engine.execute_single_node(node, execution_controller=controller))
+        registry.attach_task(run.execution_id, task)
+        await query_started.wait()
+
+        snapshot = registry.abort_run(run.execution_id)
+        allow_finish.set()
+
+        assert snapshot is not None
+        assert snapshot.status == NodeStatus.CANCELLED
+        connection.cancel.assert_called_once()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_stops_before_downstream_node_after_cancellation(engine):
+    registry = ExecutionRegistry(retention_seconds=60)
+    run = registry.create_run("pipeline", ["src", "tx"])
+    controller = registry.create_controller(run.execution_id)
+    source = _make_node("src", NodeType.CSV_SOURCE, "src_t", {
+        "file_path": "sample.csv",
+        "original_filename": "sample.csv",
+    })
+    transform = _make_node("tx", NodeType.TRANSFORM, "tx_t", {
+        "sql": "SELECT * FROM src_t",
+    })
+
+    async def execute_node(node, *, started_at=None, on_node_update=None, execution_controller=None):
+        if node.id == "src":
+            registry.abort_run(run.execution_id)
+            return NodeExecutionResult(
+                node_id=node.id,
+                status=NodeStatus.SUCCESS,
+                row_count=1,
+                column_count=1,
+                columns=["id"],
+                started_at=started_at,
+                finished_at=started_at,
+            )
+        raise AssertionError("downstream node should not execute")
+
+    with patch.object(engine, "_execute_node", side_effect=execute_node):
+        with pytest.raises(ExecutionCancelled):
+            await engine.execute_pipeline(
+                _make_pipeline([source, transform], [("src", "tx")]),
+                force_refresh=True,
+                execution_controller=controller,
+            )
 
 
 @pytest.mark.asyncio

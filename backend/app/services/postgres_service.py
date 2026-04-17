@@ -28,6 +28,10 @@ class PostgresService:
         finally:
             await connection.close()
 
+    def abort_query(self, connection: asyncpg.Connection) -> None:
+        if not connection.is_closed():
+            connection.terminate()
+
     async def test_connection(self, config: dict) -> bool:
         connection = await asyncpg.connect(
             host=config["host"],

@@ -48,8 +48,16 @@ export async function startNodeExecution(
   return data
 }
 
-export async function getExecutionRunStatus(executionId: string): Promise<ExecutionRunStatus> {
-  const { data } = await api.get(`/execute/runs/${executionId}`)
+export async function getExecutionRunStatus(
+  executionId: string,
+  signal?: AbortSignal,
+): Promise<ExecutionRunStatus> {
+  const { data } = await api.get(`/execute/runs/${executionId}`, { signal })
+  return data
+}
+
+export async function abortExecutionRun(executionId: string): Promise<ExecutionRunStatus> {
+  const { data } = await api.post(`/execute/runs/${executionId}/abort`)
   return data
 }
 

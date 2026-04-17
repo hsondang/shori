@@ -11,6 +11,7 @@ const mockExecuteNode = vi.fn()
 const mockPreviewData = vi.fn()
 const mockPreviewCsvSource = vi.fn()
 const mockPreviewPreprocessedCsvSource = vi.fn()
+const mockAbortExecutionRun = vi.fn()
 const mockDeleteTable = vi.fn((..._args: any[]) => Promise.resolve({ deleted: true }))
 const mockDeletePreprocessedCsvArtifact = vi.fn((..._args: any[]) => Promise.resolve({ deleted: true }))
 const mockTestDbConnection = vi.fn()
@@ -38,6 +39,7 @@ vi.mock('../../api/client', () => ({
   previewData: (...args: any[]) => mockPreviewData(...args),
   previewCsvSource: (...args: any[]) => mockPreviewCsvSource(...args),
   previewPreprocessedCsvSource: (...args: any[]) => mockPreviewPreprocessedCsvSource(...args),
+  abortExecutionRun: (...args: any[]) => mockAbortExecutionRun(...args),
   deleteTable: (...args: any[]) => mockDeleteTable(...args),
   deletePreprocessedCsvArtifact: (...args: any[]) => mockDeletePreprocessedCsvArtifact(...args),
   savePipeline: vi.fn(),
@@ -288,7 +290,25 @@ describe('NodeConfigPanel', () => {
     expect((updated.config as Record<string, unknown>).query).toBe('SELECT id FROM events')
   })
 
-  it('disables database execution while connecting and shows the connecting label', () => {
+  it('shows Abort for a busy database node and aborts the tracked execution', async () => {
+    const user = userEvent.setup()
+    mockAbortExecutionRun.mockResolvedValueOnce({
+      execution_id: 'exec-1',
+      kind: 'node',
+      status: 'cancelled',
+      started_at: '2026-04-08T10:00:00Z',
+      finished_at: '2026-04-08T10:00:02Z',
+      node_results: {
+        'db-node': {
+          node_id: 'db-node',
+          status: 'cancelled',
+          error: 'Execution aborted by user.',
+          started_at: '2026-04-08T10:00:00Z',
+          finished_at: '2026-04-08T10:00:02Z',
+        },
+      },
+    })
+
     act(() => {
       usePipelineStore.setState({
         nodes: [
@@ -322,14 +342,36 @@ describe('NodeConfigPanel', () => {
             started_at: '2026-04-08T10:00:00Z',
           },
         },
+        activeExecutions: {
+          'exec-1': {
+            execution_id: 'exec-1',
+            kind: 'node',
+            status: 'running',
+            started_at: '2026-04-08T10:00:00Z',
+            node_results: {
+              'db-node': {
+                node_id: 'db-node',
+                status: 'connecting',
+                started_at: '2026-04-08T10:00:00Z',
+              },
+            },
+          },
+        },
+        activeExecutionIdByNodeId: {
+          'db-node': 'exec-1',
+        },
         selectedNodeId: 'db-node',
       })
     })
 
     renderPanel()
 
-    expect(screen.getByRole('button', { name: 'Connecting...' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Abort' })).toBeInTheDocument()
     expect(screen.getByText('Connecting')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Abort' }))
+
+    expect(mockAbortExecutionRun).toHaveBeenCalledWith('exec-1')
   })
 
   it('keeps inline transform query editing and run controls in the sidebar', async () => {

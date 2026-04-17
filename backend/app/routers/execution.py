@@ -3,6 +3,7 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Request
 
 from app.models.pipeline import NodeDefinition, PipelineDefinition
+from app.services.execution_registry import ExecutionCancelled
 from app.services.pipeline_engine import PipelineEngine
 from app.storage.pipeline_store import PipelineStore
 
@@ -29,6 +30,7 @@ async def start_pipeline_execution(pipeline: PipelineDefinition, request: Reques
     engine = _get_engine(request)
     registry = _get_registry(request)
     run = registry.create_run("pipeline", [node.id for node in pipeline.nodes])
+    execution_controller = registry.create_controller(run.execution_id)
     started = asyncio.Event()
 
     def on_node_start(node_id: str, started_at: str) -> None:
@@ -50,8 +52,11 @@ async def start_pipeline_execution(pipeline: PipelineDefinition, request: Reques
                 on_node_start=on_node_start,
                 on_node_finish=on_node_finish,
                 on_node_update=on_node_update,
+                execution_controller=execution_controller,
             )
             registry.finalize_run(run.execution_id)
+        except (asyncio.CancelledError, ExecutionCancelled):
+            pass
         except Exception as exc:
             registry.fail_run(run.execution_id, str(exc))
         finally:
@@ -74,6 +79,7 @@ async def start_node_execution(node: NodeDefinition, request: Request):
     engine = _get_engine(request)
     registry = _get_registry(request)
     run = registry.create_run("node", [node.id])
+    execution_controller = registry.create_controller(run.execution_id)
     started = asyncio.Event()
 
     def on_node_start(node_id: str, started_at: str) -> None:
@@ -94,8 +100,11 @@ async def start_node_execution(node: NodeDefinition, request: Request):
                 on_node_start=on_node_start,
                 on_node_finish=on_node_finish,
                 on_node_update=on_node_update,
+                execution_controller=execution_controller,
             )
             registry.finalize_run(run.execution_id)
+        except (asyncio.CancelledError, ExecutionCancelled):
+            pass
         except Exception as exc:
             registry.fail_run(run.execution_id, str(exc))
         finally:
@@ -142,6 +151,14 @@ async def execute_node(node: NodeDefinition, request: Request):
 @router.get("/runs/{execution_id}")
 async def get_execution_run_status(execution_id: str, request: Request):
     run = _get_registry(request).get_run(execution_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Execution run not found")
+    return run
+
+
+@router.post("/runs/{execution_id}/abort")
+async def abort_execution_run(execution_id: str, request: Request):
+    run = _get_registry(request).abort_run(execution_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Execution run not found")
     return run

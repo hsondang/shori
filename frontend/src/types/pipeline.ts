@@ -1,6 +1,6 @@
 export type NodeType = 'csv_source' | 'db_source' | 'transform' | 'export'
 export type DbType = 'oracle' | 'postgres'
-export type NodeStatus = 'idle' | 'connecting' | 'running' | 'success' | 'error'
+export type NodeStatus = 'idle' | 'connecting' | 'running' | 'success' | 'error' | 'cancelled'
 export type NodeLabelMode = 'auto' | 'custom'
 export type NodeEditorMode = 'closed' | 'create' | 'edit'
 

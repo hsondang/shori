@@ -90,6 +90,9 @@ class OracleService:
     async def execute_query(self, config: dict) -> pd.DataFrame:
         return await asyncio.to_thread(self._execute_query_sync, config)
 
+    def abort_query(self, connection) -> None:
+        connection.cancel()
+
     def _test_connection_sync(self, config: dict) -> None:
         connection = self._connect(config)
         connection.close()
