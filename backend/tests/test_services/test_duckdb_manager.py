@@ -49,6 +49,15 @@ def test_register_dataframe(duckdb_mgr):
     assert "x" in stats["columns"]
 
 
+def test_append_dataframe(duckdb_mgr):
+    duckdb_mgr.register_dataframe("df_table", pd.DataFrame({"x": [1], "y": ["a"]}))
+    stats = duckdb_mgr.append_dataframe("df_table", pd.DataFrame({"x": [2, 3], "y": ["b", "c"]}))
+    rows = duckdb_mgr.conn.execute('SELECT * FROM "df_table" ORDER BY x').fetchall()
+
+    assert stats["row_count"] == 3
+    assert rows == [(1, "a"), (2, "b"), (3, "c")]
+
+
 def test_execute_transform(duckdb_mgr, sample_csv_file):
     duckdb_mgr.register_csv("src", sample_csv_file)
     stats = duckdb_mgr.execute_transform("filtered", 'SELECT * FROM src WHERE id > 2')

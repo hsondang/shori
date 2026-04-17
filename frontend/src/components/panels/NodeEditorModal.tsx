@@ -1,13 +1,20 @@
 import { useEffect, useRef, type ChangeEvent } from 'react'
 import { uploadCsv } from '../../api/client'
-import { defaultConnectionConfig } from '../../lib/databaseConnections'
+import {
+  defaultConnectionConfig,
+  defaultOracleFetchConfig,
+  switchDatabaseSourceConfigDbType,
+} from '../../lib/databaseConnections'
 import { usePipelineStore } from '../../store/pipelineStore'
 import type {
   CsvPreprocessingConfig,
   CsvSourceConfig,
-  DatabaseConnectionConfig,
+  DatabaseSourceConfig,
   DbType,
   ExportConfig,
+  OracleConnectionConfig,
+  OracleFetchConfig,
+  PostgresConnectionConfig,
 } from '../../types/pipeline'
 import ConnectionForm from './ConnectionForm'
 import SqlEditor from './SqlEditor'
@@ -25,6 +32,38 @@ function getNodeTypeTitle(type: string): string {
     default:
       return 'Node'
   }
+}
+
+function getDatabaseSourceConfig(config: Record<string, unknown>): DatabaseSourceConfig {
+  if (config.db_type === 'oracle') {
+    const fetchConfig = config.fetch_config as Partial<OracleFetchConfig> | undefined
+    return {
+      db_type: 'oracle',
+      connection: (config.connection as OracleConnectionConfig | undefined) ?? defaultConnectionConfig('oracle') as OracleConnectionConfig,
+      query: (config.query as string | undefined) ?? '',
+      fetch_config: {
+        mode: fetchConfig?.mode === 'fetchmany' ? 'fetchmany' : 'fetchall',
+        arraysize: Number.isInteger(fetchConfig?.arraysize) ? Number(fetchConfig?.arraysize) : 100,
+        prefetchrows: Number.isInteger(fetchConfig?.prefetchrows) ? Number(fetchConfig?.prefetchrows) : 2,
+      },
+    }
+  }
+
+  return {
+    db_type: 'postgres',
+    connection: (config.connection as PostgresConnectionConfig | undefined) ?? defaultConnectionConfig('postgres') as PostgresConnectionConfig,
+    query: (config.query as string | undefined) ?? '',
+  }
+}
+
+function getOracleFetchConfigError(fetchConfig: OracleFetchConfig): string | null {
+  if (!Number.isInteger(fetchConfig.arraysize) || fetchConfig.arraysize < 1) {
+    return 'Arraysize must be an integer greater than or equal to 1.'
+  }
+  if (!Number.isInteger(fetchConfig.prefetchrows) || fetchConfig.prefetchrows < 0) {
+    return 'Prefetchrows must be an integer greater than or equal to 0.'
+  }
+  return null
 }
 
 export default function NodeEditorModal() {
@@ -56,7 +95,7 @@ export default function NodeEditorModal() {
   const isCreateMode = nodeEditorMode === 'create'
   const title = getNodeTypeTitle(draft.type)
   const csvConfig = draft.type === 'csv_source' ? (draft.config as unknown as CsvSourceConfig) : null
-  const dbConfig = draft.type === 'db_source' ? (draft.config as Record<string, unknown>) : null
+  const dbConfig = draft.type === 'db_source' ? getDatabaseSourceConfig(draft.config as Record<string, unknown>) : null
   const transformConfig = draft.type === 'transform' ? (draft.config as Record<string, unknown>) : null
   const exportConfig = draft.type === 'export' ? (draft.config as unknown as ExportConfig) : null
   const csvPreprocessing: CsvPreprocessingConfig = csvConfig?.preprocessing ?? {
@@ -64,8 +103,12 @@ export default function NodeEditorModal() {
     runtime: 'python',
     script: '',
   }
-  const dbType = ((dbConfig?.db_type as string | undefined) ?? 'postgres') as DbType
-  const dbConnection = (dbConfig?.connection as DatabaseConnectionConfig | undefined) ?? defaultConnectionConfig(dbType)
+  const dbType = dbConfig?.db_type ?? 'postgres'
+  const dbConnection = dbConfig?.connection ?? defaultConnectionConfig(dbType)
+  const oracleFetchConfig = dbType === 'oracle'
+    ? dbConfig?.fetch_config ?? defaultOracleFetchConfig()
+    : null
+  const oracleFetchError = oracleFetchConfig ? getOracleFetchConfigError(oracleFetchConfig) : null
   const targetNodeId = editingNodeId ?? draft.id
   const upstreamTableNames = edges
     .filter((edge) => edge.target === targetNodeId)
@@ -249,11 +292,9 @@ export default function NodeEditorModal() {
                 <select
                   id="node-editor-db-type"
                   value={dbType}
-                  onChange={(event) => updateConfig({
-                    ...dbConfig,
-                    db_type: event.target.value as DbType,
-                    connection: defaultConnectionConfig(event.target.value as DbType),
-                  })}
+                  onChange={(event) => updateConfig(
+                    switchDatabaseSourceConfigDbType(event.target.value as DbType, dbConfig)
+                  )}
                   className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
                 >
                   <option value="postgres">PostgreSQL</option>
@@ -265,11 +306,92 @@ export default function NodeEditorModal() {
                 config={dbConnection}
                 onChange={(connection) => updateConfig({
                   ...dbConfig,
-                  db_type: dbType,
                   connection,
                 })}
                 dbType={dbType}
               />
+
+              {dbType === 'oracle' && oracleFetchConfig && (
+                <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-stone-500">
+                    Advanced Configuration
+                  </div>
+                  <p className="mt-2 text-sm text-stone-500">
+                    Arraysize and prefetchrows are Oracle cursor settings and apply to both `fetchall()` and `fetchmany()`.
+                  </p>
+
+                  <div className="mt-4 space-y-3">
+                    <div>
+                      <label htmlFor="node-editor-fetch-mode" className="mb-1 block text-xs text-gray-500">
+                        Fetch Mode
+                      </label>
+                      <select
+                        id="node-editor-fetch-mode"
+                        value={oracleFetchConfig.mode}
+                        onChange={(event) => updateConfig({
+                          ...dbConfig,
+                          fetch_config: {
+                            ...oracleFetchConfig,
+                            mode: event.target.value as OracleFetchConfig['mode'],
+                          },
+                        })}
+                        className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
+                      >
+                        <option value="fetchall">fetchall()</option>
+                        <option value="fetchmany">fetchmany()</option>
+                      </select>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div>
+                        <label htmlFor="node-editor-arraysize" className="mb-1 block text-xs text-gray-500">
+                          Arraysize
+                        </label>
+                        <input
+                          id="node-editor-arraysize"
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={oracleFetchConfig.arraysize}
+                          onChange={(event) => updateConfig({
+                            ...dbConfig,
+                            fetch_config: {
+                              ...oracleFetchConfig,
+                              arraysize: event.target.value === '' ? 0 : Number.parseInt(event.target.value, 10),
+                            },
+                          })}
+                          className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
+                        />
+                      </div>
+
+                      <div>
+                        <label htmlFor="node-editor-prefetchrows" className="mb-1 block text-xs text-gray-500">
+                          Prefetchrows
+                        </label>
+                        <input
+                          id="node-editor-prefetchrows"
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={oracleFetchConfig.prefetchrows}
+                          onChange={(event) => updateConfig({
+                            ...dbConfig,
+                            fetch_config: {
+                              ...oracleFetchConfig,
+                              prefetchrows: event.target.value === '' ? -1 : Number.parseInt(event.target.value, 10),
+                            },
+                          })}
+                          className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
+                        />
+                      </div>
+                    </div>
+
+                    {oracleFetchError && (
+                      <p className="text-sm text-red-600">{oracleFetchError}</p>
+                    )}
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-gray-500">
@@ -324,7 +446,11 @@ export default function NodeEditorModal() {
           </button>
           <button
             type="button"
-            onClick={commitNodeEditor}
+            onClick={() => {
+              if (oracleFetchError) return
+              commitNodeEditor()
+            }}
+            disabled={Boolean(oracleFetchError)}
             className="rounded bg-stone-900 px-3 py-1 text-sm text-white hover:bg-stone-700"
           >
             {isCreateMode ? 'Create' : 'Save'}

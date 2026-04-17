@@ -242,6 +242,95 @@ async def test_execute_db_source_postgres_mocked(engine):
 
 
 @pytest.mark.asyncio
+async def test_execute_db_source_oracle_fetchall_uses_fetch_config(engine):
+    df = pd.DataFrame({"ID": [1, 2], "NAME": ["Alice", "Bob"]})
+    connection = AsyncMock()
+
+    with (
+        patch.object(engine.oracle, "connect", new=AsyncMock(return_value=connection)),
+        patch.object(engine.oracle, "fetch_query", new=AsyncMock(return_value=df)) as fetch_query,
+    ):
+        node = _make_node("oracle", NodeType.DB_SOURCE, "oracle_t", {
+            "db_type": "oracle",
+            "connection": {"host": "h", "port": 1521, "service_name": "svc", "user": "u", "password": "p"},
+            "query": "SELECT * FROM dual",
+            "fetch_config": {
+                "mode": "fetchall",
+                "arraysize": 500,
+                "prefetchrows": 10,
+            },
+        })
+        result = await engine.execute_single_node(node)
+
+    assert result.status == NodeStatus.SUCCESS
+    assert result.row_count == 2
+    fetch_query.assert_awaited_once_with(
+        connection,
+        "SELECT * FROM dual",
+        {"mode": "fetchall", "arraysize": 500, "prefetchrows": 10},
+    )
+
+
+@pytest.mark.asyncio
+async def test_execute_db_source_oracle_fetchmany_loads_directly_into_duckdb(engine):
+    connection = AsyncMock()
+
+    with (
+        patch.object(engine.oracle, "connect", new=AsyncMock(return_value=connection)),
+        patch.object(engine.oracle, "load_query_to_duckdb", new=AsyncMock(return_value={
+            "row_count": 3,
+            "column_count": 2,
+            "columns": ["ID", "NAME"],
+        })) as load_query_to_duckdb,
+        patch.object(engine.oracle, "fetch_query", new=AsyncMock()) as fetch_query,
+    ):
+        node = _make_node("oracle", NodeType.DB_SOURCE, "oracle_chunked_t", {
+            "db_type": "oracle",
+            "connection": {"host": "h", "port": 1521, "service_name": "svc", "user": "u", "password": "p"},
+            "query": "SELECT * FROM dual",
+            "fetch_config": {
+                "mode": "fetchmany",
+                "arraysize": 1000,
+                "prefetchrows": 2,
+            },
+        })
+        result = await engine.execute_single_node(node)
+
+    assert result.status == NodeStatus.SUCCESS
+    assert result.row_count == 3
+    load_query_to_duckdb.assert_awaited_once_with(
+        connection,
+        "SELECT * FROM dual",
+        "oracle_chunked_t",
+        engine.duckdb,
+        {"mode": "fetchmany", "arraysize": 1000, "prefetchrows": 2},
+    )
+    fetch_query.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_execute_db_source_oracle_without_fetch_config_defaults_to_fetchall(engine):
+    df = pd.DataFrame({"ID": [1], "NAME": ["Alice"]})
+    connection = AsyncMock()
+
+    with (
+        patch.object(engine.oracle, "connect", new=AsyncMock(return_value=connection)),
+        patch.object(engine.oracle, "fetch_query", new=AsyncMock(return_value=df)) as fetch_query,
+        patch.object(engine.oracle, "load_query_to_duckdb", new=AsyncMock()) as load_query_to_duckdb,
+    ):
+        node = _make_node("oracle", NodeType.DB_SOURCE, "oracle_default_t", {
+            "db_type": "oracle",
+            "connection": {"host": "h", "port": 1521, "service_name": "svc", "user": "u", "password": "p"},
+            "query": "SELECT * FROM dual",
+        })
+        result = await engine.execute_single_node(node)
+
+    assert result.status == NodeStatus.SUCCESS
+    fetch_query.assert_awaited_once_with(connection, "SELECT * FROM dual", None)
+    load_query_to_duckdb.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_execute_db_source_reports_connecting_before_running(engine):
     df = pd.DataFrame({"col1": [1], "col2": ["a"]})
     connection = AsyncMock()
@@ -367,7 +456,7 @@ async def test_execute_db_source_oracle_registers_abort_callback(engine):
     run = registry.create_run("node", ["oracle"])
     controller = registry.create_controller(run.execution_id)
 
-    async def fetch_query(_connection, _query):
+    async def fetch_query(_connection, _query, _fetch_config=None):
         query_started.set()
         await allow_finish.wait()
         return pd.DataFrame({"col1": [1]})

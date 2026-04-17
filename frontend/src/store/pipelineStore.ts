@@ -14,6 +14,7 @@ import type {
   CsvPreprocessingConfig,
   CsvSourceConfig,
   CsvTextPreviewData,
+  DatabaseSourceConfig,
   ExecutionRunStatus,
   MaterializedPreviewTab,
   NodeEditorDraft,
@@ -29,7 +30,7 @@ import type {
 } from '../types/pipeline'
 import * as api from '../api/client'
 import { getCsvPreprocessFingerprint } from '../lib/csvPreprocessing'
-import { defaultConnectionConfig } from '../lib/databaseConnections'
+import { defaultDatabaseSourceConfig, defaultOracleFetchConfig } from '../lib/databaseConnections'
 import {
   createBlankPipelineDefinition,
   snapshotPipelineDefinition,
@@ -146,7 +147,7 @@ function defaultConfig(type: NodeType): Record<string, unknown> {
         script: '',
       },
     }
-    case 'db_source': return { db_type: 'postgres', connection: defaultConnectionConfig('postgres'), query: '' }
+    case 'db_source': return defaultDatabaseSourceConfig('postgres')
     case 'transform': return { sql: '' }
     case 'export': return { format: 'csv' }
   }
@@ -376,7 +377,7 @@ export function buildDatabaseSourceDraftFromConnection(
   connection: SavedDatabaseConnection,
   position: { x: number; y: number },
 ): NodeEditorDraft {
-  const config = connection.db_type === 'oracle'
+  const config: DatabaseSourceConfig = connection.db_type === 'oracle'
     ? {
         db_type: 'oracle',
         connection: {
@@ -387,6 +388,7 @@ export function buildDatabaseSourceDraftFromConnection(
           password: connection.password,
         },
         query: '',
+        fetch_config: defaultOracleFetchConfig(),
       }
     : {
         db_type: 'postgres',

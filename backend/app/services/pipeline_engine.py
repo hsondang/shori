@@ -14,7 +14,7 @@ from app.models.pipeline import (
 from app.services.csv_service import CsvPreprocessArtifactStore, register_csv_source
 from app.services.duckdb_manager import DuckDBManager
 from app.services.execution_registry import ExecutionCancelled, ExecutionController
-from app.services.oracle_service import OracleService
+from app.services.oracle_service import OracleService, normalize_fetch_config
 from app.services.postgres_service import PostgresService
 
 
@@ -174,7 +174,22 @@ class PipelineEngine:
                 try:
                     if execution_controller is not None:
                         execution_controller.raise_if_cancelled()
-                    df = await svc.fetch_query(connection, node.config["query"])
+                    if db_type == "oracle" and normalize_fetch_config(node.config.get("fetch_config"))["mode"] == "fetchmany":
+                        stats = await self.oracle.load_query_to_duckdb(
+                            connection,
+                            node.config["query"],
+                            node.table_name,
+                            self.duckdb,
+                            node.config.get("fetch_config"),
+                        )
+                    else:
+                        fetch_config = node.config.get("fetch_config") if db_type == "oracle" else None
+                        df = await svc.fetch_query(connection, node.config["query"], fetch_config)
+                        stats = await asyncio.to_thread(
+                            self.duckdb.register_dataframe,
+                            node.table_name,
+                            df,
+                        )
                 finally:
                     if execution_controller is not None:
                         execution_controller.clear_abort_callback()
@@ -182,11 +197,6 @@ class PipelineEngine:
                     maybe_awaitable = close()
                     if asyncio.iscoroutine(maybe_awaitable):
                         await maybe_awaitable
-                stats = await asyncio.to_thread(
-                    self.duckdb.register_dataframe,
-                    node.table_name,
-                    df,
-                )
             elif node.type == NodeType.TRANSFORM:
                 stats = await asyncio.to_thread(
                     self.duckdb.execute_transform,

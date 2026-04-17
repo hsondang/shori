@@ -140,6 +140,32 @@ describe('pipelineStore', () => {
       })
     })
 
+    it('adds an oracle db_source node from a saved connection with default fetch config', () => {
+      let connectionId = ''
+      act(() => {
+        connectionId = usePipelineStore.getState().addDatabaseConnection({
+          name: 'Warehouse Oracle',
+          db_type: 'oracle',
+          host: 'orahost',
+          port: 1521,
+          service_name: 'ORCL',
+          user: 'user',
+          password: 'secret',
+        })
+      })
+
+      act(() => usePipelineStore.getState().addDatabaseSourceFromConnection(connectionId, { x: 10, y: 20 }))
+
+      const config = (usePipelineStore.getState().nodes[0].data as Record<string, unknown>).config as Record<string, unknown>
+      expect(config).toHaveProperty('db_type', 'oracle')
+      expect(config).toHaveProperty('fetch_config')
+      expect(config.fetch_config).toEqual({
+        mode: 'fetchall',
+        arraysize: 100,
+        prefetchrows: 2,
+      })
+    })
+
     it('adds a transform node with empty sql default', () => {
       act(() => usePipelineStore.getState().addNode('transform', { x: 0, y: 0 }))
       const { nodes } = usePipelineStore.getState()
@@ -863,8 +889,9 @@ describe('pipelineStore', () => {
 
       await act(async () => {
         vi.advanceTimersByTime(100)
+        await Promise.resolve()
       })
-      expect(mockGetExecutionRunStatus).toHaveBeenCalledWith('exec-live')
+      expect(mockGetExecutionRunStatus).toHaveBeenCalledWith('exec-live', expect.any(AbortSignal))
       expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
         node_id: node.id,
         status: 'running',
@@ -949,6 +976,7 @@ describe('pipelineStore', () => {
 
       await act(async () => {
         vi.advanceTimersByTime(100)
+        await Promise.resolve()
       })
 
       expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
@@ -959,6 +987,7 @@ describe('pipelineStore', () => {
 
       await act(async () => {
         vi.advanceTimersByTime(500)
+        await Promise.resolve()
       })
 
       expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
@@ -1175,9 +1204,10 @@ describe('pipelineStore', () => {
 
       await act(async () => {
         vi.advanceTimersByTime(100)
+        await Promise.resolve()
       })
 
-      expect(mockGetExecutionRunStatus).toHaveBeenCalledWith('exec-fast')
+      expect(mockGetExecutionRunStatus).toHaveBeenCalledWith('exec-fast', expect.any(AbortSignal))
       expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
         node_id: node.id,
         status: 'success',
