@@ -14,11 +14,14 @@ A visual data pipeline builder for data wrangling. Construct pipelines as node g
 ```
 shori/
 ├── backend/          # FastAPI + DuckDB + asyncpg + oracledb
+├── docs/             # Project documentation
 ├── frontend/         # React + React Flow + Monaco Editor
 ├── scripts/          # Setup scripts (test database)
 ├── data/             # Runtime data (uploads, exports, pipelines)
 └── docker-compose.test.yml
 ```
+
+Documentation: [`docs/setup-test-db-design.md`](docs/setup-test-db-design.md) explains the design and usage of the test database setup script.
 
 ## Setup
 
@@ -47,26 +50,7 @@ cd frontend
 npm install
 ```
 
-### Test Database (optional)
-
-Spins up a PostgreSQL 16 container on port **5433** with sample data (customers, products, orders):
-
-```bash
-cd backend
-source .venv/bin/activate
-cd ..
-python scripts/setup_test_db.py
-```
-
-Connection details for the test database:
-
-| Field    | Value        |
-|----------|--------------|
-| Host     | `localhost`  |
-| Port     | `5433`       |
-| Database | `shori_test` |
-| User     | `shori_test` |
-| Password | `shori_test` |
+Test database setup and operations are documented in [`docs/setup-test-db-design.md`](docs/setup-test-db-design.md).
 
 ## Running
 
@@ -140,7 +124,7 @@ cd backend
 python -m pytest tests/ -v
 ```
 
-**Run integration tests** (requires the Docker Postgres container — start it first with `python scripts/setup_test_db.py`):
+**Run integration tests** (requires the Docker Postgres container on port `5433`; see [`docs/setup-test-db-design.md`](docs/setup-test-db-design.md) for setup/reset/teardown):
 
 ```bash
 python -m pytest tests/ -v -m integration
