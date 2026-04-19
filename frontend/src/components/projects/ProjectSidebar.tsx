@@ -73,6 +73,7 @@ export default function ProjectSidebar({
   const activeProjectId = location.pathname.startsWith('/projects/')
     ? location.pathname.split('/')[2] ?? null
     : null
+  const isPlatformSettingsActive = location.pathname === '/settings/platform'
 
   const handleOpenProject = (project: ProjectSummary) => {
     if (activeProjectId === project.id) return
@@ -119,6 +120,13 @@ export default function ProjectSidebar({
     markProjectCatalogChanged()
   }
 
+  const handleOpenPlatformSettings = () => {
+    if (isPlatformSettingsActive) return
+    setMenuProjectId(null)
+    onClose()
+    navigate('/settings/platform')
+  }
+
   const sidebarClassName = variant === 'docked'
     ? 'relative flex h-full w-full min-w-0 flex-col border-r border-stone-200 bg-[#f6f1e8] shadow-[0_24px_80px_rgba(51,39,20,0.18)] md:shadow-none'
     : `absolute inset-y-0 left-0 z-50 flex h-full w-80 max-w-[calc(100vw-1rem)] flex-col border-r border-stone-200 bg-[#f6f1e8] shadow-[0_24px_80px_rgba(51,39,20,0.18)] transition-transform duration-200 ${
@@ -150,6 +158,17 @@ export default function ProjectSidebar({
           className="mt-4 w-full rounded-lg bg-stone-900 px-3 py-2 text-sm font-medium text-stone-50 transition hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-60"
         >
           {creating ? 'Creating...' : 'New Project'}
+        </button>
+        <button
+          type="button"
+          onClick={handleOpenPlatformSettings}
+          className={`mt-2 w-full rounded-lg border px-3 py-2 text-sm font-medium transition ${
+            isPlatformSettingsActive
+              ? 'border-stone-900 bg-stone-900 text-stone-50'
+              : 'border-stone-300 bg-white text-stone-700 hover:bg-stone-50'
+          }`}
+        >
+          Platform Settings
         </button>
       </div>
 

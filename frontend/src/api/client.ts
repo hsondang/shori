@@ -7,6 +7,8 @@ import type {
   NodeExecutionResult,
   PipelineDefinition,
   ProjectSummary,
+  SavedDatabaseConnection,
+  SavedDatabaseConnectionInput,
 } from '../types/pipeline'
 
 const api = axios.create({ baseURL: '/api' })
@@ -150,6 +152,30 @@ export async function listPipelines(): Promise<ProjectSummary[]> {
 
 export async function deletePipeline(id: string): Promise<void> {
   await api.delete(`/pipelines/${id}`)
+}
+
+export async function listGlobalDatabaseConnections(): Promise<SavedDatabaseConnection[]> {
+  const { data } = await api.get('/settings/database-connections')
+  return data
+}
+
+export async function createGlobalDatabaseConnection(
+  connection: SavedDatabaseConnectionInput,
+): Promise<SavedDatabaseConnection> {
+  const { data } = await api.post('/settings/database-connections', connection)
+  return data
+}
+
+export async function updateGlobalDatabaseConnection(
+  id: string,
+  connection: SavedDatabaseConnectionInput,
+): Promise<SavedDatabaseConnection> {
+  const { data } = await api.put(`/settings/database-connections/${id}`, connection)
+  return data
+}
+
+export async function deleteGlobalDatabaseConnection(id: string): Promise<void> {
+  await api.delete(`/settings/database-connections/${id}`)
 }
 
 export async function setPipelineStar(id: string, starred: boolean): Promise<{ id: string; starred: boolean }> {

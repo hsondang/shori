@@ -79,6 +79,27 @@ describe('ProjectSidebar', () => {
     expect(screen.getByTestId('location')).toHaveTextContent('/projects/p1')
   })
 
+  it('navigates to platform settings from the sidebar action', async () => {
+    const user = userEvent.setup()
+    mockListPipelines.mockResolvedValueOnce([])
+
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <div className="flex h-full">
+          <ProjectSidebar open onClose={() => {}} variant="overlay" />
+          <Routes>
+            <Route path="/" element={<LocationProbe />} />
+            <Route path="/settings/platform" element={<LocationProbe />} />
+          </Routes>
+        </div>
+      </MemoryRouter>
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Platform Settings' }))
+
+    expect(screen.getByTestId('location')).toHaveTextContent('/settings/platform')
+  })
+
   it('creates an untitled project and navigates to it', async () => {
     const user = userEvent.setup()
     mockListPipelines.mockResolvedValue([])

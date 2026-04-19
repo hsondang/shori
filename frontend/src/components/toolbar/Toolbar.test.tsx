@@ -1,9 +1,11 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { act } from 'react'
+import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Toolbar from './Toolbar'
 import { usePipelineStore } from '../../store/pipelineStore'
+import { useSettingsStore } from '../../store/settingsStore'
 
 const mockListPipelines = vi.fn()
 const mockExecutePipeline = vi.fn()
@@ -13,6 +15,7 @@ const mockPreviewPreprocessedCsvSource = vi.fn()
 const mockSavePipeline = vi.fn()
 const mockLoadPipeline = vi.fn()
 const mockTestDbConnection = vi.fn()
+const mockListGlobalDatabaseConnections = vi.fn()
 const mockDeletePreprocessedCsvArtifact = vi.fn((..._args: any[]) => Promise.resolve({ deleted: true }))
 
 vi.mock('../../api/client', () => ({
@@ -23,36 +26,54 @@ vi.mock('../../api/client', () => ({
   previewPreprocessedCsvSource: (...args: unknown[]) => mockPreviewPreprocessedCsvSource(...args),
   savePipeline: (...args: unknown[]) => mockSavePipeline(...args),
   loadPipeline: (...args: unknown[]) => mockLoadPipeline(...args),
+  listGlobalDatabaseConnections: (...args: unknown[]) => mockListGlobalDatabaseConnections(...args),
   testDbConnection: (...args: unknown[]) => mockTestDbConnection(...args),
   deletePreprocessedCsvArtifact: (...args: unknown[]) => mockDeletePreprocessedCsvArtifact(...args),
 }))
 
+function renderToolbar() {
+  return render(
+    <MemoryRouter>
+      <Toolbar />
+    </MemoryRouter>
+  )
+}
+
 describe('Toolbar', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    act(() => usePipelineStore.getState().newPipeline())
+    mockListGlobalDatabaseConnections.mockResolvedValue([])
+    act(() => {
+      usePipelineStore.getState().newPipeline()
+      useSettingsStore.setState({
+        globalDatabaseConnections: [],
+        globalConnectionsLoaded: false,
+        globalConnectionsLoading: false,
+      })
+    })
   })
 
   it('opens the database source dropdown and shows the empty state', async () => {
     const user = userEvent.setup()
-    render(<Toolbar />)
+    renderToolbar()
 
     await user.click(screen.getByRole('button', { name: 'Database Source' }))
     const dropdown = screen.getByTestId('database-source-dropdown')
 
     expect(screen.getByText('Database Connections')).toBeInTheDocument()
-    expect(screen.getByText('No saved database connections yet.')).toBeInTheDocument()
-    expect(within(dropdown as HTMLElement).getByRole('button', { name: 'Add' })).toBeInTheDocument()
+    expect(screen.getByText('No global database connections yet.')).toBeInTheDocument()
+    expect(screen.getByText('No local database connections yet.')).toBeInTheDocument()
+    expect(within(dropdown as HTMLElement).getByRole('button', { name: 'Add Local Connection' })).toBeInTheDocument()
     expect(screen.queryByLabelText(/connection name/i)).not.toBeInTheDocument()
   })
 
   it('adds a saved connection and renders it as a draggable preset', async () => {
     const user = userEvent.setup()
-    render(<Toolbar />)
+    renderToolbar()
 
     await user.click(screen.getByRole('button', { name: 'Database Source' }))
     const dropdown = screen.getByTestId('database-source-dropdown')
-    await user.click(within(dropdown).getByRole('button', { name: 'Add' }))
+    await user.click(within(dropdown).getByRole('button', { name: 'Add Local Connection' }))
     const modal = screen.getByTestId('database-source-modal')
     fireEvent.change(within(modal).getByLabelText(/connection name/i), { target: { value: 'Analytics Postgres' } })
     fireEvent.change(screen.getByPlaceholderText('Host'), { target: { value: 'localhost' } })
@@ -80,7 +101,7 @@ describe('Toolbar', () => {
       })
     })
 
-    render(<Toolbar />)
+    renderToolbar()
 
     await user.click(screen.getByRole('button', { name: 'Database Source' }))
     await user.click(screen.getByRole('button', { name: 'Edit' }))
@@ -99,10 +120,10 @@ describe('Toolbar', () => {
 
   it('discards modal changes without mutating saved connections', async () => {
     const user = userEvent.setup()
-    render(<Toolbar />)
+    renderToolbar()
 
     await user.click(screen.getByRole('button', { name: 'Database Source' }))
-    await user.click(screen.getByRole('button', { name: 'Add' }))
+    await user.click(screen.getByRole('button', { name: 'Add Local Connection' }))
     const modal = screen.getByTestId('database-source-modal')
     await user.type(within(modal).getByLabelText(/connection name/i), 'Transient Connection')
     await user.click(within(modal).getByRole('button', { name: 'Discard' }))
@@ -128,9 +149,49 @@ describe('Toolbar', () => {
       })
     })
 
-    render(<Toolbar />)
+    renderToolbar()
 
     expect(screen.getByText('Running pipeline · 01:05')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Running...' })).toBeDisabled()
+  })
+
+  it('shows global and local connection groups in the dropdown', async () => {
+    const user = userEvent.setup()
+    act(() => {
+      useSettingsStore.setState({
+        globalDatabaseConnections: [
+          {
+            id: 'global-1',
+            name: 'Shared Warehouse',
+            db_type: 'postgres',
+            host: 'db.internal',
+            port: 5432,
+            database: 'warehouse',
+            user: 'readonly',
+            password: 'secret',
+          },
+        ],
+        globalConnectionsLoaded: true,
+        globalConnectionsLoading: false,
+      })
+      usePipelineStore.getState().addDatabaseConnection({
+        name: 'Project Replica',
+        db_type: 'postgres',
+        host: 'localhost',
+        port: 5432,
+        database: 'analytics',
+        user: 'user',
+        password: 'secret',
+      })
+    })
+
+    renderToolbar()
+
+    await user.click(screen.getByRole('button', { name: 'Database Source' }))
+
+    expect(screen.getAllByText('Global').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Local').length).toBeGreaterThan(0)
+    expect(screen.getByText('Shared Warehouse')).toBeInTheDocument()
+    expect(screen.getByText('Project Replica')).toBeInTheDocument()
   })
 })

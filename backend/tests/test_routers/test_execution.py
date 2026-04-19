@@ -25,6 +25,71 @@ async def test_execute_single_csv_node(client, pipeline_def, sample_csv_file):
 
 
 @pytest.mark.asyncio
+async def test_execute_single_global_db_node_resolves_saved_connection(client, monkeypatch):
+    create_resp = await client.post(
+        "/api/settings/database-connections",
+        json={
+            "name": "Analytics Global",
+            "db_type": "postgres",
+            "host": "db.internal",
+            "port": 5432,
+            "database": "analytics",
+            "user": "readonly",
+            "password": "secret",
+        },
+    )
+    connection = create_resp.json()
+    captured = {}
+
+    async def fake_execute_single_node(self, node, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
+        captured["node"] = node
+        return NodeExecutionResult(node_id=node.id, status=NodeStatus.SUCCESS)
+
+    monkeypatch.setattr(PipelineEngine, "execute_single_node", fake_execute_single_node)
+
+    resp = await client.post(
+        "/api/execute/node",
+        json={
+            "id": "db-node",
+            "type": "db_source",
+            "table_name": "orders",
+            "label": "Orders",
+            "position": {"x": 0, "y": 0},
+            "config": {
+                "connection_mode": "global",
+                "connection_source_id": connection["id"],
+                "db_type": "postgres",
+                "query": "SELECT 1",
+            },
+        },
+    )
+    assert resp.status_code == 200
+    assert captured["node"].config["connection"]["host"] == "db.internal"
+    assert captured["node"].config["connection"]["database"] == "analytics"
+
+
+@pytest.mark.asyncio
+async def test_execute_single_global_db_node_returns_404_if_connection_missing(client):
+    resp = await client.post(
+        "/api/execute/node",
+        json={
+            "id": "db-node",
+            "type": "db_source",
+            "table_name": "orders",
+            "label": "Orders",
+            "position": {"x": 0, "y": 0},
+            "config": {
+                "connection_mode": "global",
+                "connection_source_id": "missing",
+                "db_type": "postgres",
+                "query": "SELECT 1",
+            },
+        },
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_execute_inline_csv_pipeline(client, pipeline_def):
     resp = await client.post("/api/execute/pipeline", json=pipeline_def)
     assert resp.status_code == 200

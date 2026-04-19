@@ -4,7 +4,9 @@ import { Route, Routes, useLocation } from 'react-router-dom'
 import ProjectSidebar from './components/projects/ProjectSidebar'
 import ProjectHome from './components/projects/ProjectHome'
 import PipelineEditorPage from './components/projects/PipelineEditorPage'
+import PlatformSettingsPage from './components/settings/PlatformSettingsPage'
 import Toolbar from './components/toolbar/Toolbar'
+import { useSettingsStore } from './store/settingsStore'
 import {
   PROJECT_BROWSER_SIDEBAR_WIDTH_PX,
   PROJECT_BROWSER_TRIGGER_SLOT_PX,
@@ -36,9 +38,14 @@ function ProjectBrowserToggleButton({ open, onToggle }: ProjectBrowserToggleButt
 
 export default function App() {
   const location = useLocation()
+  const loadGlobalDatabaseConnections = useSettingsStore((s) => s.loadGlobalDatabaseConnections)
   const [isProjectBrowserOpen, setIsProjectBrowserOpen] = useState(() => location.pathname === '/')
   const previousPathnameRef = useRef(location.pathname)
   const isProjectRoute = location.pathname.startsWith('/projects/')
+
+  useEffect(() => {
+    void loadGlobalDatabaseConnections().catch(() => {})
+  }, [loadGlobalDatabaseConnections])
 
   useEffect(() => {
     const previousPathname = previousPathnameRef.current
@@ -141,6 +148,7 @@ export default function App() {
         <main className="h-full min-w-0">
           <Routes>
             <Route path="/" element={<ProjectHome />} />
+            <Route path="/settings/platform" element={<PlatformSettingsPage />} />
             <Route
               path="/projects/:projectId"
               element={(

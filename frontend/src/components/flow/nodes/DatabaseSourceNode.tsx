@@ -1,7 +1,13 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { usePipelineStore } from '../../../store/pipelineStore'
+import { useSettingsStore } from '../../../store/settingsStore'
 import NodeStatusBadge from '../NodeStatusBadge'
-import { getConnectionSummary } from '../../../lib/databaseConnections'
+import {
+  findSavedConnectionById,
+  getConnectionSummary,
+  getDatabaseSourceConnectionScope,
+  getDatabaseSourceConnectionSourceId,
+} from '../../../lib/databaseConnections'
 import type { DatabaseConnectionConfig, DbType } from '../../../types/pipeline'
 
 const dbStyles = {
@@ -14,11 +20,21 @@ export default function DatabaseSourceNode({ id, data }: NodeProps) {
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
   const openNodeError = usePipelineStore((s) => s.openNodeError)
   const loadTablePreview = usePipelineStore((s) => s.loadTablePreview)
+  const globalDatabaseConnections = useSettingsStore((s) => s.globalDatabaseConnections)
   const result = nodeResults[id]
   const hasError = result?.status === 'error'
   const d = data as Record<string, unknown>
   const config = d.config as Record<string, unknown>
-  const connection = config.connection as DatabaseConnectionConfig | undefined
+  const connectionScope = getDatabaseSourceConnectionScope(config)
+  const globalConnection = findSavedConnectionById(
+    globalDatabaseConnections,
+    getDatabaseSourceConnectionSourceId(config),
+  )
+  const connection = (
+    connectionScope === 'global'
+      ? globalConnection
+      : config.connection
+  ) as DatabaseConnectionConfig | undefined
   const dbType = ((config.db_type as string) || 'postgres') as DbType
   const tableName = d.tableName as string
   const style = dbStyles[dbType as keyof typeof dbStyles] || dbStyles.postgres
@@ -42,6 +58,11 @@ export default function DatabaseSourceNode({ id, data }: NodeProps) {
       </div>
       <div className="px-3 py-2 text-xs space-y-1">
         <div className="text-gray-500 font-mono">{tableName}</div>
+        {connectionScope === 'global' && (
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
+            {globalConnection ? `Global · ${globalConnection.name}` : 'Global · Missing source'}
+          </div>
+        )}
         {connection?.host && (
           <div className="text-gray-700 truncate max-w-[160px]">
             {getConnectionSummary(dbType, connection)}

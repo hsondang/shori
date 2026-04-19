@@ -125,6 +125,76 @@ def test_update_star_returns_false_for_missing_project(store):
     assert store.update_star("missing-project", True) is False
 
 
+def test_global_connection_roundtrip(store):
+    created = store.create_global_connection(
+        {
+            "name": "Warehouse",
+            "db_type": "postgres",
+            "host": "db.internal",
+            "port": 5432,
+            "database": "warehouse",
+            "user": "readonly",
+            "password": "secret",
+        }
+    )
+
+    loaded = store.load_global_connection(created.id)
+    assert loaded.name == "Warehouse"
+    assert loaded.db_type == "postgres"
+    assert loaded.database == "warehouse"
+
+    updated = store.update_global_connection(
+        created.id,
+        {
+            "name": "Warehouse Prod",
+            "db_type": "oracle",
+            "host": "ora.internal",
+            "port": 1521,
+            "service_name": "DW",
+            "user": "readonly",
+            "password": "secret",
+        },
+    )
+    assert updated.name == "Warehouse Prod"
+    assert updated.db_type == "oracle"
+    assert updated.service_name == "DW"
+    assert store.list_global_connections()[0].name == "Warehouse Prod"
+
+
+def test_delete_global_connection_blocks_if_project_references_it(store):
+    created = store.create_global_connection(
+        {
+            "name": "Analytics Global",
+            "db_type": "postgres",
+            "host": "db.internal",
+            "port": 5432,
+            "database": "analytics",
+            "user": "readonly",
+            "password": "secret",
+        }
+    )
+    pipeline = _make_pipeline()
+    pipeline.nodes = [
+        NodeDefinition(
+            id="n1",
+            type=NodeType.DB_SOURCE,
+            table_name="orders",
+            label="Orders",
+            position=Position(x=0, y=0),
+            config={
+                "connection_mode": "global",
+                "connection_source_id": created.id,
+                "db_type": "postgres",
+                "query": "SELECT 1",
+            },
+        )
+    ]
+    store.save(pipeline)
+
+    with pytest.raises(ValueError, match="Test Pipeline"):
+        store.delete_global_connection(created.id)
+
+
 def test_existing_database_is_migrated_to_include_starred(monkeypatch, tmp_path):
     project_db_path = tmp_path / "projects.sqlite3"
     conn = sqlite3.connect(project_db_path)
@@ -171,3 +241,10 @@ def test_existing_database_is_migrated_to_include_starred(monkeypatch, tmp_path)
             "updated_at": "2026-03-01T00:00:00+00:00",
         }
     ]
+    global_columns = {
+        row["name"]
+        for row in migrated_store._connect()
+        .execute("PRAGMA table_info(global_database_connections)")
+        .fetchall()
+    }
+    assert "name" in global_columns

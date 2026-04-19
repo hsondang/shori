@@ -1,5 +1,6 @@
 export type NodeType = 'csv_source' | 'db_source' | 'transform' | 'export'
 export type DbType = 'oracle' | 'postgres'
+export type ConnectionScope = 'local' | 'global'
 export type NodeStatus = 'idle' | 'connecting' | 'running' | 'success' | 'error' | 'cancelled'
 export type NodeLabelMode = 'auto' | 'custom'
 export type NodeEditorMode = 'closed' | 'create' | 'edit'
@@ -43,19 +44,40 @@ export interface CsvPreprocessingConfig {
 }
 
 export interface PostgresDatabaseSourceConfig {
+  connection_mode?: 'local'
   db_type: 'postgres'
   connection: PostgresConnectionConfig
   query: string
 }
 
 export interface OracleDatabaseSourceConfig {
+  connection_mode?: 'local'
   db_type: 'oracle'
   connection: OracleConnectionConfig
   query: string
   fetch_config?: OracleFetchConfig
 }
 
-export type DatabaseSourceConfig = PostgresDatabaseSourceConfig | OracleDatabaseSourceConfig
+export interface GlobalPostgresDatabaseSourceConfig {
+  connection_mode: 'global'
+  connection_source_id: string
+  db_type: 'postgres'
+  query: string
+}
+
+export interface GlobalOracleDatabaseSourceConfig {
+  connection_mode: 'global'
+  connection_source_id: string
+  db_type: 'oracle'
+  query: string
+  fetch_config?: OracleFetchConfig
+}
+
+export type DatabaseSourceConfig =
+  | PostgresDatabaseSourceConfig
+  | OracleDatabaseSourceConfig
+  | GlobalPostgresDatabaseSourceConfig
+  | GlobalOracleDatabaseSourceConfig
 
 export type SavedDatabaseConnection =
   | ({ id: string; name: string; db_type: 'postgres' } & PostgresConnectionConfig)
@@ -64,6 +86,8 @@ export type SavedDatabaseConnection =
 export type SavedDatabaseConnectionInput =
   | ({ name: string; db_type: 'postgres' } & PostgresConnectionConfig)
   | ({ name: string; db_type: 'oracle' } & OracleConnectionConfig)
+
+export type ScopedDatabaseConnection = SavedDatabaseConnection & { scope: ConnectionScope }
 
 export interface TransformConfig {
   sql: string

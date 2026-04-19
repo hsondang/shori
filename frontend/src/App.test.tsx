@@ -9,6 +9,7 @@ import {
   PROJECT_BROWSER_TRIGGER_SLOT_PX,
 } from './components/projects/projectLayout'
 
+const mockLoadGlobalDatabaseConnections = vi.fn(() => Promise.resolve())
 const mockProjectSidebar = vi.fn(
   ({ open, variant }: { open: boolean; variant?: 'docked' | 'overlay' }) => (
     <aside data-testid={`sidebar-${variant ?? 'overlay'}`} data-open={open ? 'true' : 'false'}>
@@ -33,8 +34,17 @@ vi.mock('./components/projects/PipelineEditorPage', () => ({
   default: () => <div>Editor View</div>,
 }))
 
+vi.mock('./components/settings/PlatformSettingsPage', () => ({
+  default: () => <div>Platform Settings View</div>,
+}))
+
 vi.mock('./components/toolbar/Toolbar', () => ({
   default: () => <div data-testid="toolbar">Toolbar</div>,
+}))
+
+vi.mock('./store/settingsStore', () => ({
+  useSettingsStore: (selector: (state: { loadGlobalDatabaseConnections: () => Promise<void> }) => unknown) =>
+    selector({ loadGlobalDatabaseConnections: mockLoadGlobalDatabaseConnections }),
 }))
 
 describe('App routes', () => {
@@ -47,6 +57,17 @@ describe('App routes', () => {
 
     expect(screen.getByTestId('sidebar-overlay')).toHaveTextContent('Sidebar Open')
     expect(screen.getByText('Home View')).toBeInTheDocument()
+  })
+
+  it('renders the platform settings route', () => {
+    render(
+      <MemoryRouter initialEntries={['/settings/platform']}>
+        <App />
+      </MemoryRouter>
+    )
+
+    expect(screen.getByTestId('sidebar-overlay')).toHaveTextContent('Sidebar Closed')
+    expect(screen.getByText('Platform Settings View')).toBeInTheDocument()
   })
 
   it('renders the editor route with a docked sidebar rail and mobile-only backdrop', async () => {

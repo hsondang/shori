@@ -3,9 +3,14 @@ import { uploadCsv } from '../../api/client'
 import {
   defaultConnectionConfig,
   defaultOracleFetchConfig,
+  findSavedConnectionById,
+  getConnectionSummary,
+  getDatabaseSourceConnectionScope,
+  getDatabaseSourceConnectionSourceId,
   switchDatabaseSourceConfigDbType,
 } from '../../lib/databaseConnections'
 import { usePipelineStore } from '../../store/pipelineStore'
+import { useSettingsStore } from '../../store/settingsStore'
 import type {
   CsvPreprocessingConfig,
   CsvSourceConfig,
@@ -35,9 +40,34 @@ function getNodeTypeTitle(type: string): string {
 }
 
 function getDatabaseSourceConfig(config: Record<string, unknown>): DatabaseSourceConfig {
+  if (config.connection_mode === 'global') {
+    if (config.db_type === 'oracle') {
+      const fetchConfig = config.fetch_config as Partial<OracleFetchConfig> | undefined
+      return {
+        connection_mode: 'global',
+        connection_source_id: (config.connection_source_id as string | undefined) ?? '',
+        db_type: 'oracle',
+        query: (config.query as string | undefined) ?? '',
+        fetch_config: {
+          mode: fetchConfig?.mode === 'fetchmany' ? 'fetchmany' : 'fetchall',
+          arraysize: Number.isInteger(fetchConfig?.arraysize) ? Number(fetchConfig?.arraysize) : 100,
+          prefetchrows: Number.isInteger(fetchConfig?.prefetchrows) ? Number(fetchConfig?.prefetchrows) : 2,
+        },
+      }
+    }
+
+    return {
+      connection_mode: 'global',
+      connection_source_id: (config.connection_source_id as string | undefined) ?? '',
+      db_type: 'postgres',
+      query: (config.query as string | undefined) ?? '',
+    }
+  }
+
   if (config.db_type === 'oracle') {
     const fetchConfig = config.fetch_config as Partial<OracleFetchConfig> | undefined
     return {
+      connection_mode: 'local',
       db_type: 'oracle',
       connection: (config.connection as OracleConnectionConfig | undefined) ?? defaultConnectionConfig('oracle') as OracleConnectionConfig,
       query: (config.query as string | undefined) ?? '',
@@ -50,6 +80,7 @@ function getDatabaseSourceConfig(config: Record<string, unknown>): DatabaseSourc
   }
 
   return {
+    connection_mode: 'local',
     db_type: 'postgres',
     connection: (config.connection as PostgresConnectionConfig | undefined) ?? defaultConnectionConfig('postgres') as PostgresConnectionConfig,
     query: (config.query as string | undefined) ?? '',
@@ -75,6 +106,7 @@ export default function NodeEditorModal() {
   const updateNodeEditorDraft = usePipelineStore((s) => s.updateNodeEditorDraft)
   const closeNodeEditor = usePipelineStore((s) => s.closeNodeEditor)
   const commitNodeEditor = usePipelineStore((s) => s.commitNodeEditor)
+  const globalDatabaseConnections = useSettingsStore((s) => s.globalDatabaseConnections)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -104,9 +136,25 @@ export default function NodeEditorModal() {
     script: '',
   }
   const dbType = dbConfig?.db_type ?? 'postgres'
-  const dbConnection = dbConfig?.connection ?? defaultConnectionConfig(dbType)
+  const dbConnectionScope = dbConfig
+    ? getDatabaseSourceConnectionScope(dbConfig as unknown as Record<string, unknown>)
+    : 'local'
+  const globalConnection = dbConfig
+    ? findSavedConnectionById(
+        globalDatabaseConnections,
+        getDatabaseSourceConnectionSourceId(dbConfig as unknown as Record<string, unknown>),
+      )
+    : null
+  const localDbConnection = (
+    dbConfig && dbConnectionScope !== 'global' && 'connection' in dbConfig
+      ? dbConfig.connection
+      : defaultConnectionConfig(dbType)
+  )
+  const dbConnection = dbConnectionScope === 'global'
+    ? globalConnection
+    : localDbConnection
   const oracleFetchConfig = dbType === 'oracle'
-    ? dbConfig?.fetch_config ?? defaultOracleFetchConfig()
+    ? (dbConfig && 'fetch_config' in dbConfig ? dbConfig.fetch_config : undefined) ?? defaultOracleFetchConfig()
     : null
   const oracleFetchError = oracleFetchConfig ? getOracleFetchConfigError(oracleFetchConfig) : null
   const targetNodeId = editingNodeId ?? draft.id
@@ -289,27 +337,63 @@ export default function NodeEditorModal() {
                 <label htmlFor="node-editor-db-type" className="mb-1 block text-xs text-gray-500">
                   Database Type
                 </label>
-                <select
-                  id="node-editor-db-type"
-                  value={dbType}
-                  onChange={(event) => updateConfig(
-                    switchDatabaseSourceConfigDbType(event.target.value as DbType, dbConfig)
-                  )}
-                  className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
-                >
-                  <option value="postgres">PostgreSQL</option>
-                  <option value="oracle">Oracle</option>
-                </select>
+                {dbConnectionScope === 'global' ? (
+                  <div className="rounded border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-600">
+                    {dbType === 'oracle' ? 'Oracle' : 'PostgreSQL'}
+                  </div>
+                ) : (
+                  <select
+                    id="node-editor-db-type"
+                    value={dbType}
+                    onChange={(event) => updateConfig(
+                      switchDatabaseSourceConfigDbType(
+                        event.target.value as DbType,
+                        dbConfig as unknown as Partial<DatabaseSourceConfig>,
+                      ) as unknown as Record<string, unknown>
+                    )}
+                    className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
+                  >
+                    <option value="postgres">PostgreSQL</option>
+                    <option value="oracle">Oracle</option>
+                  </select>
+                )}
               </div>
 
-              <ConnectionForm
-                config={dbConnection}
-                onChange={(connection) => updateConfig({
-                  ...dbConfig,
-                  connection,
-                })}
-                dbType={dbType}
-              />
+              {dbConnectionScope === 'global' ? (
+                <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-stone-500">Global Source</div>
+                  <p className="mt-2 text-sm text-stone-500">
+                    {globalConnection
+                      ? 'This node is linked to a global database connection. Edit it from Platform Settings.'
+                      : 'This node references a global database connection that no longer exists.'}
+                  </p>
+                  <div className="mt-4 space-y-3">
+                    <div>
+                      <div className="mb-1 block text-xs text-gray-500">Connection Name</div>
+                      <div className="rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700">
+                        {globalConnection?.name ?? 'Missing global source'}
+                      </div>
+                    </div>
+                    {dbConnection && (
+                      <div>
+                        <div className="mb-1 block text-xs text-gray-500">Connection</div>
+                        <div className="rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700">
+                          {getConnectionSummary(dbType, dbConnection)}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <ConnectionForm
+                  config={localDbConnection}
+                  onChange={(connection) => updateConfig({
+                    ...dbConfig,
+                    connection,
+                  })}
+                  dbType={dbType}
+                />
+              )}
 
               {dbType === 'oracle' && oracleFetchConfig && (
                 <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">

@@ -4,8 +4,13 @@ import { act } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import FlowCanvas from './FlowCanvas'
 import NodeEditorModal from '../panels/NodeEditorModal'
-import { DATABASE_CONNECTION_MIME, NODE_TYPE_MIME } from '../../lib/dragData'
+import {
+  DATABASE_CONNECTION_MIME,
+  DATABASE_CONNECTION_SCOPE_MIME,
+  NODE_TYPE_MIME,
+} from '../../lib/dragData'
 import { usePipelineStore } from '../../store/pipelineStore'
+import { useSettingsStore } from '../../store/settingsStore'
 
 vi.mock('@monaco-editor/react', () => ({
   default: ({
@@ -130,6 +135,11 @@ describe('FlowCanvas', () => {
     vi.clearAllMocks()
     act(() => {
       usePipelineStore.getState().newPipeline()
+      useSettingsStore.setState({
+        globalDatabaseConnections: [],
+        globalConnectionsLoaded: true,
+        globalConnectionsLoading: false,
+      })
     })
   })
 
@@ -180,6 +190,7 @@ describe('FlowCanvas', () => {
       dataTransfer: makeDataTransfer({
         [NODE_TYPE_MIME]: 'db_source',
         [DATABASE_CONNECTION_MIME]: connectionId,
+        [DATABASE_CONNECTION_SCOPE_MIME]: 'local',
       }),
     })
 
@@ -202,6 +213,59 @@ describe('FlowCanvas', () => {
     expect(data.label).toBe('Warehouse Read Replica')
     expect(data.tableName).toBe('warehouse_orders')
     expect((config.connection as Record<string, unknown>).host).toBe('localhost')
+    expect(config.query).toBe('SELECT * FROM orders')
+  })
+
+  it('opens a read-only linked editor for dragged global database presets', async () => {
+    const user = userEvent.setup()
+
+    act(() => {
+      useSettingsStore.setState({
+        globalDatabaseConnections: [
+          {
+            id: 'global-1',
+            name: 'Shared Warehouse',
+            db_type: 'postgres',
+            host: 'db.internal',
+            port: 5432,
+            database: 'warehouse',
+            user: 'readonly',
+            password: 'secret',
+          },
+        ],
+        globalConnectionsLoaded: true,
+        globalConnectionsLoading: false,
+      })
+    })
+
+    renderCanvas()
+
+    fireEvent.drop(screen.getByTestId('flow-canvas'), {
+      clientX: 64,
+      clientY: 96,
+      dataTransfer: makeDataTransfer({
+        [NODE_TYPE_MIME]: 'db_source',
+        [DATABASE_CONNECTION_MIME]: 'global-1',
+        [DATABASE_CONNECTION_SCOPE_MIME]: 'global',
+      }),
+    })
+
+    const modal = screen.getByTestId('node-editor-modal')
+    expect(within(modal).getByDisplayValue('Shared Warehouse')).toBeInTheDocument()
+    expect(within(modal).getByText('This node is linked to a global database connection. Edit it from Platform Settings.')).toBeInTheDocument()
+    expect(within(modal).queryByPlaceholderText('Host')).not.toBeInTheDocument()
+
+    fireEvent.change(within(modal).getByLabelText('Label'), { target: { value: 'Orders Global' } })
+    fireEvent.change(within(modal).getByLabelText('Table Name'), { target: { value: 'orders_global' } })
+    fireEvent.change(within(modal).getByLabelText('sql-editor'), { target: { value: 'SELECT * FROM orders' } })
+    await user.click(within(modal).getByRole('button', { name: 'Create' }))
+
+    const state = usePipelineStore.getState()
+    expect(state.nodes).toHaveLength(1)
+    const config = (state.nodes[0].data as Record<string, unknown>).config as Record<string, unknown>
+    expect(config.connection_mode).toBe('global')
+    expect(config.connection_source_id).toBe('global-1')
+    expect(config).not.toHaveProperty('connection')
     expect(config.query).toBe('SELECT * FROM orders')
   })
 

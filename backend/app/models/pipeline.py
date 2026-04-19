@@ -59,6 +59,10 @@ class SavedConnectionBase(BaseModel):
     name: str
 
 
+class SavedConnectionInputBase(BaseModel):
+    name: str
+
+
 class SavedPostgresConnection(SavedConnectionBase, PostgresConnectionConfig):
     db_type: Literal["postgres"] = "postgres"
 
@@ -69,6 +73,20 @@ class SavedOracleConnection(SavedConnectionBase, OracleConnectionConfig):
 
 DatabaseConnectionDefinition = Annotated[
     SavedPostgresConnection | SavedOracleConnection,
+    Field(discriminator="db_type"),
+]
+
+
+class SavedPostgresConnectionInput(SavedConnectionInputBase, PostgresConnectionConfig):
+    db_type: Literal["postgres"] = "postgres"
+
+
+class SavedOracleConnectionInput(SavedConnectionInputBase, OracleConnectionConfig):
+    db_type: Literal["oracle"] = "oracle"
+
+
+DatabaseConnectionInputDefinition = Annotated[
+    SavedPostgresConnectionInput | SavedOracleConnectionInput,
     Field(discriminator="db_type"),
 ]
 

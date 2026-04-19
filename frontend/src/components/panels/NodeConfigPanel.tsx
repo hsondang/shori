@@ -12,7 +12,13 @@ import {
   type SetStateAction,
 } from 'react'
 import { usePipelineStore } from '../../store/pipelineStore'
-import { getConnectionSummary } from '../../lib/databaseConnections'
+import { useSettingsStore } from '../../store/settingsStore'
+import {
+  findSavedConnectionById,
+  getConnectionSummary,
+  getDatabaseSourceConnectionScope,
+  getDatabaseSourceConnectionSourceId,
+} from '../../lib/databaseConnections'
 import { getCsvPreprocessFingerprint } from '../../lib/csvPreprocessing'
 import { getResultElapsedLabel } from '../../lib/executionTiming'
 import SqlEditor from './SqlEditor'
@@ -109,6 +115,7 @@ export default function NodeConfigPanel() {
   const executeSingleNode = usePipelineStore((s) => s.executeSingleNode)
   const abortDatabaseNodeExecution = usePipelineStore((s) => s.abortDatabaseNodeExecution)
   const runTransformPreview = usePipelineStore((s) => s.runTransformPreview)
+  const globalDatabaseConnections = useSettingsStore((s) => s.globalDatabaseConnections)
   const loadCsvPreview = usePipelineStore((s) => s.loadCsvPreview)
   const loadPreprocessedCsvPreview = usePipelineStore((s) => s.loadPreprocessedCsvPreview)
   const csvPreprocessArtifacts = usePipelineStore((s) => s.csvPreprocessArtifacts)
@@ -294,7 +301,16 @@ export default function NodeConfigPanel() {
   }
 
   const dbType = ((config.db_type as string | undefined) ?? 'postgres') as DbType
-  const dbConnection = config.connection as DatabaseConnectionConfig | undefined
+  const dbConnectionScope = getDatabaseSourceConnectionScope(config)
+  const dbGlobalConnection = findSavedConnectionById(
+    globalDatabaseConnections,
+    getDatabaseSourceConnectionSourceId(config),
+  )
+  const dbConnection = (
+    dbConnectionScope === 'global'
+      ? dbGlobalConnection
+      : config.connection
+  ) as DatabaseConnectionConfig | undefined
   const dbQuery = (config.query as string | undefined) ?? ''
   const transformQuery = (config.sql as string | undefined) ?? ''
   const isDbNodeBusy = nodeResult?.status === 'connecting' || nodeResult?.status === 'running'
@@ -506,6 +522,14 @@ export default function NodeConfigPanel() {
               </div>
             </div>
           )}
+          {dbConnectionScope === 'global' && (
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Source</div>
+              <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
+                {dbGlobalConnection ? `Global · ${dbGlobalConnection.name}` : 'Missing global source'}
+              </div>
+            </div>
+          )}
         </>
       ),
       onExecute: () => { void executeSingleNode(node.id, { loadPreviewOnSuccess: true }) },
@@ -579,6 +603,14 @@ export default function NodeConfigPanel() {
               <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Connection</div>
               <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
                 {getConnectionSummary(dbType, dbConnection)}
+              </div>
+            </div>
+          )}
+          {node.type === 'db_source' && dbConnectionScope === 'global' && (
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Source</div>
+              <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
+                {dbGlobalConnection ? `Global · ${dbGlobalConnection.name}` : 'Missing global source'}
               </div>
             </div>
           )}

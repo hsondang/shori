@@ -30,7 +30,11 @@ import type {
 } from '../types/pipeline'
 import * as api from '../api/client'
 import { getCsvPreprocessFingerprint } from '../lib/csvPreprocessing'
-import { defaultDatabaseSourceConfig, defaultOracleFetchConfig } from '../lib/databaseConnections'
+import {
+  defaultDatabaseSourceConfig,
+  defaultOracleFetchConfig,
+  makeGlobalDatabaseSourceConfig,
+} from '../lib/databaseConnections'
 import {
   createBlankPipelineDefinition,
   snapshotPipelineDefinition,
@@ -147,7 +151,7 @@ function defaultConfig(type: NodeType): Record<string, unknown> {
         script: '',
       },
     }
-    case 'db_source': return defaultDatabaseSourceConfig('postgres')
+    case 'db_source': return defaultDatabaseSourceConfig('postgres') as unknown as Record<string, unknown>
     case 'transform': return { sql: '' }
     case 'export': return { format: 'csv' }
   }
@@ -379,6 +383,7 @@ export function buildDatabaseSourceDraftFromConnection(
 ): NodeEditorDraft {
   const config: DatabaseSourceConfig = connection.db_type === 'oracle'
     ? {
+        connection_mode: 'local',
         db_type: 'oracle',
         connection: {
           host: connection.host,
@@ -391,6 +396,7 @@ export function buildDatabaseSourceDraftFromConnection(
         fetch_config: defaultOracleFetchConfig(),
       }
     : {
+        connection_mode: 'local',
         db_type: 'postgres',
         connection: {
           host: connection.host,
@@ -406,7 +412,19 @@ export function buildDatabaseSourceDraftFromConnection(
     label: connection.name,
     autoLabel: connection.name,
     labelMode: 'auto',
-    config,
+    config: config as unknown as Record<string, unknown>,
+  })
+}
+
+export function buildDatabaseSourceDraftFromGlobalConnection(
+  connection: SavedDatabaseConnection,
+  position: { x: number; y: number },
+): NodeEditorDraft {
+  return buildNodeDraft('db_source', position, {
+    label: connection.name,
+    autoLabel: connection.name,
+    labelMode: 'auto',
+    config: makeGlobalDatabaseSourceConfig(connection) as unknown as Record<string, unknown>,
   })
 }
 

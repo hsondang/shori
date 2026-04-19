@@ -8,16 +8,22 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import {
+  buildDatabaseSourceDraftFromGlobalConnection,
   buildDatabaseSourceDraftFromConnection,
   buildNodeDraft,
   usePipelineStore,
 } from '../../store/pipelineStore'
+import { useSettingsStore } from '../../store/settingsStore'
 import CsvSourceNode from './nodes/CsvSourceNode'
 import DatabaseSourceNode from './nodes/DatabaseSourceNode'
 import TransformNode from './nodes/TransformNode'
 import ExportNode from './nodes/ExportNode'
 import type { NodeType, SavedDatabaseConnection } from '../../types/pipeline'
-import { DATABASE_CONNECTION_MIME, NODE_TYPE_MIME } from '../../lib/dragData'
+import {
+  DATABASE_CONNECTION_MIME,
+  DATABASE_CONNECTION_SCOPE_MIME,
+  NODE_TYPE_MIME,
+} from '../../lib/dragData'
 
 const nodeTypes = {
   csv_source: CsvSourceNode,
@@ -33,6 +39,7 @@ export default function FlowCanvas() {
   const onEdgesChange = usePipelineStore((s) => s.onEdgesChange)
   const onConnect = usePipelineStore((s) => s.onConnect)
   const databaseConnections = usePipelineStore((s) => s.databaseConnections)
+  const globalDatabaseConnections = useSettingsStore((s) => s.globalDatabaseConnections)
   const openCreateNodeEditor = usePipelineStore((s) => s.openCreateNodeEditor)
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
   const rfInstance = useRef<ReactFlowInstance | null>(null)
@@ -53,9 +60,15 @@ export default function FlowCanvas() {
       })
       const connectionId = e.dataTransfer.getData(DATABASE_CONNECTION_MIME)
       if (connectionId) {
-        const savedConnection = databaseConnections.find((item) => item.id === connectionId) as SavedDatabaseConnection | undefined
+        const connectionScope = e.dataTransfer.getData(DATABASE_CONNECTION_SCOPE_MIME)
+        const connectionPool = connectionScope === 'global' ? globalDatabaseConnections : databaseConnections
+        const savedConnection = connectionPool.find((item) => item.id === connectionId) as SavedDatabaseConnection | undefined
         if (!savedConnection) return
-        openCreateNodeEditor(buildDatabaseSourceDraftFromConnection(savedConnection, position))
+        openCreateNodeEditor(
+          connectionScope === 'global'
+            ? buildDatabaseSourceDraftFromGlobalConnection(savedConnection, position)
+            : buildDatabaseSourceDraftFromConnection(savedConnection, position)
+        )
         return
       }
 
@@ -63,7 +76,7 @@ export default function FlowCanvas() {
       if (!type) return
       openCreateNodeEditor(buildNodeDraft(type, position))
     },
-    [databaseConnections, openCreateNodeEditor]
+    [databaseConnections, globalDatabaseConnections, openCreateNodeEditor]
   )
 
   const onPaneClick = useCallback(() => {

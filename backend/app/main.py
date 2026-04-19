@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.services.csv_service import CsvPreprocessArtifactStore
 from app.services.duckdb_manager import DuckDBManager
 from app.services.execution_registry import ExecutionRegistry
-from app.routers import pipelines, execution, data, upload
+from app.routers import pipelines, execution, data, settings, upload
 
 
 @asynccontextmanager
@@ -31,6 +31,7 @@ app.add_middleware(
 )
 
 app.include_router(pipelines.router, prefix="/api/pipelines", tags=["pipelines"])
+app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(execution.router, prefix="/api/execute", tags=["execution"])
 app.include_router(data.router, prefix="/api/data", tags=["data"])
 app.include_router(upload.router, prefix="/api", tags=["upload"])

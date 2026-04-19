@@ -2,7 +2,11 @@ import asyncio
 
 from fastapi import APIRouter, HTTPException, Request
 
-from app.models.pipeline import NodeDefinition, PipelineDefinition
+from app.models.pipeline import (
+    DatabaseConnectionDefinition,
+    NodeDefinition,
+    PipelineDefinition,
+)
 from app.services.execution_registry import ExecutionCancelled
 from app.services.pipeline_engine import PipelineEngine
 from app.storage.pipeline_store import PipelineStore
@@ -25,8 +29,58 @@ def _get_registry(request: Request):
     return request.app.state.execution_registry
 
 
+def _saved_connection_to_config(connection: DatabaseConnectionDefinition) -> dict:
+    if connection.db_type == "oracle":
+        return {
+            "host": connection.host,
+            "port": connection.port,
+            "service_name": connection.service_name,
+            "user": connection.user,
+            "password": connection.password,
+        }
+
+    return {
+        "host": connection.host,
+        "port": connection.port,
+        "database": connection.database,
+        "user": connection.user,
+        "password": connection.password,
+    }
+
+
+def _resolve_node_connections(node: NodeDefinition, store: PipelineStore) -> NodeDefinition:
+    config = dict(node.config)
+    if node.type != "db_source" or config.get("connection_mode") != "global":
+        return node
+
+    connection_source_id = config.get("connection_source_id")
+    if not isinstance(connection_source_id, str) or not connection_source_id:
+        raise HTTPException(status_code=400, detail="Global database source is missing connection_source_id")
+
+    try:
+        connection = store.load_global_connection(connection_source_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Global database connection not found")
+
+    return node.model_copy(update={
+        "config": {
+            **config,
+            "db_type": connection.db_type,
+            "connection": _saved_connection_to_config(connection),
+        }
+    })
+
+
+def _resolve_pipeline_connections(pipeline: PipelineDefinition, store: PipelineStore) -> PipelineDefinition:
+    return pipeline.model_copy(update={
+        "nodes": [_resolve_node_connections(node, store) for node in pipeline.nodes],
+    })
+
+
 @router.post("/pipeline/start")
 async def start_pipeline_execution(pipeline: PipelineDefinition, request: Request, force: bool = False):
+    store = get_store()
+    pipeline = _resolve_pipeline_connections(pipeline, store)
     engine = _get_engine(request)
     registry = _get_registry(request)
     run = registry.create_run("pipeline", [node.id for node in pipeline.nodes])
@@ -76,6 +130,7 @@ async def start_pipeline_execution(pipeline: PipelineDefinition, request: Reques
 
 @router.post("/node/start")
 async def start_node_execution(node: NodeDefinition, request: Request):
+    node = _resolve_node_connections(node, get_store())
     engine = _get_engine(request)
     registry = _get_registry(request)
     run = registry.create_run("node", [node.id])
@@ -125,10 +180,12 @@ async def start_node_execution(node: NodeDefinition, request: Request):
 @router.post("/pipeline/{pipeline_id}")
 async def execute_pipeline(pipeline_id: str, request: Request, force: bool = False):
     try:
-        pipeline = get_store().load(pipeline_id)
+        store = get_store()
+        pipeline = store.load(pipeline_id)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Pipeline not found")
 
+    pipeline = _resolve_pipeline_connections(pipeline, store)
     engine = _get_engine(request)
     results = await engine.execute_pipeline(pipeline, force_refresh=force)
     return results
@@ -136,6 +193,7 @@ async def execute_pipeline(pipeline_id: str, request: Request, force: bool = Fal
 
 @router.post("/pipeline")
 async def execute_pipeline_inline(pipeline: PipelineDefinition, request: Request, force: bool = False):
+    pipeline = _resolve_pipeline_connections(pipeline, get_store())
     engine = _get_engine(request)
     results = await engine.execute_pipeline(pipeline, force_refresh=force)
     return results
@@ -143,6 +201,7 @@ async def execute_pipeline_inline(pipeline: PipelineDefinition, request: Request
 
 @router.post("/node")
 async def execute_node(node: NodeDefinition, request: Request):
+    node = _resolve_node_connections(node, get_store())
     engine = _get_engine(request)
     result = await engine.execute_single_node(node)
     return result
