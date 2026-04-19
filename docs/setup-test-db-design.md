@@ -6,19 +6,42 @@ This document explains the design and usage of [`scripts/setup_test_db.py`](../s
 
 `setup_test_db.py` bootstraps the PostgreSQL test environment used by the backend integration tests. It is a manual helper script: it prepares the database and sample data, but it is not invoked automatically by `pytest`.
 
-## What It Does
+## Scope
 
 - Starts the Docker container defined in [`docker-compose.test.yml`](../docker-compose.test.yml) if the test database container is not already running.
 - Waits until PostgreSQL on `localhost:5433` accepts connections.
 - Creates the test schema if it does not already exist.
 - Seeds sample data if it is missing.
 - Supports a `--reset` mode that drops the seeded tables, recreates the schema, and reloads the sample data.
-
-## What It Does Not Do
-
 - It does not run the test suite.
 - It does not stop or remove the Docker container automatically.
 - It does not modify production databases or the application's normal runtime data.
+
+## Usage
+
+Start or prepare the test database:
+
+```bash
+cd backend
+source .venv/bin/activate
+cd ..
+python scripts/setup_test_db.py
+```
+
+Reset and re-seed the test database:
+
+```bash
+cd backend
+source .venv/bin/activate
+cd ..
+python scripts/setup_test_db.py --reset
+```
+
+Stop the test database container:
+
+```bash
+docker compose -f docker-compose.test.yml down
+```
 
 ## Dependencies And Inputs
 
@@ -70,32 +93,6 @@ Because `pytest` only marks these tests as integration tests, you must run the s
 ```bash
 cd backend
 python -m pytest tests/ -v -m integration
-```
-
-## Usage
-
-Start or prepare the test database:
-
-```bash
-cd backend
-source .venv/bin/activate
-cd ..
-python scripts/setup_test_db.py
-```
-
-Reset and re-seed the test database:
-
-```bash
-cd backend
-source .venv/bin/activate
-cd ..
-python scripts/setup_test_db.py --reset
-```
-
-Stop the test database container:
-
-```bash
-docker compose -f docker-compose.test.yml down
 ```
 
 ## Failure Modes
