@@ -15,6 +15,7 @@ import {
 } from '../../store/pipelineStore'
 import { useSettingsStore } from '../../store/settingsStore'
 import CsvSourceNode from './nodes/CsvSourceNode'
+import ExcelSourceNode from './nodes/ExcelSourceNode'
 import DatabaseSourceNode from './nodes/DatabaseSourceNode'
 import TransformNode from './nodes/TransformNode'
 import ExportNode from './nodes/ExportNode'
@@ -27,6 +28,7 @@ import {
 
 const nodeTypes = {
   csv_source: CsvSourceNode,
+  excel_source: ExcelSourceNode,
   db_source: DatabaseSourceNode,
   transform: TransformNode,
   export: ExportNode,

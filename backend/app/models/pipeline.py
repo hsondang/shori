@@ -6,6 +6,7 @@ from enum import Enum
 
 class NodeType(str, Enum):
     CSV_SOURCE = "csv_source"
+    EXCEL_SOURCE = "excel_source"
     DB_SOURCE = "db_source"
     TRANSFORM = "transform"
     EXPORT = "export"

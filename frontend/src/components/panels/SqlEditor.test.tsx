@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import SqlEditor from './SqlEditor'
 
 const mockEditor = vi.fn(
@@ -27,6 +27,10 @@ vi.mock('@monaco-editor/react', () => ({
 }))
 
 describe('SqlEditor', () => {
+  beforeEach(() => {
+    mockEditor.mockClear()
+  })
+
   it('disables Monaco suggestions that can interfere with typing spaces', () => {
     render(<SqlEditor value="SELECT 1" onChange={() => {}} upstreamTables={[]} />)
 

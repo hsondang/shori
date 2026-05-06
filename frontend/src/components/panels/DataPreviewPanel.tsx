@@ -14,6 +14,7 @@ const csvCellColors = [
 
 const defaultLabels = {
   csv_source: 'CSV Source',
+  excel_source: 'Excel Source',
   db_source: 'Database Source',
   transform: 'Transform',
   export: 'Export',

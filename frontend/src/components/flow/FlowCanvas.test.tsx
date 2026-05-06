@@ -95,10 +95,14 @@ vi.mock('@xyflow/react', async () => {
 })
 
 const mockUploadCsv = vi.fn()
+const mockUploadExcel = vi.fn()
+const mockMaterializeExcelSheet = vi.fn()
 const mockTestDbConnection = vi.fn()
 
 vi.mock('../../api/client', () => ({
   uploadCsv: (...args: any[]) => mockUploadCsv(...args),
+  uploadExcel: (...args: any[]) => mockUploadExcel(...args),
+  materializeExcelSheet: (...args: any[]) => mockMaterializeExcelSheet(...args),
   executePipeline: vi.fn(),
   executeNode: vi.fn(),
   previewData: vi.fn(),

@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ChangeEvent } from 'react'
-import { uploadCsv } from '../../api/client'
+import { materializeExcelSheet, uploadCsv, uploadExcel } from '../../api/client'
 import {
   defaultConnectionConfig,
   defaultOracleFetchConfig,
@@ -16,6 +16,8 @@ import type {
   CsvSourceConfig,
   DatabaseSourceConfig,
   DbType,
+  ExcelSheetPreview,
+  ExcelSourceConfig,
   ExportConfig,
   OracleConnectionConfig,
   OracleFetchConfig,
@@ -28,6 +30,8 @@ function getNodeTypeTitle(type: string): string {
   switch (type) {
     case 'csv_source':
       return 'CSV Source'
+    case 'excel_source':
+      return 'Excel Source'
     case 'db_source':
       return 'Database Source'
     case 'transform':
@@ -97,6 +101,41 @@ function getOracleFetchConfigError(fetchConfig: OracleFetchConfig): string | nul
   return null
 }
 
+function ExcelSheetPreviewGrid({ sheet }: { sheet: ExcelSheetPreview | null }) {
+  if (!sheet) {
+    return (
+      <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3 text-sm text-gray-400">
+        Select a sheet to preview its first cells.
+      </div>
+    )
+  }
+
+  return (
+    <div className="overflow-auto rounded-lg border border-gray-200 bg-white">
+      <table className="min-w-full border-collapse text-xs">
+        <tbody>
+          {sheet.rows.length === 0 ? (
+            <tr>
+              <td className="px-3 py-3 text-gray-400">This sheet is empty.</td>
+            </tr>
+          ) : sheet.rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              <th className="sticky left-0 border-b border-r border-gray-100 bg-gray-50 px-2 py-1 text-right font-normal text-gray-400">
+                {rowIndex + 1}
+              </th>
+              {row.map((cell, cellIndex) => (
+                <td key={`${rowIndex}-${cellIndex}`} className="max-w-36 truncate border-b border-r border-gray-100 px-2 py-1 text-gray-700">
+                  {cell || <span className="text-gray-300">""</span>}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export default function NodeEditorModal() {
   const nodeEditorMode = usePipelineStore((s) => s.nodeEditorMode)
   const draft = usePipelineStore((s) => s.nodeEditorDraft)
@@ -127,14 +166,16 @@ export default function NodeEditorModal() {
   const isCreateMode = nodeEditorMode === 'create'
   const title = getNodeTypeTitle(draft.type)
   const csvConfig = draft.type === 'csv_source' ? (draft.config as unknown as CsvSourceConfig) : null
+  const excelConfig = draft.type === 'excel_source' ? (draft.config as unknown as ExcelSourceConfig) : null
   const dbConfig = draft.type === 'db_source' ? getDatabaseSourceConfig(draft.config as Record<string, unknown>) : null
   const transformConfig = draft.type === 'transform' ? (draft.config as Record<string, unknown>) : null
   const exportConfig = draft.type === 'export' ? (draft.config as unknown as ExportConfig) : null
-  const csvPreprocessing: CsvPreprocessingConfig = csvConfig?.preprocessing ?? {
+  const csvPreprocessing: CsvPreprocessingConfig = (csvConfig?.preprocessing ?? excelConfig?.preprocessing) ?? {
     enabled: false,
     runtime: 'python',
     script: '',
   }
+  const selectedExcelSheetPreview = excelConfig?.sheets?.find((sheet) => sheet.name === excelConfig.selected_sheet) ?? null
   const dbType = dbConfig?.db_type ?? 'postgres'
   const dbConnectionScope = dbConfig
     ? getDatabaseSourceConnectionScope(dbConfig as unknown as Record<string, unknown>)
@@ -179,6 +220,54 @@ export default function NodeEditorModal() {
       file_path: result.file_path,
       original_filename: result.filename,
       preprocessing: csvConfig.preprocessing ?? csvPreprocessing,
+    })
+  }
+
+  const handleExcelUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file || !excelConfig) return
+
+    const result = await uploadExcel(file)
+    updateConfig({
+      ...excelConfig,
+      file_path: result.file_path,
+      original_filename: result.filename,
+      sheet_names: result.sheet_names,
+      sheets: result.sheets,
+      selected_sheet: '',
+      materialized_csv_path: '',
+      materialized_csv_filename: '',
+      preprocessing: excelConfig.preprocessing ?? csvPreprocessing,
+    })
+  }
+
+  const handleExcelSheetSelect = async (sheetName: string) => {
+    if (!excelConfig?.file_path) return
+    if (!sheetName) {
+      updateConfig({
+        ...excelConfig,
+        selected_sheet: '',
+        materialized_csv_path: '',
+        materialized_csv_filename: '',
+        preprocessing: excelConfig.preprocessing ?? csvPreprocessing,
+      })
+      return
+    }
+
+    updateConfig({
+      ...excelConfig,
+      selected_sheet: sheetName,
+      materialized_csv_path: '',
+      materialized_csv_filename: '',
+      preprocessing: excelConfig.preprocessing ?? csvPreprocessing,
+    })
+    const result = await materializeExcelSheet(excelConfig.file_path, sheetName)
+    updateConfig({
+      ...excelConfig,
+      selected_sheet: sheetName,
+      materialized_csv_path: result.file_path,
+      materialized_csv_filename: result.filename,
+      preprocessing: excelConfig.preprocessing ?? csvPreprocessing,
     })
   }
 
@@ -315,6 +404,122 @@ export default function NodeEditorModal() {
                         value={csvPreprocessing.script}
                         onChange={(event) => updateConfig({
                           ...csvConfig,
+                          preprocessing: {
+                            ...csvPreprocessing,
+                            script: event.target.value,
+                          },
+                        })}
+                        rows={8}
+                        spellCheck={false}
+                        className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm font-mono"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {draft.type === 'excel_source' && excelConfig && (
+            <div className="space-y-4">
+              <div>
+                <label className="mb-2 block text-xs text-gray-500">Excel Workbook</label>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".xls,.xlsx,.xlsm,.xlsb,.ods"
+                  onChange={handleExcelUpload}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full rounded-lg border-2 border-dashed border-gray-300 p-4 text-sm text-gray-500 transition hover:border-emerald-400 hover:text-emerald-600"
+                >
+                  {excelConfig.original_filename || 'Click to upload Excel workbook'}
+                </button>
+              </div>
+
+              {excelConfig.sheet_names.length > 0 && (
+                <div>
+                  <label htmlFor="node-editor-excel-sheet" className="mb-1 block text-xs text-gray-500">
+                    Sheet
+                  </label>
+                  <select
+                    id="node-editor-excel-sheet"
+                    value={excelConfig.selected_sheet}
+                    onChange={(event) => { void handleExcelSheetSelect(event.target.value) }}
+                    className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
+                  >
+                    <option value="">Select a sheet</option>
+                    {excelConfig.sheet_names.map((sheetName) => (
+                      <option key={sheetName} value={sheetName}>{sheetName}</option>
+                    ))}
+                  </select>
+                  <div className="mt-3">
+                    <ExcelSheetPreviewGrid sheet={selectedExcelSheetPreview} />
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <label className="block text-xs text-gray-500">Preprocessing</label>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={csvPreprocessing.enabled}
+                    aria-label="Enable preprocessing"
+                    onClick={() => updateConfig({
+                      ...excelConfig,
+                      preprocessing: {
+                        ...csvPreprocessing,
+                        enabled: !csvPreprocessing.enabled,
+                      },
+                    })}
+                    className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full px-0.5 transition ${
+                      csvPreprocessing.enabled ? 'bg-emerald-500' : 'bg-gray-300'
+                    }`}
+                  >
+                    <span
+                      className={`h-5 w-5 rounded-full bg-white shadow-sm transition ${
+                        csvPreprocessing.enabled ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {csvPreprocessing.enabled && (
+                  <div className="space-y-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <div>
+                      <label htmlFor="node-editor-excel-runtime" className="mb-1 block text-xs text-gray-500">
+                        Runtime
+                      </label>
+                      <select
+                        id="node-editor-excel-runtime"
+                        value={csvPreprocessing.runtime}
+                        onChange={(event) => updateConfig({
+                          ...excelConfig,
+                          preprocessing: {
+                            ...csvPreprocessing,
+                            runtime: event.target.value as CsvPreprocessingConfig['runtime'],
+                          },
+                        })}
+                        className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
+                      >
+                        <option value="python">Python</option>
+                        <option value="bash">Bash</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="node-editor-excel-script" className="mb-1 block text-xs text-gray-500">
+                        Script
+                      </label>
+                      <textarea
+                        id="node-editor-excel-script"
+                        value={csvPreprocessing.script}
+                        onChange={(event) => updateConfig({
+                          ...excelConfig,
                           preprocessing: {
                             ...csvPreprocessing,
                             script: event.target.value,

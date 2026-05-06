@@ -152,12 +152,31 @@ class PipelineEngine:
             if execution_controller is not None:
                 execution_controller.raise_if_cancelled()
             if node.type == NodeType.CSV_SOURCE:
-                stats = await asyncio.to_thread(
-                    register_csv_source,
+                stats = register_csv_source(
                     self.duckdb,
                     node.id,
                     node.table_name,
                     node.config,
+                    self.csv_artifact_store,
+                )
+            elif node.type == NodeType.EXCEL_SOURCE:
+                materialized_csv_path = str(node.config.get("materialized_csv_path", "")).strip()
+                selected_sheet = str(node.config.get("selected_sheet", "")).strip()
+                if not selected_sheet:
+                    raise ValueError("Excel source is missing a selected_sheet")
+                if not materialized_csv_path:
+                    raise ValueError("Excel source is missing a materialized_csv_path")
+                csv_config = {
+                    **node.config,
+                    "file_path": materialized_csv_path,
+                    "original_filename": node.config.get("materialized_csv_filename")
+                    or f"{selected_sheet}.csv",
+                }
+                stats = register_csv_source(
+                    self.duckdb,
+                    node.id,
+                    node.table_name,
+                    csv_config,
                     self.csv_artifact_store,
                 )
             elif node.type == NodeType.DB_SOURCE:
@@ -183,10 +202,15 @@ class PipelineEngine:
                             node.config.get("fetch_config"),
                         )
                     else:
-                        fetch_config = node.config.get("fetch_config") if db_type == "oracle" else None
-                        df = await svc.fetch_query(connection, node.config["query"], fetch_config)
-                        stats = await asyncio.to_thread(
-                            self.duckdb.register_dataframe,
+                        if db_type == "oracle":
+                            df = await svc.fetch_query(
+                                connection,
+                                node.config["query"],
+                                node.config.get("fetch_config"),
+                            )
+                        else:
+                            df = await svc.fetch_query(connection, node.config["query"])
+                        stats = self.duckdb.register_dataframe(
                             node.table_name,
                             df,
                         )
@@ -198,8 +222,7 @@ class PipelineEngine:
                     if asyncio.iscoroutine(maybe_awaitable):
                         await maybe_awaitable
             elif node.type == NodeType.TRANSFORM:
-                stats = await asyncio.to_thread(
-                    self.duckdb.execute_transform,
+                stats = self.duckdb.execute_transform(
                     node.table_name, node.config["sql"]
                 )
             elif node.type == NodeType.EXPORT:

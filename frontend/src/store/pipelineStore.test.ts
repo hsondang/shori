@@ -97,6 +97,25 @@ describe('pipelineStore', () => {
       expect(config).toHaveProperty('preprocessing')
     })
 
+    it('adds an excel_source node with workbook and materialized csv defaults', () => {
+      act(() => usePipelineStore.getState().addNode('excel_source', { x: 0, y: 0 }))
+      const { nodes } = usePipelineStore.getState()
+      expect(nodes).toHaveLength(1)
+      expect(nodes[0].type).toBe('excel_source')
+      const data = nodes[0].data as Record<string, unknown>
+      const config = data.config as Record<string, unknown>
+      expect(data.label).toBe('Excel Source')
+      expect(config).toMatchObject({
+        file_path: '',
+        original_filename: '',
+        sheet_names: [],
+        selected_sheet: '',
+        materialized_csv_path: '',
+        materialized_csv_filename: '',
+      })
+      expect(config).toHaveProperty('preprocessing')
+    })
+
     it('adds a db_source node with connection and query defaults', () => {
       act(() => usePipelineStore.getState().addNode('db_source', { x: 0, y: 0 }))
       const { nodes } = usePipelineStore.getState()

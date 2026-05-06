@@ -1,4 +1,4 @@
-export type NodeType = 'csv_source' | 'db_source' | 'transform' | 'export'
+export type NodeType = 'csv_source' | 'excel_source' | 'db_source' | 'transform' | 'export'
 export type DbType = 'oracle' | 'postgres'
 export type ConnectionScope = 'local' | 'global'
 export type NodeStatus = 'idle' | 'connecting' | 'running' | 'success' | 'error' | 'cancelled'
@@ -34,6 +34,24 @@ export type DatabaseConnectionConfig = PostgresConnectionConfig | OracleConnecti
 export interface CsvSourceConfig {
   file_path: string
   original_filename: string
+  preprocessing?: CsvPreprocessingConfig
+}
+
+export interface ExcelSheetPreview {
+  name: string
+  rows: string[][]
+  truncated_rows: boolean
+  truncated_columns: boolean
+}
+
+export interface ExcelSourceConfig {
+  file_path: string
+  original_filename: string
+  sheet_names: string[]
+  sheets?: ExcelSheetPreview[]
+  selected_sheet: string
+  materialized_csv_path: string
+  materialized_csv_filename: string
   preprocessing?: CsvPreprocessingConfig
 }
 

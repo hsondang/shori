@@ -5,3 +5,4 @@ oracledb>=3
 asyncpg>=0.30
 pandas>=2
 python-multipart>=0.0.18
+python-calamine>=0.6.2

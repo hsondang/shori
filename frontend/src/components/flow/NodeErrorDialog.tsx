@@ -4,6 +4,7 @@ import type { NodeType } from '../../types/pipeline'
 
 const nodeTypeLabels: Record<NodeType, string> = {
   csv_source: 'CSV Source',
+  excel_source: 'Excel Source',
   db_source: 'Database Source',
   transform: 'Transform',
   export: 'Export',

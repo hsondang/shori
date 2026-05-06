@@ -3,6 +3,7 @@ import type {
   CsvPreprocessingConfig,
   DataPreview,
   DatabaseConnectionConfig,
+  ExcelSheetPreview,
   ExecutionRunStatus,
   NodeExecutionResult,
   PipelineDefinition,
@@ -17,6 +18,29 @@ export async function uploadCsv(file: File): Promise<{ file_path: string; filena
   const form = new FormData()
   form.append('file', file)
   const { data } = await api.post('/upload/csv', form)
+  return data
+}
+
+export async function uploadExcel(file: File): Promise<{
+  file_path: string
+  filename: string
+  sheet_names: string[]
+  sheets: ExcelSheetPreview[]
+}> {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await api.post('/upload/excel', form)
+  return data
+}
+
+export async function materializeExcelSheet(
+  filePath: string,
+  sheetName: string,
+): Promise<{ file_path: string; filename: string; sheet_name: string }> {
+  const { data } = await api.post('/upload/excel/materialize-sheet', {
+    file_path: filePath,
+    sheet_name: sheetName,
+  })
   return data
 }
 

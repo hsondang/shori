@@ -7,6 +7,7 @@ import DatabaseSourcePicker from './DatabaseSourcePicker'
 
 const nodeTypeOptions: { type: NodeType; label: string; color: string }[] = [
   { type: 'csv_source', label: 'CSV Source', color: 'bg-blue-100 text-blue-700 border-blue-300' },
+  { type: 'excel_source', label: 'Excel Source', color: 'bg-emerald-100 text-emerald-700 border-emerald-300' },
   { type: 'transform', label: 'Transform', color: 'bg-purple-100 text-purple-700 border-purple-300' },
   { type: 'export', label: 'Export', color: 'bg-green-100 text-green-700 border-green-300' },
 ]

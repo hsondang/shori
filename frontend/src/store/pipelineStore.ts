@@ -15,6 +15,7 @@ import type {
   CsvSourceConfig,
   CsvTextPreviewData,
   DatabaseSourceConfig,
+  ExcelSourceConfig,
   ExecutionRunStatus,
   MaterializedPreviewTab,
   NodeEditorDraft,
@@ -134,6 +135,7 @@ function cloneValue<T>(value: T): T {
 function defaultLabel(type: NodeType): string {
   switch (type) {
     case 'csv_source': return 'CSV Source'
+    case 'excel_source': return 'Excel Source'
     case 'db_source': return 'Database Source'
     case 'transform': return 'Transform'
     case 'export': return 'Export'
@@ -145,6 +147,20 @@ function defaultConfig(type: NodeType): Record<string, unknown> {
     case 'csv_source': return {
       file_path: '',
       original_filename: '',
+      preprocessing: {
+        enabled: false,
+        runtime: 'python',
+        script: '',
+      },
+    }
+    case 'excel_source': return {
+      file_path: '',
+      original_filename: '',
+      sheet_names: [],
+      sheets: [],
+      selected_sheet: '',
+      materialized_csv_path: '',
+      materialized_csv_filename: '',
       preprocessing: {
         enabled: false,
         runtime: 'python',
@@ -372,9 +388,28 @@ function invalidateCsvPreprocessArtifact(nodeId: string | undefined) {
   void api.deletePreprocessedCsvArtifact(nodeId).catch(() => {})
 }
 
-function getCsvConfig(node: Node): CsvSourceConfig | null {
-  if (node.type !== 'csv_source') return null
-  return getNodeConfig(node) as unknown as CsvSourceConfig
+function getCsvLikeConfig(node: Node, configOverride?: Record<string, unknown>): CsvSourceConfig | null {
+  const config = (configOverride ?? getNodeConfig(node)) as Record<string, unknown>
+  if (node.type === 'csv_source') {
+    return config as unknown as CsvSourceConfig
+  }
+  if (node.type === 'excel_source') {
+    const excelConfig = config as unknown as ExcelSourceConfig
+    return {
+      file_path: excelConfig.materialized_csv_path ?? '',
+      original_filename: excelConfig.materialized_csv_filename || excelConfig.original_filename || '',
+      preprocessing: excelConfig.preprocessing,
+    }
+  }
+  return null
+}
+
+function getExcelLoadFingerprint(config: ExcelSourceConfig): string {
+  return JSON.stringify({
+    file_path: config.file_path ?? '',
+    selected_sheet: config.selected_sheet ?? '',
+    materialized_csv_path: config.materialized_csv_path ?? '',
+  })
 }
 
 export function buildDatabaseSourceDraftFromConnection(
@@ -432,12 +467,22 @@ function hasCsvLoadInputsChanged(
   node: Node,
   nextConfig?: Record<string, unknown>,
 ): boolean {
-  if (node.type !== 'csv_source' || !nextConfig) return false
-  const currentConfig = getCsvConfig(node)
-  const mergedConfig = { ...(currentConfig ?? {}), ...nextConfig } as CsvSourceConfig
+  if ((node.type !== 'csv_source' && node.type !== 'excel_source') || !nextConfig) return false
+  const currentConfig = getNodeConfig(node)
+  const mergedConfig = { ...currentConfig, ...nextConfig }
 
-  return currentConfig?.file_path !== mergedConfig.file_path
-    || getCsvPreprocessFingerprint(currentConfig) !== getCsvPreprocessFingerprint(mergedConfig)
+  if (node.type === 'excel_source') {
+    const currentExcel = currentConfig as unknown as ExcelSourceConfig
+    const mergedExcel = mergedConfig as unknown as ExcelSourceConfig
+    return getExcelLoadFingerprint(currentExcel) !== getExcelLoadFingerprint(mergedExcel)
+      || getCsvPreprocessFingerprint(getCsvLikeConfig(node, currentConfig)) !== getCsvPreprocessFingerprint(getCsvLikeConfig(node, mergedConfig))
+  }
+
+  const currentCsvConfig = currentConfig as unknown as CsvSourceConfig
+  const mergedCsvConfig = mergedConfig as unknown as CsvSourceConfig
+
+  return currentCsvConfig.file_path !== mergedCsvConfig.file_path
+    || getCsvPreprocessFingerprint(currentCsvConfig) !== getCsvPreprocessFingerprint(mergedCsvConfig)
 }
 
 function hasDbSourceInputsChanged(
@@ -1018,7 +1063,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     const node = get().nodes.find((candidate) => candidate.id === nodeId)
     if (node) {
       dropMaterializedTable(getTableName(node))
-      if (node.type === 'csv_source') {
+      if (node.type === 'csv_source' || node.type === 'excel_source') {
         invalidateCsvPreprocessArtifact(nodeId)
       }
     }
@@ -1398,7 +1443,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
 
   loadPipeline: async (id) => {
     get().nodes
-      .filter((node) => node.type === 'csv_source')
+      .filter((node) => node.type === 'csv_source' || node.type === 'excel_source')
       .forEach((node) => invalidateCsvPreprocessArtifact(node.id))
 
     clearAllExecutionTracking()
@@ -1408,7 +1453,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
 
   newPipeline: () => {
     get().nodes
-      .filter((node) => node.type === 'csv_source')
+      .filter((node) => node.type === 'csv_source' || node.type === 'excel_source')
       .forEach((node) => invalidateCsvPreprocessArtifact(node.id))
 
     clearAllExecutionTracking()

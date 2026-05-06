@@ -7,6 +7,8 @@ import NodeEditorModal from './NodeEditorModal'
 import { usePipelineStore } from '../../store/pipelineStore'
 
 const mockUploadCsv = vi.fn()
+const mockUploadExcel = vi.fn()
+const mockMaterializeExcelSheet = vi.fn()
 const mockExecuteNode = vi.fn()
 const mockPreviewData = vi.fn()
 const mockPreviewCsvSource = vi.fn()
@@ -34,6 +36,8 @@ vi.mock('@monaco-editor/react', () => ({
 
 vi.mock('../../api/client', () => ({
   uploadCsv: (...args: any[]) => mockUploadCsv(...args),
+  uploadExcel: (...args: any[]) => mockUploadExcel(...args),
+  materializeExcelSheet: (...args: any[]) => mockMaterializeExcelSheet(...args),
   executePipeline: vi.fn(),
   executeNode: (...args: any[]) => mockExecuteNode(...args),
   previewData: (...args: any[]) => mockPreviewData(...args),
@@ -76,6 +80,19 @@ describe('NodeConfigPanel', () => {
       type: 'csv_source',
       label: 'Orders CSV',
       config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv' },
+    },
+    {
+      type: 'excel_source',
+      label: 'Orders Workbook',
+      config: {
+        file_path: '/tmp/orders.xlsx',
+        original_filename: 'orders.xlsx',
+        sheet_names: ['Orders'],
+        sheets: [],
+        selected_sheet: 'Orders',
+        materialized_csv_path: '/tmp/orders_Orders.csv',
+        materialized_csv_filename: 'orders_Orders.csv',
+      },
     },
     {
       type: 'db_source',
@@ -126,6 +143,80 @@ describe('NodeConfigPanel', () => {
     const menu = screen.getByTestId('node-config-actions-menu')
     expect(within(menu).getByRole('button', { name: 'Edit' })).toBeInTheDocument()
     expect(within(menu).getByRole('button', { name: 'Delete' })).toBeInTheDocument()
+  })
+
+  it('uploads an excel workbook, shows sheet previews, and materializes the selected sheet', async () => {
+    const user = userEvent.setup()
+    mockUploadExcel.mockResolvedValue({
+      file_path: '/tmp/orders.xlsx',
+      filename: 'orders.xlsx',
+      sheet_names: ['Orders', 'Summary'],
+      sheets: [
+        {
+          name: 'Orders',
+          rows: [['id', 'name'], ['1', 'Alice']],
+          truncated_rows: false,
+          truncated_columns: false,
+        },
+        {
+          name: 'Summary',
+          rows: [['metric', 'value'], ['total', '1']],
+          truncated_rows: false,
+          truncated_columns: false,
+        },
+      ],
+    })
+    mockMaterializeExcelSheet.mockResolvedValue({
+      file_path: '/tmp/orders_Summary.csv',
+      filename: 'orders_Summary.csv',
+      sheet_name: 'Summary',
+    })
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'excel-node',
+            type: 'excel_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Excel Source',
+              autoLabel: 'Excel Source',
+              labelMode: 'auto',
+              tableName: 'excel_table',
+              config: {
+                file_path: '',
+                original_filename: '',
+                sheet_names: [],
+                sheets: [],
+                selected_sheet: '',
+                materialized_csv_path: '',
+                materialized_csv_filename: '',
+              },
+            },
+          },
+        ],
+        selectedNodeId: 'excel-node',
+      })
+    })
+
+    const { container } = renderPanel()
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement
+    await user.upload(fileInput, new File(['workbook'], 'orders.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }))
+
+    expect(await screen.findByText('orders.xlsx')).toBeInTheDocument()
+    await user.selectOptions(screen.getByLabelText('Sheet'), 'Summary')
+
+    expect(mockMaterializeExcelSheet).toHaveBeenCalledWith('/tmp/orders.xlsx', 'Summary')
+    expect(await screen.findByText('metric')).toBeInTheDocument()
+    const config = (usePipelineStore.getState().nodes[0].data as Record<string, unknown>).config as Record<string, unknown>
+    expect(config).toMatchObject({
+      selected_sheet: 'Summary',
+      materialized_csv_path: '/tmp/orders_Summary.csv',
+      materialized_csv_filename: 'orders_Summary.csv',
+    })
   })
 
   it('opens the shared modal from the actions menu and saves edits with invalidation', async () => {

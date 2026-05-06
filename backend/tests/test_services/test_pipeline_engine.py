@@ -133,6 +133,52 @@ async def test_execute_csv_source_with_reviewed_python_preprocessing(engine, off
 
 
 @pytest.mark.asyncio
+async def test_execute_excel_source(engine, sample_excel_file):
+    from app.services.excel_service import materialize_excel_sheet
+
+    materialized = materialize_excel_sheet(sample_excel_file, "Orders")
+    node = _make_node("n1", NodeType.EXCEL_SOURCE, "excel_t", {
+        "file_path": sample_excel_file,
+        "original_filename": "sample.xlsx",
+        "sheet_names": ["Orders", "Summary"],
+        "selected_sheet": "Orders",
+        "materialized_csv_path": materialized["file_path"],
+        "materialized_csv_filename": materialized["filename"],
+    })
+
+    result = await engine.execute_single_node(node)
+
+    assert result.status == NodeStatus.SUCCESS
+    assert result.row_count == 2
+    assert result.column_count == 3
+
+
+@pytest.mark.asyncio
+async def test_execute_excel_source_with_preprocessing_requires_review(engine, sample_excel_file):
+    from app.services.excel_service import materialize_excel_sheet
+
+    materialized = materialize_excel_sheet(sample_excel_file, "Orders")
+    node = _make_node("n1", NodeType.EXCEL_SOURCE, "excel_pre", {
+        "file_path": sample_excel_file,
+        "original_filename": "sample.xlsx",
+        "sheet_names": ["Orders", "Summary"],
+        "selected_sheet": "Orders",
+        "materialized_csv_path": materialized["file_path"],
+        "materialized_csv_filename": materialized["filename"],
+        "preprocessing": {
+            "enabled": True,
+            "runtime": "python",
+            "script": "import sys; from pathlib import Path; lines = Path(sys.argv[1]).read_text().splitlines()[1:]; sys.stdout.write('\\n'.join(lines))",
+        },
+    })
+
+    result = await engine.execute_single_node(node)
+
+    assert result.status == NodeStatus.ERROR
+    assert "Click Preprocess" in (result.error or "")
+
+
+@pytest.mark.asyncio
 async def test_execute_csv_source_with_reviewed_bash_preprocessing(engine, office365_csv_file):
     node = _make_node("n1", NodeType.CSV_SOURCE, "csv_pre_sh", {
         "file_path": office365_csv_file,
