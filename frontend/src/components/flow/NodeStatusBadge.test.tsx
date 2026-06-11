@@ -81,6 +81,11 @@ describe('NodeStatusBadge', () => {
     expect(screen.getByText(/123ms/)).toBeInTheDocument()
   })
 
+  it('shows human-readable execution time for long durations', () => {
+    badge({ status: 'success', execution_time_ms: 65500, row_count: 1, column_count: 1 })
+    expect(screen.getByText(/1m 5s 500ms/)).toBeInTheDocument()
+  })
+
   it('does not show row count when null', () => {
     const { container } = badge({ status: 'idle' })
     expect(container.textContent).not.toMatch(/rows/)

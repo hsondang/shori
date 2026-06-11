@@ -1,6 +1,6 @@
 import type { NodeExecutionResult } from '../../types/pipeline'
 import { usePipelineStore } from '../../store/pipelineStore'
-import { getResultElapsedLabel } from '../../lib/executionTiming'
+import { getResultElapsedLabel, formatExecutionTime } from '../../lib/executionTiming'
 
 const statusColors = {
   idle: 'bg-gray-100 text-gray-600',
@@ -35,7 +35,7 @@ export default function NodeStatusBadge({
           <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current align-middle" />
         )}
         {statusLabel}
-        {result.execution_time_ms != null && ` (${Math.round(result.execution_time_ms)}ms)`}
+        {result.execution_time_ms != null && ` (${formatExecutionTime(result.execution_time_ms)})`}
       </span>
       {result.row_count != null && (
         <div className="text-gray-500">
