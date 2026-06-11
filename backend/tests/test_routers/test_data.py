@@ -1,5 +1,7 @@
 import pytest
 
+from app.main import app
+
 
 @pytest.fixture
 async def populated_client(client, pipeline_def):
@@ -132,6 +134,19 @@ async def test_preview_offset_beyond_total(populated_client):
     data = resp.json()
     assert data["rows"] == []
     assert data["total_rows"] == 5
+
+
+@pytest.mark.asyncio
+async def test_preview_returns_json_safe_non_finite_float_values(client):
+    app.state.duckdb.execute_transform(
+        "non_finite_values",
+        "SELECT 'NaN'::DOUBLE AS score, 'Infinity'::DOUBLE AS high",
+    )
+
+    resp = await client.get("/api/data/preview/non_finite_values")
+
+    assert resp.status_code == 200
+    assert resp.json()["rows"] == [["NaN", "Infinity"]]
 
 
 @pytest.mark.asyncio

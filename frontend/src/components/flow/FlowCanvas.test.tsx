@@ -170,6 +170,57 @@ describe('FlowCanvas', () => {
     expect(usePipelineStore.getState().nodes).toHaveLength(0)
   })
 
+  it('uploads an excel workbook in the create modal and materializes the first sheet', async () => {
+    const user = userEvent.setup()
+    mockUploadExcel.mockResolvedValue({
+      file_path: '/tmp/orders.xlsx',
+      filename: 'orders.xlsx',
+      sheet_names: ['Orders'],
+      sheets: [
+        {
+          name: 'Orders',
+          rows: [['id', 'name'], ['1', 'Alice']],
+          truncated_rows: false,
+          truncated_columns: false,
+        },
+      ],
+    })
+    mockMaterializeExcelSheet.mockResolvedValue({
+      file_path: '/tmp/orders_Orders.csv',
+      filename: 'orders_Orders.csv',
+      sheet_name: 'Orders',
+    })
+
+    renderCanvas()
+
+    fireEvent.drop(screen.getByTestId('flow-canvas'), {
+      clientX: 120,
+      clientY: 180,
+      dataTransfer: makeDataTransfer({ [NODE_TYPE_MIME]: 'excel_source' }),
+    })
+
+    const modal = screen.getByTestId('node-editor-modal')
+    const fileInput = modal.querySelector('input[type="file"]') as HTMLInputElement
+    await user.upload(fileInput, new File(['workbook'], 'orders.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    }))
+
+    expect(await within(modal).findByText('orders.xlsx')).toBeInTheDocument()
+    expect(mockMaterializeExcelSheet).toHaveBeenCalledWith('/tmp/orders.xlsx', 'Orders')
+    expect(within(modal).getByLabelText('Sheet')).toHaveValue('Orders')
+
+    await user.click(within(modal).getByRole('button', { name: 'Create' }))
+
+    const state = usePipelineStore.getState()
+    expect(state.nodes).toHaveLength(1)
+    const config = (state.nodes[0].data as Record<string, unknown>).config as Record<string, unknown>
+    expect(config).toMatchObject({
+      selected_sheet: 'Orders',
+      materialized_csv_path: '/tmp/orders_Orders.csv',
+      materialized_csv_filename: 'orders_Orders.csv',
+    })
+  })
+
   it('opens the create modal for dragged database presets and creates the node with edited values', async () => {
     const user = userEvent.setup()
     let connectionId = ''

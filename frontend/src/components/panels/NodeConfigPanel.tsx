@@ -1,4 +1,4 @@
-import { materializeExcelSheet, uploadCsv, uploadExcel } from '../../api/client'
+import { materializeExcelSheet, uploadCsv } from '../../api/client'
 import {
   useCallback,
   useEffect,
@@ -20,6 +20,7 @@ import {
   getDatabaseSourceConnectionSourceId,
 } from '../../lib/databaseConnections'
 import { getCsvPreprocessFingerprint } from '../../lib/csvPreprocessing'
+import { createExcelUploadHandler } from '../../lib/excelUpload'
 import { getResultElapsedLabel } from '../../lib/executionTiming'
 import SqlEditor from './SqlEditor'
 import type {
@@ -331,25 +332,14 @@ export default function NodeConfigPanel() {
     })
   }
 
-  const handleExcelUpload = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file || !nodeId || !excelConfig) return
-
-    const result = await uploadExcel(file)
-    updateNodeData(nodeId, {
-      config: {
-        ...excelConfig,
-        file_path: result.file_path,
-        original_filename: result.filename,
-        sheet_names: result.sheet_names,
-        sheets: result.sheets,
-        selected_sheet: '',
-        materialized_csv_path: '',
-        materialized_csv_filename: '',
-        preprocessing: excelConfig.preprocessing ?? csvPreprocessing,
-      },
-    })
-  }
+  const handleExcelUpload = createExcelUploadHandler({
+    excelConfig,
+    csvPreprocessing,
+    applyConfig: (nextConfig) => {
+      if (!nodeId) return
+      updateNodeData(nodeId, { config: nextConfig })
+    },
+  })
 
   const handleExcelSheetSelect = async (sheetName: string) => {
     if (!nodeId || !excelConfig?.file_path) return
