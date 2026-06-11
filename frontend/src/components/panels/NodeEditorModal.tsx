@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ChangeEvent } from 'react'
-import { materializeExcelSheet, uploadCsv, uploadExcel } from '../../api/client'
+import { materializeExcelSheet, uploadCsv } from '../../api/client'
+import { createExcelUploadHandler } from '../../lib/excelUpload'
 import {
   defaultConnectionConfig,
   defaultOracleFetchConfig,
@@ -223,23 +224,11 @@ export default function NodeEditorModal() {
     })
   }
 
-  const handleExcelUpload = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file || !excelConfig) return
-
-    const result = await uploadExcel(file)
-    updateConfig({
-      ...excelConfig,
-      file_path: result.file_path,
-      original_filename: result.filename,
-      sheet_names: result.sheet_names,
-      sheets: result.sheets,
-      selected_sheet: '',
-      materialized_csv_path: '',
-      materialized_csv_filename: '',
-      preprocessing: excelConfig.preprocessing ?? csvPreprocessing,
-    })
-  }
+  const handleExcelUpload = createExcelUploadHandler({
+    excelConfig,
+    csvPreprocessing,
+    applyConfig: (config) => updateConfig({ ...config }),
+  })
 
   const handleExcelSheetSelect = async (sheetName: string) => {
     if (!excelConfig?.file_path) return

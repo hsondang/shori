@@ -166,11 +166,11 @@ describe('NodeConfigPanel', () => {
         },
       ],
     })
-    mockMaterializeExcelSheet.mockResolvedValue({
-      file_path: '/tmp/orders_Summary.csv',
-      filename: 'orders_Summary.csv',
-      sheet_name: 'Summary',
-    })
+    mockMaterializeExcelSheet.mockImplementation((_filePath: string, sheetName: string) => Promise.resolve({
+      file_path: `/tmp/orders_${sheetName}.csv`,
+      filename: `orders_${sheetName}.csv`,
+      sheet_name: sheetName,
+    }))
 
     act(() => {
       usePipelineStore.setState({
@@ -207,6 +207,9 @@ describe('NodeConfigPanel', () => {
     }))
 
     expect(await screen.findByText('orders.xlsx')).toBeInTheDocument()
+    expect(mockMaterializeExcelSheet).toHaveBeenCalledWith('/tmp/orders.xlsx', 'Orders')
+    expect(screen.getByLabelText('Sheet')).toHaveValue('Orders')
+
     await user.selectOptions(screen.getByLabelText('Sheet'), 'Summary')
 
     expect(mockMaterializeExcelSheet).toHaveBeenCalledWith('/tmp/orders.xlsx', 'Summary')

@@ -3,6 +3,7 @@ import pathlib
 
 import pandas as pd
 import pytest
+from starlette.responses import JSONResponse
 
 from app.services.duckdb_manager import DuckDBManager
 
@@ -107,6 +108,30 @@ def test_preview_empty_table(duckdb_mgr):
     assert result["rows"] == []
     assert result["total_rows"] == 0
     assert "a" in result["columns"]
+
+
+def test_preview_returns_json_safe_non_finite_float_values(duckdb_mgr):
+    duckdb_mgr.execute_transform(
+        "non_finite_values",
+        "SELECT 'NaN'::DOUBLE AS score, 'Infinity'::DOUBLE AS high, '-Infinity'::DOUBLE AS low",
+    )
+
+    result = duckdb_mgr.preview("non_finite_values")
+
+    assert result["rows"] == [["NaN", "Infinity", "-Infinity"]]
+    assert JSONResponse(result).status_code == 200
+
+
+def test_preview_falls_back_to_text_for_values_duckdb_cannot_fetch_as_python(duckdb_mgr):
+    duckdb_mgr.execute_transform(
+        "zoned_times",
+        "SELECT TIMESTAMPTZ '2026-01-02 03:04:05+07' AS occurred_at",
+    )
+
+    result = duckdb_mgr.preview("zoned_times")
+
+    assert result["column_types"] == ["TIMESTAMP WITH TIME ZONE"]
+    assert isinstance(result["rows"][0][0], str)
 
 
 def test_export_to_csv(duckdb_mgr, sample_csv_file, tmp_path):
