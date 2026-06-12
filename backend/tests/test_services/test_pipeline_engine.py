@@ -675,3 +675,198 @@ async def test_execute_pipeline_reports_node_lifecycle_callbacks(engine, sample_
     assert len(finishes) == 1
     assert finishes[0].node_id == "timed"
     assert finishes[0].finished_at is not None
+
+
+# --- Concurrent scheduling ---
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_runs_independent_nodes_concurrently(engine):
+    in_flight = 0
+    max_in_flight = 0
+
+    async def fake_execute_node(node, *, cache_key=None, started_at=None, on_node_update=None, execution_controller=None):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.02)
+        in_flight -= 1
+        return NodeExecutionResult(
+            node_id=node.id,
+            status=NodeStatus.SUCCESS,
+            row_count=1,
+            column_count=1,
+            columns=["id"],
+            started_at=started_at,
+            finished_at=started_at,
+        )
+
+    engine._execute_node = fake_execute_node
+    nodes = [_make_node(f"n{i}", NodeType.TRANSFORM, f"t{i}", {"sql": "SELECT 1"}) for i in range(3)]
+    pipeline = _make_pipeline(nodes)
+
+    results = await engine.execute_pipeline(pipeline)
+
+    assert all(result.status == NodeStatus.SUCCESS for result in results.values())
+    assert max_in_flight == 3
+
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_respects_max_concurrent_nodes(duckdb_mgr, csv_artifact_store):
+    engine = PipelineEngine(duckdb_mgr, csv_artifact_store, max_concurrent_nodes=2)
+    in_flight = 0
+    max_in_flight = 0
+
+    async def fake_execute_node(node, *, cache_key=None, started_at=None, on_node_update=None, execution_controller=None):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(0.02)
+        in_flight -= 1
+        return NodeExecutionResult(node_id=node.id, status=NodeStatus.SUCCESS, row_count=1, column_count=1, columns=["id"])
+
+    engine._execute_node = fake_execute_node
+    nodes = [_make_node(f"n{i}", NodeType.TRANSFORM, f"t{i}", {"sql": "SELECT 1"}) for i in range(5)]
+    pipeline = _make_pipeline(nodes)
+
+    await engine.execute_pipeline(pipeline)
+
+    assert max_in_flight == 2
+
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_dependent_node_waits_for_upstream(engine):
+    finished_order = []
+
+    async def fake_execute_node(node, *, cache_key=None, started_at=None, on_node_update=None, execution_controller=None):
+        await asyncio.sleep(0.03 if node.id == "src" else 0.0)
+        finished_order.append(node.id)
+        return NodeExecutionResult(node_id=node.id, status=NodeStatus.SUCCESS, row_count=1, column_count=1, columns=["id"])
+
+    engine._execute_node = fake_execute_node
+    nodes = [
+        _make_node("src", NodeType.TRANSFORM, "src_t", {"sql": "SELECT 1"}),
+        _make_node("child", NodeType.TRANSFORM, "child_t", {"sql": "SELECT 1"}),
+        _make_node("other", NodeType.TRANSFORM, "other_t", {"sql": "SELECT 1"}),
+    ]
+    pipeline = _make_pipeline(nodes, [("src", "child")])
+
+    results = await engine.execute_pipeline(pipeline)
+
+    assert all(result.status == NodeStatus.SUCCESS for result in results.values())
+    # "other" has no upstream and should not wait for the slow "src";
+    # "child" must wait for "src".
+    assert finished_order.index("other") < finished_order.index("src")
+    assert finished_order.index("src") < finished_order.index("child")
+
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_failure_cancels_descendants_but_not_independent_branches(engine):
+    async def fake_execute_node(node, *, cache_key=None, started_at=None, on_node_update=None, execution_controller=None):
+        if node.id == "bad":
+            return NodeExecutionResult(node_id=node.id, status=NodeStatus.ERROR, error="boom")
+        return NodeExecutionResult(node_id=node.id, status=NodeStatus.SUCCESS, row_count=1, column_count=1, columns=["id"])
+
+    engine._execute_node = fake_execute_node
+    nodes = [
+        _make_node("bad", NodeType.TRANSFORM, "bad_t", {"sql": "SELECT 1"}),
+        _make_node("bad_child", NodeType.TRANSFORM, "bad_child_t", {"sql": "SELECT 1"}),
+        _make_node("bad_grandchild", NodeType.TRANSFORM, "bad_grandchild_t", {"sql": "SELECT 1"}),
+        _make_node("independent", NodeType.TRANSFORM, "independent_t", {"sql": "SELECT 1"}),
+    ]
+    pipeline = _make_pipeline(nodes, [("bad", "bad_child"), ("bad_child", "bad_grandchild")])
+
+    results = await engine.execute_pipeline(pipeline)
+
+    assert results["bad"].status == NodeStatus.ERROR
+    assert results["bad_child"].status == NodeStatus.CANCELLED
+    assert "Upstream node failed" in results["bad_child"].error
+    assert results["bad_grandchild"].status == NodeStatus.CANCELLED
+    assert results["independent"].status == NodeStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_rejects_duplicate_table_names(engine):
+    nodes = [
+        _make_node("a", NodeType.TRANSFORM, "same_t", {"sql": "SELECT 1"}),
+        _make_node("b", NodeType.TRANSFORM, "same_t", {"sql": "SELECT 2"}),
+    ]
+    pipeline = _make_pipeline(nodes)
+
+    with pytest.raises(ValueError, match="table name"):
+        await engine.execute_pipeline(pipeline)
+
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_serves_cached_node_without_rerunning(engine, sample_csv_file):
+    node = _make_node("csv", NodeType.CSV_SOURCE, "cached_csv_t", {
+        "file_path": sample_csv_file,
+        "original_filename": "sample.csv",
+    })
+    pipeline = _make_pipeline([node])
+
+    first = await engine.execute_pipeline(pipeline)
+    assert first["csv"].status == NodeStatus.SUCCESS
+    assert first["csv"].cached is False
+
+    calls = []
+    original = engine._execute_node
+
+    async def spying_execute_node(node, **kwargs):
+        calls.append(node.id)
+        return await original(node, **kwargs)
+
+    engine._execute_node = spying_execute_node
+    second = await engine.execute_pipeline(pipeline)
+
+    assert second["csv"].status == NodeStatus.SUCCESS
+    assert second["csv"].cached is True
+    assert second["csv"].row_count == 5
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_reruns_when_config_changes(engine, sample_csv_file, tmp_path):
+    node = _make_node("csv", NodeType.CSV_SOURCE, "rerun_csv_t", {
+        "file_path": sample_csv_file,
+        "original_filename": "sample.csv",
+    })
+    first = await engine.execute_pipeline(_make_pipeline([node]))
+    assert first["csv"].cached is False
+
+    other_csv = tmp_path / "other.csv"
+    other_csv.write_text("id,name\n1,Zed\n")
+    changed = _make_node("csv", NodeType.CSV_SOURCE, "rerun_csv_t", {
+        "file_path": str(other_csv),
+        "original_filename": "other.csv",
+    })
+    second = await engine.execute_pipeline(_make_pipeline([changed]))
+
+    assert second["csv"].cached is False
+    assert second["csv"].row_count == 1
+
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_upstream_change_invalidates_downstream(engine, sample_csv_file, tmp_path):
+    source = _make_node("src", NodeType.CSV_SOURCE, "merkle_src_t", {
+        "file_path": sample_csv_file,
+        "original_filename": "sample.csv",
+    })
+    transform = _make_node("tx", NodeType.TRANSFORM, "merkle_tx_t", {
+        "sql": "SELECT * FROM merkle_src_t",
+    })
+    pipeline = _make_pipeline([source, transform], [("src", "tx")])
+
+    first = await engine.execute_pipeline(pipeline)
+    assert first["tx"].row_count == 5
+
+    other_csv = tmp_path / "merkle_other.csv"
+    other_csv.write_text("id,name,value\n9,Zed,1.0\n")
+    changed_source = _make_node("src", NodeType.CSV_SOURCE, "merkle_src_t", {
+        "file_path": str(other_csv),
+        "original_filename": "merkle_other.csv",
+    })
+    second = await engine.execute_pipeline(_make_pipeline([changed_source, transform], [("src", "tx")]))
+
+    # The transform's own config didn't change, but its upstream did — it must rerun.
+    assert second["tx"].cached is False
+    assert second["tx"].row_count == 1

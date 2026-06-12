@@ -4,6 +4,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.services.connection_pools import ConnectionPoolRegistry
 from app.services.csv_service import CsvPreprocessArtifactStore
 from app.services.execution_registry import ExecutionRegistry
 from app.services.project_db_registry import ProjectDuckDBRegistry
@@ -26,11 +27,13 @@ def _guard_single_worker():
 async def lifespan(app: FastAPI):
     _guard_single_worker()
     app.state.project_dbs = ProjectDuckDBRegistry()
+    app.state.connection_pools = ConnectionPoolRegistry()
     app.state.csv_preprocess_artifacts = CsvPreprocessArtifactStore()
     app.state.execution_registry = ExecutionRegistry()
     yield
     app.state.execution_registry.close()
     app.state.csv_preprocess_artifacts.close()
+    await app.state.connection_pools.close_all()
     app.state.project_dbs.close_all()
 
 

@@ -58,13 +58,17 @@ class PipelineEngine:
         duckdb_manager: DuckDBManager,
         csv_artifact_store: CsvPreprocessArtifactStore,
         *,
+        connection_pools=None,
         max_concurrent_nodes: int | None = None,
+        max_connections_per_database: int | None = None,
     ):
         self.duckdb = duckdb_manager
         self.csv_artifact_store = csv_artifact_store
         self.oracle = OracleService()
         self.postgres = PostgresService()
+        self.connection_pools = connection_pools
         self.max_concurrent_nodes = max_concurrent_nodes or DEFAULT_MAX_CONCURRENT_NODES
+        self.max_connections_per_database = max_connections_per_database
 
     def topological_sort(self, pipeline: PipelineDefinition) -> list[str]:
         adj: dict[str, list[str]] = defaultdict(list)
@@ -137,52 +141,79 @@ class PipelineEngine:
         on_node_update: Callable[[NodeExecutionResult], None] | None = None,
         execution_controller: ExecutionController | None = None,
     ) -> dict[str, NodeExecutionResult]:
-        order = self.topological_sort(pipeline)
+        """Run the DAG with independent nodes in parallel.
+
+        Every node gets a task that waits on its upstreams' done events, so
+        the DAG itself is the schedule; the semaphore caps how many nodes
+        execute simultaneously. Each node writes its own DuckDB table, which
+        keeps concurrent writes conflict-free under MVCC.
+        """
+        self.topological_sort(pipeline)  # cycle validation
         self._validate_table_names(pipeline)
         cache_keys = compute_cache_keys(pipeline)
         node_map = {n.id: n for n in pipeline.nodes}
         upstream_ids: dict[str, list[str]] = {n.id: [] for n in pipeline.nodes}
         for edge in pipeline.edges:
-            upstream_ids[edge.target].append(edge.source)
+            if edge.target in upstream_ids:
+                upstream_ids[edge.target].append(edge.source)
 
         results: dict[str, NodeExecutionResult] = {}
+        done_events = {node_id: asyncio.Event() for node_id in node_map}
+        semaphore = asyncio.Semaphore(self.max_concurrent_nodes)
 
-        for node_id in order:
-            if execution_controller is not None:
-                execution_controller.raise_if_cancelled()
+        async def node_task(node_id: str) -> None:
             node = node_map[node_id]
+            try:
+                for upstream in upstream_ids[node_id]:
+                    await done_events[upstream].wait()
+                if execution_controller is not None:
+                    execution_controller.raise_if_cancelled()
 
-            upstream_results = [results.get(up) for up in upstream_ids[node_id]]
-            if any(r is None or r.status != NodeStatus.SUCCESS for r in upstream_results):
-                result = make_upstream_failed_result(node_id, utc_now_iso())
-                results[node_id] = result
-                if on_node_finish is not None:
-                    on_node_finish(result)
-                continue
-
-            if not force_refresh:
-                cached = self.cached_result(node, cache_keys.get(node_id))
-                if cached is not None:
-                    results[node_id] = cached
+                upstream_results = [results.get(up) for up in upstream_ids[node_id]]
+                if any(r is None or r.status != NodeStatus.SUCCESS for r in upstream_results):
+                    result = make_upstream_failed_result(node_id, utc_now_iso())
+                    results[node_id] = result
                     if on_node_finish is not None:
-                        on_node_finish(cached)
-                    continue
+                        on_node_finish(result)
+                    return
 
-            started_at = utc_now_iso()
-            if on_node_start is not None:
-                on_node_start(node.id, started_at)
-            if node.type == NodeType.DB_SOURCE and on_node_update is not None:
-                on_node_update(make_connecting_result(node.id, started_at))
-            result = await self._execute_node(
-                node,
-                cache_key=cache_keys.get(node_id),
-                started_at=started_at,
-                on_node_update=on_node_update,
-                execution_controller=execution_controller,
-            )
-            results[node_id] = result
-            if on_node_finish is not None:
-                on_node_finish(result)
+                if not force_refresh:
+                    cached = await asyncio.to_thread(
+                        self.cached_result, node, cache_keys.get(node_id)
+                    )
+                    if cached is not None:
+                        results[node_id] = cached
+                        if on_node_finish is not None:
+                            on_node_finish(cached)
+                        return
+
+                async with semaphore:
+                    if execution_controller is not None:
+                        execution_controller.raise_if_cancelled()
+                    started_at = utc_now_iso()
+                    if on_node_start is not None:
+                        on_node_start(node.id, started_at)
+                    if node.type == NodeType.DB_SOURCE and on_node_update is not None:
+                        on_node_update(make_connecting_result(node.id, started_at))
+                    result = await self._execute_node(
+                        node,
+                        cache_key=cache_keys.get(node_id),
+                        started_at=started_at,
+                        on_node_update=on_node_update,
+                        execution_controller=execution_controller,
+                    )
+                    results[node_id] = result
+                    if on_node_finish is not None:
+                        on_node_finish(result)
+            finally:
+                done_events[node_id].set()
+
+        try:
+            async with asyncio.TaskGroup() as tg:
+                for node_id in node_map:
+                    tg.create_task(node_task(node_id))
+        except* ExecutionCancelled:
+            raise ExecutionCancelled()
 
         return results
 
@@ -271,7 +302,15 @@ class PipelineEngine:
             elif node.type == NodeType.DB_SOURCE:
                 db_type = node.config.get("db_type", "postgres")
                 svc = self.oracle if db_type == "oracle" else self.postgres
-                connection = await svc.connect(node.config)
+                release = None
+                if self.connection_pools is not None:
+                    connection, release = await self.connection_pools.acquire(
+                        db_type,
+                        node.config["connection"],
+                        self.max_connections_per_database,
+                    )
+                else:
+                    connection = await svc.connect(node.config)
                 if execution_controller is not None:
                     execution_controller.raise_if_cancelled()
                     execution_controller.set_abort_callback(
@@ -306,10 +345,13 @@ class PipelineEngine:
                 finally:
                     if execution_controller is not None:
                         execution_controller.clear_abort_callback(node.id)
-                    close = getattr(connection, "close")
-                    maybe_awaitable = close()
-                    if asyncio.iscoroutine(maybe_awaitable):
-                        await maybe_awaitable
+                    if release is not None:
+                        await release()
+                    else:
+                        close = getattr(connection, "close")
+                        maybe_awaitable = close()
+                        if asyncio.iscoroutine(maybe_awaitable):
+                            await maybe_awaitable
             elif node.type == NodeType.TRANSFORM:
                 def register_interrupt(interrupt):
                     if execution_controller is not None:

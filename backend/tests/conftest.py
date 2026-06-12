@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 
 import app.config as config_module
 from app.main import app
+from app.services.connection_pools import ConnectionPoolRegistry
 from app.services.csv_service import CsvPreprocessArtifactStore
 from app.services.duckdb_manager import DuckDBManager
 from app.services.execution_registry import ExecutionRegistry
@@ -54,11 +55,13 @@ async def client():
     ) as ac:
         # Manually initialise app state so DuckDB is available without full lifespan
         app.state.project_dbs = ProjectDuckDBRegistry()
+        app.state.connection_pools = ConnectionPoolRegistry()
         app.state.csv_preprocess_artifacts = CsvPreprocessArtifactStore()
         app.state.execution_registry = ExecutionRegistry()
         yield ac
         app.state.execution_registry.close()
         app.state.csv_preprocess_artifacts.close()
+        await app.state.connection_pools.close_all()
         app.state.project_dbs.close_all()
 
 
