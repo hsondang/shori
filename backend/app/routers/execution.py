@@ -27,6 +27,7 @@ def _get_engine(request: Request, project_id: str) -> PipelineEngine:
         manager,
         request.app.state.csv_preprocess_artifacts,
         connection_pools=getattr(request.app.state, "connection_pools", None),
+        use_postgres_attach=True,
     )
 
 

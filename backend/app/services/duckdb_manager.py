@@ -96,6 +96,7 @@ class DuckDBManager:
         self._active_ops = 0
         self._active_lock = threading.Lock()
         self._closed = False
+        self._postgres_extension_ready: bool | None = None
         self.conn = duckdb.connect(self.db_path)
         self._apply_settings()
         self._ensure_meta_schema()
@@ -395,6 +396,27 @@ class DuckDBManager:
         with self._cursor() as cur:
             cur.execute("CHECKPOINT")
 
+    def ensure_postgres_extension(self) -> bool:
+        """Install/load DuckDB's postgres extension once per manager.
+
+        Returns False (cached) when unavailable — e.g. offline with no local
+        copy — so callers can fall back to driver-based extraction.
+        """
+        if self._postgres_extension_ready is None:
+            try:
+                with self._cursor() as cur:
+                    cur.execute("INSTALL postgres")
+                    cur.execute("LOAD postgres")
+                self._postgres_extension_ready = True
+            except Exception:
+                logger.warning(
+                    "DuckDB postgres extension unavailable; postgres sources "
+                    "will load through the driver instead.",
+                    exc_info=True,
+                )
+                self._postgres_extension_ready = False
+        return self._postgres_extension_ready
+
     def _fetch_preview_rows(
         self,
         cur,
@@ -502,6 +524,10 @@ class StagingLoad:
             params or [],
         )
         self._created = True
+
+    def execute(self, sql: str, params: list | None = None):
+        """Run a setup statement on the load's cursor (e.g. LOAD/ATTACH)."""
+        return self._cur.execute(sql, params or [])
 
     def interrupt(self):
         try:

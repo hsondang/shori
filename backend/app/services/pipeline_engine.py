@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 from collections import defaultdict, deque
 from collections.abc import Callable
@@ -16,7 +17,9 @@ from app.services.csv_service import CsvPreprocessArtifactStore, register_csv_so
 from app.services.duckdb_manager import DuckDBManager, validate_user_table_name
 from app.services.execution_registry import ExecutionCancelled, ExecutionController
 from app.services.oracle_service import OracleService, normalize_fetch_config
-from app.services.postgres_service import PostgresService
+from app.services.postgres_service import PostgresAttachUnavailable, PostgresService
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_CONCURRENT_NODES = 4
 
@@ -61,6 +64,7 @@ class PipelineEngine:
         connection_pools=None,
         max_concurrent_nodes: int | None = None,
         max_connections_per_database: int | None = None,
+        use_postgres_attach: bool = False,
     ):
         self.duckdb = duckdb_manager
         self.csv_artifact_store = csv_artifact_store
@@ -69,6 +73,10 @@ class PipelineEngine:
         self.connection_pools = connection_pools
         self.max_concurrent_nodes = max_concurrent_nodes or DEFAULT_MAX_CONCURRENT_NODES
         self.max_connections_per_database = max_connections_per_database
+        # DuckDB-attaches the postgres source and runs CTAS itself (no data
+        # through Python). Opt-in: it may download the postgres extension on
+        # first use, which unit-test environments shouldn't do.
+        self.use_postgres_attach = use_postgres_attach
 
     def topological_sort(self, pipeline: PipelineDefinition) -> list[str]:
         adj: dict[str, list[str]] = defaultdict(list)
@@ -252,6 +260,59 @@ class PipelineEngine:
             on_node_finish(result)
         return result
 
+    async def _load_postgres_node(
+        self,
+        node: NodeDefinition,
+        connection,
+        cache_key: str | None,
+        execution_controller: ExecutionController | None,
+    ) -> dict:
+        if self.use_postgres_attach:
+            def register_interrupt(interrupt):
+                if execution_controller is not None:
+                    execution_controller.set_abort_callback(node.id, interrupt)
+
+            try:
+                return await self.postgres.load_query_to_duckdb(
+                    node.config["connection"],
+                    node.config["query"],
+                    node.table_name,
+                    self.duckdb,
+                    node_id=node.id,
+                    cache_key=cache_key,
+                    register_interrupt=register_interrupt,
+                )
+            except PostgresAttachUnavailable:
+                pass
+            except ExecutionCancelled:
+                raise
+            except Exception:
+                # An aborted run interrupts the DuckDB load, which surfaces
+                # here as a generic error — don't rerun the query in that case.
+                if execution_controller is not None:
+                    execution_controller.raise_if_cancelled()
+                # The attach path failed before producing a table (e.g. the
+                # extension can't reach the host the way the driver can);
+                # the driver connection is already open, so use it.
+                logger.warning(
+                    "DuckDB attach load failed for node %s; falling back to driver fetch.",
+                    node.id,
+                    exc_info=True,
+                )
+
+        if execution_controller is not None:
+            execution_controller.set_abort_callback(
+                node.id, lambda: self.postgres.abort_query(connection)
+            )
+        df = await self.postgres.fetch_query(connection, node.config["query"])
+        return await asyncio.to_thread(
+            self.duckdb.register_dataframe,
+            node.table_name,
+            df,
+            node_id=node.id,
+            cache_key=cache_key,
+        )
+
     async def _execute_node(
         self,
         node: NodeDefinition,
@@ -334,13 +395,8 @@ class PipelineEngine:
                             cache_key=cache_key,
                         )
                     else:
-                        df = await svc.fetch_query(connection, node.config["query"])
-                        stats = await asyncio.to_thread(
-                            self.duckdb.register_dataframe,
-                            node.table_name,
-                            df,
-                            node_id=node.id,
-                            cache_key=cache_key,
+                        stats = await self._load_postgres_node(
+                            node, connection, cache_key, execution_controller
                         )
                 finally:
                     if execution_controller is not None:

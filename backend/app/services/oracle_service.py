@@ -1,9 +1,12 @@
 import asyncio
+import logging
 import os
 import threading
 
 import pandas as pd
 import oracledb
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_FETCH_MODE = "fetchall"
 DEFAULT_ARRAYSIZE = 100
@@ -120,36 +123,82 @@ class OracleService:
         node_id: str | None = None,
         cache_key: str | None = None,
     ) -> dict:
+        normalized = normalize_fetch_config(fetch_config)
+        record_meta = node_id is not None
+        load = duckdb_manager.begin_load(node_id or table_name, table_name, cache_key)
+        try:
+            if record_meta:
+                load.mark_loading()
+            if not self._load_via_arrow(connection, query, normalized, load):
+                self._load_via_rows(connection, query, fetch_config, load)
+            return load.commit(record_meta=record_meta)
+        except BaseException as exc:
+            load.abort(str(exc), record_meta=record_meta)
+            raise
+
+    def _load_via_arrow(self, connection, query: str, normalized: dict, load) -> bool:
+        """Stream Arrow batches straight into DuckDB (zero-copy; works in both
+        thin and thick modes). Returns False if Arrow fetching isn't possible
+        and nothing has been appended yet, so the row path can take over;
+        failures after the first batch propagate (the load must abort rather
+        than silently retry into duplicated rows)."""
+        try:
+            import pyarrow as pa
+        except ImportError:
+            return False
+
+        if normalized["mode"] == "fetchmany":
+            try:
+                batches = connection.fetch_df_batches(query, size=normalized["arraysize"])
+                first = next(batches, None)
+            except Exception:
+                logger.warning(
+                    "Arrow batch fetch unavailable for this query; falling back to row fetch.",
+                    exc_info=True,
+                )
+                return False
+            if first is None:
+                return False  # empty result: let the row path build the empty table
+            load.append(pa.table(first))
+            for batch in batches:
+                load.append(pa.table(batch))
+            return True
+
+        try:
+            frame = connection.fetch_df_all(query, arraysize=normalized["arraysize"])
+        except Exception:
+            logger.warning(
+                "Arrow fetch unavailable for this query; falling back to row fetch.",
+                exc_info=True,
+            )
+            return False
+        table = pa.table(frame)
+        if table.num_rows == 0:
+            return False
+        load.append(table)
+        return True
+
+    def _load_via_rows(self, connection, query: str, fetch_config: dict | None, load) -> None:
         cursor = connection.cursor()
         try:
             normalized = self._apply_fetch_config(cursor, fetch_config)
             cursor.execute(query)
             columns = [col[0] for col in cursor.description]
-
-            record_meta = node_id is not None
-            load = duckdb_manager.begin_load(node_id or table_name, table_name, cache_key)
-            try:
-                if record_meta:
-                    load.mark_loading()
-                if normalized["mode"] != "fetchmany":
-                    rows = cursor.fetchall()
-                    load.append(pd.DataFrame(rows, columns=columns))
-                else:
-                    appended = False
-                    while True:
-                        rows = cursor.fetchmany()
-                        if not rows:
-                            break
-                        load.append(pd.DataFrame(rows, columns=columns))
-                        appended = True
-                    if not appended:
-                        load.append(
-                            pd.DataFrame({column: pd.Series(dtype="object") for column in columns})
-                        )
-                return load.commit(record_meta=record_meta)
-            except BaseException as exc:
-                load.abort(str(exc), record_meta=record_meta)
-                raise
+            if normalized["mode"] != "fetchmany":
+                rows = cursor.fetchall()
+                load.append(pd.DataFrame(rows, columns=columns))
+                return
+            appended = False
+            while True:
+                rows = cursor.fetchmany()
+                if not rows:
+                    break
+                load.append(pd.DataFrame(rows, columns=columns))
+                appended = True
+            if not appended:
+                load.append(
+                    pd.DataFrame({column: pd.Series(dtype="object") for column in columns})
+                )
         finally:
             cursor.close()
 
