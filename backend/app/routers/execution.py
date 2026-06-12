@@ -4,12 +4,15 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.models.pipeline import (
-    DatabaseConnectionDefinition,
     NodeDefinition,
     NodeType,
     PipelineDefinition,
 )
 from app.services.cache_keys import compute_cache_keys
+from app.services.connection_resolution import (
+    resolve_node_connections as _resolve_node_connections,
+    resolve_pipeline_connections as _resolve_pipeline_connections,
+)
 from app.services.execution_registry import ExecutionCancelled
 from app.services.pipeline_engine import PipelineEngine
 from app.storage.pipeline_store import PipelineStore
@@ -39,54 +42,6 @@ class NodeExecutionRequest(BaseModel):
     pipeline: PipelineDefinition
     node_id: str
     force: bool = False
-
-
-def _saved_connection_to_config(connection: DatabaseConnectionDefinition) -> dict:
-    if connection.db_type == "oracle":
-        return {
-            "host": connection.host,
-            "port": connection.port,
-            "service_name": connection.service_name,
-            "user": connection.user,
-            "password": connection.password,
-        }
-
-    return {
-        "host": connection.host,
-        "port": connection.port,
-        "database": connection.database,
-        "user": connection.user,
-        "password": connection.password,
-    }
-
-
-def _resolve_node_connections(node: NodeDefinition, store: PipelineStore) -> NodeDefinition:
-    config = dict(node.config)
-    if node.type != "db_source" or config.get("connection_mode") != "global":
-        return node
-
-    connection_source_id = config.get("connection_source_id")
-    if not isinstance(connection_source_id, str) or not connection_source_id:
-        raise HTTPException(status_code=400, detail="Global database source is missing connection_source_id")
-
-    try:
-        connection = store.load_global_connection(connection_source_id)
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Global database connection not found")
-
-    return node.model_copy(update={
-        "config": {
-            **config,
-            "db_type": connection.db_type,
-            "connection": _saved_connection_to_config(connection),
-        }
-    })
-
-
-def _resolve_pipeline_connections(pipeline: PipelineDefinition, store: PipelineStore) -> PipelineDefinition:
-    return pipeline.model_copy(update={
-        "nodes": [_resolve_node_connections(node, store) for node in pipeline.nodes],
-    })
 
 
 def _resolved_node_and_key(

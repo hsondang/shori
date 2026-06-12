@@ -7,8 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.services.connection_pools import ConnectionPoolRegistry
 from app.services.csv_service import CsvPreprocessArtifactStore
 from app.services.execution_registry import ExecutionRegistry
+from app.services.preview_sessions import PreviewSessionManager
 from app.services.project_db_registry import ProjectDuckDBRegistry
-from app.routers import pipelines, execution, data, settings, upload
+from app.routers import pipelines, execution, data, preview_sessions, settings, upload
 
 
 def _guard_single_worker():
@@ -28,11 +29,13 @@ async def lifespan(app: FastAPI):
     _guard_single_worker()
     app.state.project_dbs = ProjectDuckDBRegistry()
     app.state.connection_pools = ConnectionPoolRegistry()
+    app.state.preview_sessions = PreviewSessionManager(app.state.connection_pools)
     app.state.csv_preprocess_artifacts = CsvPreprocessArtifactStore()
     app.state.execution_registry = ExecutionRegistry()
     yield
     app.state.execution_registry.close()
     app.state.csv_preprocess_artifacts.close()
+    await app.state.preview_sessions.close_all()
     await app.state.connection_pools.close_all()
     app.state.project_dbs.close_all()
 
@@ -50,6 +53,7 @@ app.add_middleware(
 app.include_router(pipelines.router, prefix="/api/pipelines", tags=["pipelines"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(execution.router, prefix="/api/execute", tags=["execution"])
+app.include_router(preview_sessions.router, prefix="/api/data/preview-session", tags=["preview-sessions"])
 app.include_router(data.router, prefix="/api/data", tags=["data"])
 app.include_router(upload.router, prefix="/api", tags=["upload"])
 

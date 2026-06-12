@@ -13,6 +13,7 @@ from app.services.connection_pools import ConnectionPoolRegistry
 from app.services.csv_service import CsvPreprocessArtifactStore
 from app.services.duckdb_manager import DuckDBManager
 from app.services.execution_registry import ExecutionRegistry
+from app.services.preview_sessions import PreviewSessionManager
 from app.services.project_db_registry import ProjectDuckDBRegistry
 
 
@@ -56,11 +57,13 @@ async def client():
         # Manually initialise app state so DuckDB is available without full lifespan
         app.state.project_dbs = ProjectDuckDBRegistry()
         app.state.connection_pools = ConnectionPoolRegistry()
+        app.state.preview_sessions = PreviewSessionManager(app.state.connection_pools)
         app.state.csv_preprocess_artifacts = CsvPreprocessArtifactStore()
         app.state.execution_registry = ExecutionRegistry()
         yield ac
         app.state.execution_registry.close()
         app.state.csv_preprocess_artifacts.close()
+        await app.state.preview_sessions.close_all()
         await app.state.connection_pools.close_all()
         app.state.project_dbs.close_all()
 
