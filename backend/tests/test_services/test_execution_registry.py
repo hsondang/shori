@@ -120,7 +120,7 @@ def test_abort_run_invokes_abort_callback_and_cancels_task():
         callback_called = True
 
     registry.attach_task(run.execution_id, task)
-    registry.set_abort_callback(run.execution_id, callback)
+    registry.set_abort_callback(run.execution_id, "node-1", callback)
 
     snapshot = registry.abort_run(run.execution_id)
 

@@ -139,6 +139,9 @@ class NodeExecutionResult(BaseModel):
     execution_time_ms: Optional[float] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+    # True when the result was served from the project's persisted cache
+    # without re-executing the node.
+    cached: bool = False
 
 
 class ExecutionRunStatus(BaseModel):

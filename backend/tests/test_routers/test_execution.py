@@ -6,6 +6,19 @@ from app.models.pipeline import NodeExecutionResult, NodeStatus
 from app.services.pipeline_engine import PipelineEngine
 
 
+def _node_request(node, *, pipeline=None, force=False):
+    """Single-node execution body: the node plus its pipeline for context."""
+    if pipeline is None:
+        pipeline = {
+            "id": "test-pipeline-1",
+            "name": "Test Pipeline",
+            "database_connections": [],
+            "nodes": [node],
+            "edges": [],
+        }
+    return {"pipeline": pipeline, "node_id": node["id"], "force": force}
+
+
 @pytest.mark.asyncio
 async def test_execute_stored_not_found(client):
     resp = await client.post("/api/execute/pipeline/nonexistent-id")
@@ -15,7 +28,7 @@ async def test_execute_stored_not_found(client):
 @pytest.mark.asyncio
 async def test_execute_single_csv_node(client, pipeline_def, sample_csv_file):
     node = pipeline_def["nodes"][0]
-    resp = await client.post("/api/execute/node", json=node)
+    resp = await client.post("/api/execute/node", json=_node_request(node, pipeline=pipeline_def))
     assert resp.status_code == 200
     result = resp.json()
     assert result["node_id"] == node["id"]
@@ -41,7 +54,7 @@ async def test_execute_single_global_db_node_resolves_saved_connection(client, m
     connection = create_resp.json()
     captured = {}
 
-    async def fake_execute_single_node(self, node, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
+    async def fake_execute_single_node(self, node, cache_key=None, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
         captured["node"] = node
         return NodeExecutionResult(node_id=node.id, status=NodeStatus.SUCCESS)
 
@@ -49,7 +62,7 @@ async def test_execute_single_global_db_node_resolves_saved_connection(client, m
 
     resp = await client.post(
         "/api/execute/node",
-        json={
+        json=_node_request({
             "id": "db-node",
             "type": "db_source",
             "table_name": "orders",
@@ -61,7 +74,7 @@ async def test_execute_single_global_db_node_resolves_saved_connection(client, m
                 "db_type": "postgres",
                 "query": "SELECT 1",
             },
-        },
+        }),
     )
     assert resp.status_code == 200
     assert captured["node"].config["connection"]["host"] == "db.internal"
@@ -72,7 +85,7 @@ async def test_execute_single_global_db_node_resolves_saved_connection(client, m
 async def test_execute_single_global_db_node_returns_404_if_connection_missing(client):
     resp = await client.post(
         "/api/execute/node",
-        json={
+        json=_node_request({
             "id": "db-node",
             "type": "db_source",
             "table_name": "orders",
@@ -84,7 +97,7 @@ async def test_execute_single_global_db_node_returns_404_if_connection_missing(c
                 "db_type": "postgres",
                 "query": "SELECT 1",
             },
-        },
+        }),
     )
     assert resp.status_code == 404
 
@@ -182,7 +195,7 @@ async def test_execute_cycle_returns_error(client, sample_csv_file):
 async def test_start_node_execution_returns_terminal_snapshot_when_run_finishes_before_response(client, pipeline_def, monkeypatch):
     node = pipeline_def["nodes"][0]
 
-    async def fake_execute_single_node(self, node, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
+    async def fake_execute_single_node(self, node, cache_key=None, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
         started_at = "2026-04-08T10:00:00+00:00"
         if on_node_start is not None:
             on_node_start(node.id, started_at)
@@ -202,7 +215,7 @@ async def test_start_node_execution_returns_terminal_snapshot_when_run_finishes_
 
     monkeypatch.setattr(PipelineEngine, "execute_single_node", fake_execute_single_node)
 
-    start_resp = await client.post("/api/execute/node/start", json=node)
+    start_resp = await client.post("/api/execute/node/start", json=_node_request(node, pipeline=pipeline_def))
     assert start_resp.status_code == 200
     snapshot = start_resp.json()
     assert snapshot["status"] == "success"
@@ -226,7 +239,7 @@ async def test_start_db_node_execution_shows_connecting_then_running(client, mon
         },
     }
 
-    async def fake_execute_single_node(self, node, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
+    async def fake_execute_single_node(self, node, cache_key=None, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
         connect_started = "2026-04-08T10:00:00+00:00"
         query_started = "2026-04-08T10:00:02+00:00"
         if on_node_start is not None:
@@ -261,7 +274,7 @@ async def test_start_db_node_execution_shows_connecting_then_running(client, mon
 
     monkeypatch.setattr(PipelineEngine, "execute_single_node", fake_execute_single_node)
 
-    start_resp = await client.post("/api/execute/node/start", json=node)
+    start_resp = await client.post("/api/execute/node/start", json=_node_request(node))
     assert start_resp.status_code == 200
     started = start_resp.json()
     assert started["node_results"]["db-node"]["status"] == "connecting"
@@ -295,7 +308,7 @@ async def test_start_db_node_execution_reports_connect_failure(client, monkeypat
         },
     }
 
-    async def fake_execute_single_node(self, node, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
+    async def fake_execute_single_node(self, node, cache_key=None, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
         connect_started = "2026-04-08T10:00:00+00:00"
         if on_node_start is not None:
             on_node_start(node.id, connect_started)
@@ -319,7 +332,7 @@ async def test_start_db_node_execution_reports_connect_failure(client, monkeypat
 
     monkeypatch.setattr(PipelineEngine, "execute_single_node", fake_execute_single_node)
 
-    start_resp = await client.post("/api/execute/node/start", json=node)
+    start_resp = await client.post("/api/execute/node/start", json=_node_request(node))
     assert start_resp.status_code == 200
     started = start_resp.json()
     assert started["node_results"]["db-node"]["status"] == "connecting"
@@ -435,7 +448,7 @@ async def test_abort_db_node_execution_returns_cancelled_snapshot(client, monkey
     running = asyncio.Event()
     release = asyncio.Event()
 
-    async def fake_execute_single_node(self, node, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
+    async def fake_execute_single_node(self, node, cache_key=None, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
         connect_started = "2026-04-08T10:00:00+00:00"
         query_started = "2026-04-08T10:00:02+00:00"
         if on_node_start is not None:
@@ -457,7 +470,7 @@ async def test_abort_db_node_execution_returns_cancelled_snapshot(client, monkey
 
     monkeypatch.setattr(PipelineEngine, "execute_single_node", fake_execute_single_node)
 
-    start_resp = await client.post("/api/execute/node/start", json=node)
+    start_resp = await client.post("/api/execute/node/start", json=_node_request(node))
     assert start_resp.status_code == 200
     started = start_resp.json()
 

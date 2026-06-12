@@ -109,32 +109,47 @@ class OracleService:
         finally:
             cursor.close()
 
-    def _load_query_to_duckdb_sync(self, connection, query: str, table_name: str, duckdb_manager, fetch_config: dict | None = None) -> dict:
+    def _load_query_to_duckdb_sync(
+        self,
+        connection,
+        query: str,
+        table_name: str,
+        duckdb_manager,
+        fetch_config: dict | None = None,
+        *,
+        node_id: str | None = None,
+        cache_key: str | None = None,
+    ) -> dict:
         cursor = connection.cursor()
         try:
             normalized = self._apply_fetch_config(cursor, fetch_config)
             cursor.execute(query)
             columns = [col[0] for col in cursor.description]
 
-            if normalized["mode"] != "fetchmany":
-                rows = cursor.fetchall()
-                return duckdb_manager.register_dataframe(table_name, pd.DataFrame(rows, columns=columns))
-
-            table_created = False
-            while True:
-                rows = cursor.fetchmany()
-                if not rows:
-                    if table_created:
-                        return duckdb_manager.table_stats(table_name)
-                    empty_df = pd.DataFrame({column: pd.Series(dtype="object") for column in columns})
-                    return duckdb_manager.register_dataframe(table_name, empty_df)
-
-                chunk_df = pd.DataFrame(rows, columns=columns)
-                if not table_created:
-                    duckdb_manager.register_dataframe(table_name, chunk_df)
-                    table_created = True
+            record_meta = node_id is not None
+            load = duckdb_manager.begin_load(node_id or table_name, table_name, cache_key)
+            try:
+                if record_meta:
+                    load.mark_loading()
+                if normalized["mode"] != "fetchmany":
+                    rows = cursor.fetchall()
+                    load.append(pd.DataFrame(rows, columns=columns))
                 else:
-                    duckdb_manager.append_dataframe(table_name, chunk_df)
+                    appended = False
+                    while True:
+                        rows = cursor.fetchmany()
+                        if not rows:
+                            break
+                        load.append(pd.DataFrame(rows, columns=columns))
+                        appended = True
+                    if not appended:
+                        load.append(
+                            pd.DataFrame({column: pd.Series(dtype="object") for column in columns})
+                        )
+                return load.commit(record_meta=record_meta)
+            except BaseException as exc:
+                load.abort(str(exc), record_meta=record_meta)
+                raise
         finally:
             cursor.close()
 
@@ -144,14 +159,27 @@ class OracleService:
     async def fetch_query(self, connection, query: str, fetch_config: dict | None = None) -> pd.DataFrame:
         return await asyncio.to_thread(self._fetch_query_sync, connection, query, fetch_config)
 
-    async def load_query_to_duckdb(self, connection, query: str, table_name: str, duckdb_manager, fetch_config: dict | None = None) -> dict:
+    async def load_query_to_duckdb(
+        self,
+        connection,
+        query: str,
+        table_name: str,
+        duckdb_manager,
+        fetch_config: dict | None = None,
+        *,
+        node_id: str | None = None,
+        cache_key: str | None = None,
+    ) -> dict:
         return await asyncio.to_thread(
-            self._load_query_to_duckdb_sync,
-            connection,
-            query,
-            table_name,
-            duckdb_manager,
-            fetch_config,
+            lambda: self._load_query_to_duckdb_sync(
+                connection,
+                query,
+                table_name,
+                duckdb_manager,
+                fetch_config,
+                node_id=node_id,
+                cache_key=cache_key,
+            )
         )
 
     def _execute_query_sync(self, config: dict) -> pd.DataFrame:

@@ -12,6 +12,7 @@ from app.main import app
 from app.services.csv_service import CsvPreprocessArtifactStore
 from app.services.duckdb_manager import DuckDBManager
 from app.services.execution_registry import ExecutionRegistry
+from app.services.project_db_registry import ProjectDuckDBRegistry
 
 
 @pytest.fixture(autouse=True)
@@ -20,13 +21,15 @@ def tmp_dirs(monkeypatch, tmp_path):
     pipeline_dir = tmp_path / "pipelines"
     upload_dir = tmp_path / "uploads"
     export_dir = tmp_path / "exports"
+    projects_dir = tmp_path / "projects"
     project_db_path = tmp_path / "projects.sqlite3"
-    for d in [pipeline_dir, upload_dir, export_dir]:
+    for d in [pipeline_dir, upload_dir, export_dir, projects_dir]:
         d.mkdir()
 
     monkeypatch.setattr(config_module, "PIPELINE_DIR", pipeline_dir)
     monkeypatch.setattr(config_module, "UPLOAD_DIR", upload_dir)
     monkeypatch.setattr(config_module, "EXPORT_DIR", export_dir)
+    monkeypatch.setattr(config_module, "PROJECTS_DIR", projects_dir)
     monkeypatch.setattr(config_module, "PROJECT_DB_PATH", project_db_path)
 
     # Also patch the storage module that has already imported config values.
@@ -50,13 +53,13 @@ async def client():
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:
         # Manually initialise app state so DuckDB is available without full lifespan
-        app.state.duckdb = DuckDBManager()
+        app.state.project_dbs = ProjectDuckDBRegistry()
         app.state.csv_preprocess_artifacts = CsvPreprocessArtifactStore()
         app.state.execution_registry = ExecutionRegistry()
         yield ac
         app.state.execution_registry.close()
         app.state.csv_preprocess_artifacts.close()
-        app.state.duckdb.close()
+        app.state.project_dbs.close_all()
 
 
 @pytest.fixture

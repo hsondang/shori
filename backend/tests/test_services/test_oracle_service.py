@@ -41,38 +41,42 @@ class FakeConnection:
         self.closed = True
 
 
-class FakeDuckDBManager:
-    def __init__(self):
-        self.register_calls = []
-        self.append_calls = []
+class FakeStagingLoad:
+    def __init__(self, manager, node_id, table_name, cache_key):
+        self.manager = manager
+        self.node_id = node_id
+        self.table_name = table_name
+        self.cache_key = cache_key
+        self.appended_frames = []
 
-    def register_dataframe(self, table_name, df):
-        self.register_calls.append((table_name, df.copy()))
-        return {
-            "row_count": len(df.index),
-            "column_count": len(df.columns),
-            "columns": list(df.columns),
-        }
+    def mark_loading(self):
+        pass
 
-    def append_dataframe(self, table_name, df):
-        self.append_calls.append((table_name, df.copy()))
-        row_count = sum(len(frame.index) for _, frame in self.register_calls + self.append_calls)
-        columns = list(df.columns) if len(df.columns) > 0 else list(self.register_calls[0][1].columns)
-        return {
-            "row_count": row_count,
-            "column_count": len(columns),
-            "columns": columns,
-        }
+    def append(self, df):
+        self.appended_frames.append(df.copy())
 
-    def table_stats(self, table_name):
-        frames = [frame for current_table, frame in self.register_calls + self.append_calls if current_table == table_name]
+    def commit(self, record_meta=True):
+        frames = self.appended_frames
         row_count = sum(len(frame.index) for frame in frames)
         columns = list(frames[0].columns) if frames else []
+        self.manager.committed_loads.append(self)
         return {
             "row_count": row_count,
             "column_count": len(columns),
             "columns": columns,
         }
+
+    def abort(self, error=None, record_meta=True):
+        self.manager.aborted_loads.append((self, error))
+
+
+class FakeDuckDBManager:
+    def __init__(self):
+        self.committed_loads = []
+        self.aborted_loads = []
+
+    def begin_load(self, node_id, table_name, cache_key=None):
+        return FakeStagingLoad(self, node_id, table_name, cache_key)
 
 
 @pytest.mark.asyncio
@@ -242,13 +246,15 @@ async def test_load_query_to_duckdb_streams_fetchmany_chunks(monkeypatch):
         "column_count": 2,
         "columns": ["ID", "NAME"],
     }
-    assert len(duckdb_manager.register_calls) == 1
-    assert len(duckdb_manager.append_calls) == 1
-    assert duckdb_manager.register_calls[0][1].to_dict(orient="records") == [
+    assert len(duckdb_manager.committed_loads) == 1
+    load = duckdb_manager.committed_loads[0]
+    assert load.table_name == "oracle_rows"
+    assert len(load.appended_frames) == 2
+    assert load.appended_frames[0].to_dict(orient="records") == [
         {"ID": 1, "NAME": "Alice"},
         {"ID": 2, "NAME": "Bob"},
     ]
-    assert duckdb_manager.append_calls[0][1].to_dict(orient="records") == [
+    assert load.appended_frames[1].to_dict(orient="records") == [
         {"ID": 3, "NAME": "Carol"},
     ]
 
@@ -285,7 +291,9 @@ async def test_load_query_to_duckdb_creates_empty_table_for_empty_fetchmany(monk
         "column_count": 2,
         "columns": ["ID", "NAME"],
     }
-    assert len(duckdb_manager.register_calls) == 1
-    assert duckdb_manager.append_calls == []
-    assert list(duckdb_manager.register_calls[0][1].columns) == ["ID", "NAME"]
-    assert duckdb_manager.register_calls[0][1].empty is True
+    assert len(duckdb_manager.committed_loads) == 1
+    load = duckdb_manager.committed_loads[0]
+    assert load.table_name == "oracle_empty"
+    assert len(load.appended_frames) == 1
+    assert list(load.appended_frames[0].columns) == ["ID", "NAME"]
+    assert load.appended_frames[0].empty is True
