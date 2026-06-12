@@ -109,12 +109,26 @@ class EdgeDefinition(BaseModel):
     target: str
 
 
+class ProjectSettings(BaseModel):
+    """Per-project advanced execution/storage settings."""
+
+    max_concurrent_nodes: int = Field(default=4, ge=1, le=32)
+    max_connections_per_database: int = Field(default=2, ge=1, le=16)
+    duckdb_memory_limit: str = Field(
+        default="2GB", pattern=r"^\d+(\.\d+)?\s*(?i:[KMGT]i?B)$"
+    )
+    preview_chunk_rows: int = Field(default=200, ge=10, le=2000)
+    preview_max_buffer_rows: int = Field(default=10_000, ge=200, le=1_000_000)
+    preview_session_ttl_seconds: int = Field(default=600, ge=30, le=86_400)
+
+
 class PipelineDefinition(BaseModel):
     id: str
     name: str
     database_connections: list[DatabaseConnectionDefinition] = Field(default_factory=list)
     nodes: list[NodeDefinition]
     edges: list[EdgeDefinition]
+    settings: ProjectSettings = Field(default_factory=ProjectSettings)
 
 
 class ProjectSummary(BaseModel):

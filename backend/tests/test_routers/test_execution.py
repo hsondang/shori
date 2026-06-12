@@ -567,3 +567,60 @@ async def test_abort_pipeline_run_cancels_current_and_downstream_nodes(client, p
     assert aborted["node_results"]["node-1"]["status"] == "success"
     assert aborted["node_results"]["db-node"]["status"] == "cancelled"
     assert aborted["node_results"]["node-3"]["status"] == "cancelled"
+
+
+# --- Cache status ---
+
+@pytest.mark.asyncio
+async def test_cache_status_lifecycle(client, pipeline_def):
+    # Before any run: missing.
+    resp = await client.post("/api/execute/cache-status", json=pipeline_def)
+    assert resp.status_code == 200
+    assert resp.json()["nodes"]["node-1"]["state"] == "missing"
+
+    run_resp = await client.post(
+        "/api/execute/node",
+        json={"pipeline": pipeline_def, "node_id": "node-1"},
+    )
+    assert run_resp.json()["status"] == "success"
+
+    # After a run with the same config: fresh.
+    resp = await client.post("/api/execute/cache-status", json=pipeline_def)
+    body = resp.json()["nodes"]["node-1"]
+    assert body["state"] == "fresh"
+    assert body["row_count"] == 5
+
+    # Changing the node's config makes it stale.
+    changed = {
+        **pipeline_def,
+        "nodes": [
+            {
+                **pipeline_def["nodes"][0],
+                "config": {**pipeline_def["nodes"][0]["config"], "original_filename": "other.csv"},
+            }
+        ],
+    }
+    resp = await client.post("/api/execute/cache-status", json=changed)
+    assert resp.json()["nodes"]["node-1"]["state"] == "stale"
+
+
+@pytest.mark.asyncio
+async def test_cached_node_skips_rerun_via_start_endpoints(client, pipeline_def):
+    first = await client.post(
+        "/api/execute/node",
+        json={"pipeline": pipeline_def, "node_id": "node-1"},
+    )
+    assert first.json()["cached"] is False
+
+    second = await client.post(
+        "/api/execute/node",
+        json={"pipeline": pipeline_def, "node_id": "node-1"},
+    )
+    assert second.json()["status"] == "success"
+    assert second.json()["cached"] is True
+
+    forced = await client.post(
+        "/api/execute/node",
+        json={"pipeline": pipeline_def, "node_id": "node-1", "force": True},
+    )
+    assert forced.json()["cached"] is False

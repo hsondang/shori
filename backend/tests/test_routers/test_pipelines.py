@@ -135,3 +135,119 @@ async def test_update_project_star(client, pipeline_def):
 async def test_update_project_star_not_found(client):
     resp = await client.patch("/api/pipelines/missing/star", json={"starred": True})
     assert resp.status_code == 404
+
+
+# --- Project storage lifecycle ---
+
+@pytest.mark.asyncio
+async def test_save_drops_tables_for_removed_nodes(client, pipeline_def):
+    from app.main import app
+
+    await client.post("/api/pipelines", json=pipeline_def)
+    resp = await client.post(
+        "/api/execute/node",
+        json={"pipeline": pipeline_def, "node_id": "node-1"},
+    )
+    assert resp.json()["status"] == "success"
+    manager = app.state.project_dbs.get(pipeline_def["id"])
+    assert manager.table_exists("my_table")
+
+    emptied = {**pipeline_def, "nodes": [], "edges": []}
+    save_resp = await client.put(f"/api/pipelines/{pipeline_def['id']}", json=emptied)
+    assert save_resp.status_code == 200
+
+    assert manager.table_exists("my_table") is False
+    assert manager.get_node_meta("node-1") is None
+
+
+@pytest.mark.asyncio
+async def test_save_renames_table_when_table_name_changes(client, pipeline_def):
+    from app.main import app
+
+    await client.post("/api/pipelines", json=pipeline_def)
+    await client.post(
+        "/api/execute/node",
+        json={"pipeline": pipeline_def, "node_id": "node-1"},
+    )
+    manager = app.state.project_dbs.get(pipeline_def["id"])
+
+    renamed = {
+        **pipeline_def,
+        "nodes": [{**pipeline_def["nodes"][0], "table_name": "renamed_table"}],
+    }
+    save_resp = await client.put(f"/api/pipelines/{pipeline_def['id']}", json=renamed)
+    assert save_resp.status_code == 200
+
+    assert manager.table_exists("my_table") is False
+    assert manager.table_stats("renamed_table")["row_count"] == 5
+    assert manager.get_node_meta("node-1")["table_name"] == "renamed_table"
+
+
+@pytest.mark.asyncio
+async def test_save_rejects_reserved_and_duplicate_table_names(client, pipeline_def):
+    reserved = {
+        **pipeline_def,
+        "nodes": [{**pipeline_def["nodes"][0], "table_name": "_shori_hax"}],
+    }
+    resp = await client.post("/api/pipelines", json=reserved)
+    assert resp.status_code == 400
+    assert "reserved" in resp.json()["detail"]
+
+    duplicated = {
+        **pipeline_def,
+        "nodes": [
+            pipeline_def["nodes"][0],
+            {**pipeline_def["nodes"][0], "id": "node-2"},
+        ],
+    }
+    resp = await client.post("/api/pipelines", json=duplicated)
+    assert resp.status_code == 400
+    assert "unique" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_delete_project_removes_duckdb_directory(client, pipeline_def):
+    import app.config as config_module
+    from app.main import app
+
+    await client.post("/api/pipelines", json=pipeline_def)
+    await client.post(
+        "/api/execute/node",
+        json={"pipeline": pipeline_def, "node_id": "node-1"},
+    )
+    project_dir = config_module.PROJECTS_DIR / pipeline_def["id"]
+    assert project_dir.exists()
+
+    resp = await client.delete(f"/api/pipelines/{pipeline_def['id']}")
+    assert resp.status_code == 200
+    assert project_dir.exists() is False
+
+
+@pytest.mark.asyncio
+async def test_storage_and_compact_endpoints(client, pipeline_def):
+    await client.post("/api/pipelines", json=pipeline_def)
+    await client.post(
+        "/api/execute/node",
+        json={"pipeline": pipeline_def, "node_id": "node-1"},
+    )
+
+    storage_resp = await client.get(f"/api/pipelines/{pipeline_def['id']}/storage")
+    assert storage_resp.status_code == 200
+    assert storage_resp.json()["file_size_bytes"] > 0
+
+    compact_resp = await client.post(f"/api/pipelines/{pipeline_def['id']}/compact")
+    assert compact_resp.status_code == 200
+    assert compact_resp.json()["file_size_bytes"] > 0
+
+
+@pytest.mark.asyncio
+async def test_settings_round_trip_with_defaults(client, pipeline_def):
+    await client.post("/api/pipelines", json=pipeline_def)
+    loaded = (await client.get(f"/api/pipelines/{pipeline_def['id']}")).json()
+    assert loaded["settings"]["max_concurrent_nodes"] == 4
+    assert loaded["settings"]["duckdb_memory_limit"] == "2GB"
+
+    tuned = {**loaded, "settings": {**loaded["settings"], "max_concurrent_nodes": 8}}
+    await client.put(f"/api/pipelines/{pipeline_def['id']}", json=tuned)
+    reloaded = (await client.get(f"/api/pipelines/{pipeline_def['id']}")).json()
+    assert reloaded["settings"]["max_concurrent_nodes"] == 8

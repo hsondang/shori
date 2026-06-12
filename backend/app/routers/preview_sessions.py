@@ -44,6 +44,7 @@ async def start_preview_session(payload: PreviewSessionStartRequest, request: Re
         raise HTTPException(status_code=400, detail="Live preview is only available for database source nodes")
 
     cache_key = compute_cache_keys(pipeline).get(node.id)
+    settings = pipeline.settings
     # Touch the project db so the project id is validated before we connect.
     request.app.state.project_dbs.get(pipeline.id)
     try:
@@ -51,6 +52,10 @@ async def start_preview_session(payload: PreviewSessionStartRequest, request: Re
             project_id=pipeline.id,
             node=node,
             cache_key=cache_key,
+            chunk_rows=settings.preview_chunk_rows,
+            max_buffer_rows=settings.preview_max_buffer_rows,
+            ttl_seconds=settings.preview_session_ttl_seconds,
+            max_connections_per_database=settings.max_connections_per_database,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Unable to start preview: {exc}") from exc

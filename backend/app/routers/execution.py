@@ -24,12 +24,18 @@ def get_store() -> PipelineStore:
     return PipelineStore()
 
 
-def _get_engine(request: Request, project_id: str) -> PipelineEngine:
-    manager = request.app.state.project_dbs.get(project_id)
+def _get_engine(request: Request, pipeline: PipelineDefinition) -> PipelineEngine:
+    settings = pipeline.settings
+    manager = request.app.state.project_dbs.get(
+        pipeline.id,
+        settings={"duckdb_memory_limit": settings.duckdb_memory_limit},
+    )
     return PipelineEngine(
         manager,
         request.app.state.csv_preprocess_artifacts,
         connection_pools=getattr(request.app.state, "connection_pools", None),
+        max_concurrent_nodes=settings.max_concurrent_nodes,
+        max_connections_per_database=settings.max_connections_per_database,
         use_postgres_attach=True,
     )
 
@@ -62,7 +68,7 @@ def _resolved_node_and_key(
 async def start_pipeline_execution(pipeline: PipelineDefinition, request: Request, force: bool = False):
     store = get_store()
     pipeline = _resolve_pipeline_connections(pipeline, store)
-    engine = _get_engine(request, pipeline.id)
+    engine = _get_engine(request, pipeline)
     registry = _get_registry(request)
     run = registry.create_run("pipeline", [node.id for node in pipeline.nodes])
     execution_controller = registry.create_controller(run.execution_id)
@@ -113,7 +119,7 @@ async def start_pipeline_execution(pipeline: PipelineDefinition, request: Reques
 async def start_node_execution(payload: NodeExecutionRequest, request: Request):
     store = get_store()
     node, cache_key = _resolved_node_and_key(payload, store)
-    engine = _get_engine(request, payload.pipeline.id)
+    engine = _get_engine(request, payload.pipeline)
     registry = _get_registry(request)
     run = registry.create_run("node", [node.id])
     execution_controller = registry.create_controller(run.execution_id)
@@ -218,7 +224,7 @@ async def execute_pipeline(pipeline_id: str, request: Request, force: bool = Fal
         raise HTTPException(status_code=404, detail="Pipeline not found")
 
     pipeline = _resolve_pipeline_connections(pipeline, store)
-    engine = _get_engine(request, pipeline.id)
+    engine = _get_engine(request, pipeline)
     results = await engine.execute_pipeline(pipeline, force_refresh=force)
     return results
 
@@ -226,7 +232,7 @@ async def execute_pipeline(pipeline_id: str, request: Request, force: bool = Fal
 @router.post("/pipeline")
 async def execute_pipeline_inline(pipeline: PipelineDefinition, request: Request, force: bool = False):
     pipeline = _resolve_pipeline_connections(pipeline, get_store())
-    engine = _get_engine(request, pipeline.id)
+    engine = _get_engine(request, pipeline)
     results = await engine.execute_pipeline(pipeline, force_refresh=force)
     return results
 
@@ -235,7 +241,7 @@ async def execute_pipeline_inline(pipeline: PipelineDefinition, request: Request
 async def execute_node(payload: NodeExecutionRequest, request: Request):
     store = get_store()
     node, cache_key = _resolved_node_and_key(payload, store)
-    engine = _get_engine(request, payload.pipeline.id)
+    engine = _get_engine(request, payload.pipeline)
     result = await engine.execute_single_node(
         node, cache_key=cache_key, force_refresh=payload.force
     )
