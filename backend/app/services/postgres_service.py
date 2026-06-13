@@ -97,7 +97,11 @@ class PostgresService:
             if register_interrupt is not None:
                 register_interrupt(load.interrupt)
             load.execute("LOAD postgres")
-            load.execute(f"ATTACH '{_attach_string(conn_config)}' AS {alias} (TYPE postgres, READ_ONLY)")
+            # Two escaping layers: _attach_string already libpq-escapes values
+            # (which leaves single quotes around them); double those quotes so
+            # the whole conninfo survives as one SQL string literal.
+            attach_literal = _attach_string(conn_config).replace("'", "''")
+            load.execute(f"ATTACH '{attach_literal}' AS {alias} (TYPE postgres, READ_ONLY)")
             try:
                 load.create_staging_as(
                     f"SELECT * FROM postgres_query('{alias}', {_dollar_quote(query)})"
