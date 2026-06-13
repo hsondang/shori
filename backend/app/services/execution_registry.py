@@ -28,11 +28,11 @@ class ExecutionController:
         if self.is_cancelled():
             raise ExecutionCancelled()
 
-    def set_abort_callback(self, callback: Callable[[], None]) -> None:
-        self._registry.set_abort_callback(self.execution_id, callback)
+    def set_abort_callback(self, node_id: str, callback: Callable[[], None]) -> None:
+        self._registry.set_abort_callback(self.execution_id, node_id, callback)
 
-    def clear_abort_callback(self) -> None:
-        self._registry.clear_abort_callback(self.execution_id)
+    def clear_abort_callback(self, node_id: str) -> None:
+        self._registry.clear_abort_callback(self.execution_id, node_id)
 
 
 class ExecutionRegistry:
@@ -40,7 +40,9 @@ class ExecutionRegistry:
         self._retention_seconds = retention_seconds
         self._runs: dict[str, ExecutionRunStatus] = {}
         self._tasks = {}
-        self._abort_callbacks: dict[str, Callable[[], None]] = {}
+        # execution_id -> node_id -> abort callback; concurrent nodes each
+        # register their own in-flight query/load aborter.
+        self._abort_callbacks: dict[str, dict[str, Callable[[], None]]] = {}
         self._node_ids: dict[str, list[str]] = {}
         self._completed_at: dict[str, float] = {}
         self._lock = threading.Lock()
@@ -71,16 +73,20 @@ class ExecutionRegistry:
             if execution_id in self._runs:
                 self._tasks[execution_id] = task
 
-    def set_abort_callback(self, execution_id: str, callback: Callable[[], None]) -> None:
+    def set_abort_callback(self, execution_id: str, node_id: str, callback: Callable[[], None]) -> None:
         with self._lock:
             run = self._runs.get(execution_id)
             if run is None or run.status != NodeStatus.RUNNING:
                 return
-            self._abort_callbacks[execution_id] = callback
+            self._abort_callbacks.setdefault(execution_id, {})[node_id] = callback
 
-    def clear_abort_callback(self, execution_id: str) -> None:
+    def clear_abort_callback(self, execution_id: str, node_id: str) -> None:
         with self._lock:
-            self._abort_callbacks.pop(execution_id, None)
+            callbacks = self._abort_callbacks.get(execution_id)
+            if callbacks is not None:
+                callbacks.pop(node_id, None)
+                if not callbacks:
+                    self._abort_callbacks.pop(execution_id, None)
 
     def is_cancelled(self, execution_id: str) -> bool:
         with self._lock:
@@ -89,7 +95,7 @@ class ExecutionRegistry:
 
     def abort_run(self, execution_id: str) -> ExecutionRunStatus | None:
         task = None
-        abort_callback: Callable[[], None] | None = None
+        abort_callbacks: dict[str, Callable[[], None]] | None = None
 
         with self._lock:
             run = self._runs.get(execution_id)
@@ -118,13 +124,13 @@ class ExecutionRegistry:
             run.status = NodeStatus.CANCELLED
             run.finished_at = finished_at
             self._completed_at[execution_id] = time.monotonic()
-            abort_callback = self._abort_callbacks.pop(execution_id, None)
+            abort_callbacks = self._abort_callbacks.pop(execution_id, None)
             task = self._tasks.get(execution_id)
             snapshot = run.model_copy(deep=True)
 
-        if abort_callback is not None:
+        for callback in (abort_callbacks or {}).values():
             try:
-                abort_callback()
+                callback()
             except Exception:
                 pass
 

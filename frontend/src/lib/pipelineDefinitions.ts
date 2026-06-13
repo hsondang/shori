@@ -1,4 +1,5 @@
 import type { PipelineDefinition } from '../types/pipeline'
+import { DEFAULT_PROJECT_SETTINGS } from '../types/pipeline'
 
 export function createBlankPipelineDefinition(id = crypto.randomUUID()): PipelineDefinition {
   return {
@@ -7,6 +8,7 @@ export function createBlankPipelineDefinition(id = crypto.randomUUID()): Pipelin
     database_connections: [],
     nodes: [],
     edges: [],
+    settings: { ...DEFAULT_PROJECT_SETTINGS },
   }
 }
 

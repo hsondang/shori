@@ -1,6 +1,7 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { usePipelineStore } from '../../../store/pipelineStore'
 import NodeStatusBadge from '../NodeStatusBadge'
+import NodeCacheChip from '../NodeCacheChip'
 import type { CsvSourceConfig } from '../../../types/pipeline'
 
 export default function CsvSourceNode({ id, data }: NodeProps) {
@@ -42,6 +43,7 @@ export default function CsvSourceNode({ id, data }: NodeProps) {
             onViewError={result.status === 'error' ? () => openNodeError(id) : undefined}
           />
         )}
+        <NodeCacheChip nodeId={id} />
         {config.file_path && (
           <button
             className="text-blue-500 hover:underline text-xs"

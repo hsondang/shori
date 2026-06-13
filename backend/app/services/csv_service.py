@@ -136,13 +136,14 @@ def register_csv_source(
     table_name: str,
     config: Mapping[str, object],
     artifact_store: CsvPreprocessArtifactStore,
+    cache_key: str | None = None,
 ) -> dict:
     file_path = _materialization_file_path(config)
     preprocessing = config.get("preprocessing")
     normalized = _normalize_preprocessing(preprocessing)
 
     if normalized is None:
-        return duckdb.register_csv(table_name, file_path)
+        return duckdb.register_csv(table_name, file_path, node_id=node_id, cache_key=cache_key)
 
     fingerprint = preprocessing_fingerprint(file_path, preprocessing)
     if fingerprint is None:
@@ -154,7 +155,7 @@ def register_csv_source(
             "Preprocessing is enabled for this CSV source. Click Preprocess and review the output before loading data."
         )
 
-    return duckdb.register_csv(table_name, artifact_path)
+    return duckdb.register_csv(table_name, artifact_path, node_id=node_id, cache_key=cache_key)
 
 
 @contextmanager

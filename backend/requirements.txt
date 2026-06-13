@@ -4,5 +4,6 @@ duckdb>=1.2
 oracledb>=3
 asyncpg>=0.30
 pandas>=2
+pyarrow>=17
 python-multipart>=0.0.18
 python-calamine>=0.6.2

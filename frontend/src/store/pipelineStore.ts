@@ -17,18 +17,22 @@ import type {
   DatabaseSourceConfig,
   ExcelSourceConfig,
   ExecutionRunStatus,
+  LivePreviewState,
   MaterializedPreviewTab,
+  NodeCacheStatus,
   NodeEditorDraft,
   NodeEditorMode,
   NodeLabelMode,
   NodeType,
   NodeExecutionResult,
   PipelineDefinition,
+  ProjectSettings,
   SavedDatabaseConnection,
   SavedDatabaseConnectionInput,
   TablePreviewData,
   TransientPreviewState,
 } from '../types/pipeline'
+import { DEFAULT_PROJECT_SETTINGS } from '../types/pipeline'
 import * as api from '../api/client'
 import { getCsvPreprocessFingerprint } from '../lib/csvPreprocessing'
 import {
@@ -53,10 +57,12 @@ interface PipelineState {
   pipelineId: string
   pipelineName: string
   databaseConnections: SavedDatabaseConnection[]
+  projectSettings: ProjectSettings
   savedPipelineSnapshot: string
   hasUnsavedChanges: boolean
   projectListRevision: number
   setPipelineName: (name: string) => void
+  updateProjectSettings: (patch: Partial<ProjectSettings>) => void
 
   // Execution results
   nodeResults: Record<string, NodeExecutionResult>
@@ -80,6 +86,17 @@ interface PipelineState {
   csvPreprocessArtifacts: Record<string, string>
   selectPreviewTab: (nodeId: string) => void
 
+  // Persisted cache status (per node, from the project DuckDB metadata)
+  cacheStatusByNodeId: Record<string, NodeCacheStatus>
+  refreshCacheStatus: () => Promise<void>
+
+  // Live preview sessions (DBeaver-style, no table created)
+  livePreviewsByNodeId: Record<string, LivePreviewState>
+  startLivePreview: (nodeId: string) => Promise<void>
+  loadMoreLivePreview: (nodeId: string) => Promise<void>
+  materializeLivePreview: (nodeId: string) => Promise<void>
+  closeLivePreview: (nodeId: string) => Promise<void>
+
   // Node editor
   nodeEditorMode: NodeEditorMode
   nodeEditorDraft: NodeEditorDraft | null
@@ -99,11 +116,12 @@ interface PipelineState {
   updateNodeData: (nodeId: string, data: Record<string, unknown>) => void
   deleteNode: (nodeId: string) => void
   executePipeline: (force?: boolean) => Promise<void>
-  executeSingleNode: (nodeId: string, options?: { loadPreviewOnSuccess?: boolean }) => Promise<void>
+  executeSingleNode: (nodeId: string, options?: { loadPreviewOnSuccess?: boolean; force?: boolean }) => Promise<void>
   runTransformPreview: (nodeId: string) => Promise<void>
   loadCsvPreview: (nodeId: string, filePath: string) => Promise<void>
   loadPreprocessedCsvPreview: (nodeId: string, filePath: string, preprocessing: CsvPreprocessingConfig) => Promise<void>
   loadTablePreview: (nodeId: string, tableName: string, offset?: number, options?: { forceReload?: boolean }) => Promise<void>
+  loadMoreTablePreview: (nodeId: string) => Promise<void>
   savePipeline: () => Promise<void>
   loadPipeline: (id: string) => Promise<void>
   newPipeline: () => void
@@ -313,13 +331,14 @@ function serializeNode(node: Node): PipelineDefinition['nodes'][number] {
   }
 }
 
-function buildPipelineDefinitionFromState(state: Pick<PipelineState, 'nodes' | 'edges' | 'pipelineId' | 'pipelineName' | 'databaseConnections'>): PipelineDefinition {
+function buildPipelineDefinitionFromState(state: Pick<PipelineState, 'nodes' | 'edges' | 'pipelineId' | 'pipelineName' | 'databaseConnections' | 'projectSettings'>): PipelineDefinition {
   return {
     id: state.pipelineId,
     name: state.pipelineName,
     database_connections: state.databaseConnections,
     nodes: state.nodes.map(serializeNode),
     edges: state.edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
+    settings: state.projectSettings,
   }
 }
 
@@ -336,6 +355,7 @@ function hydratePipelineState(pipeline: PipelineDefinition) {
     pipelineId: pipeline.id,
     pipelineName: pipeline.name,
     databaseConnections: pipeline.database_connections || [],
+    projectSettings: pipeline.settings ?? { ...DEFAULT_PROJECT_SETTINGS },
     nodeResults: {},
     activeExecutions: {},
     activeExecutionIdByNodeId: {},
@@ -348,6 +368,8 @@ function hydratePipelineState(pipeline: PipelineDefinition) {
     activePreviewTarget: null,
     transientPreview: getEmptyTransientPreview(),
     csvPreprocessArtifacts: {},
+    cacheStatusByNodeId: {},
+    livePreviewsByNodeId: {},
     nodeEditorMode: 'closed' as const,
     nodeEditorDraft: null,
     editingNodeId: null,
@@ -378,9 +400,15 @@ function getRequestErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
 }
 
-function dropMaterializedTable(tableName: string | undefined) {
-  if (!tableName) return
-  void api.deleteTable(tableName).catch(() => {})
+// Cache-status refreshes are cheap but fire from several actions in a row
+// (edit, connect, delete) — coalesce them.
+let cacheStatusRefreshTimeout: ReturnType<typeof setTimeout> | null = null
+function scheduleCacheStatusRefresh(get: () => PipelineState) {
+  if (cacheStatusRefreshTimeout != null) clearTimeout(cacheStatusRefreshTimeout)
+  cacheStatusRefreshTimeout = setTimeout(() => {
+    cacheStatusRefreshTimeout = null
+    void get().refreshCacheStatus()
+  }, 300)
 }
 
 function invalidateCsvPreprocessArtifact(nodeId: string | undefined) {
@@ -729,6 +757,9 @@ async function finalizeExecutionRun(
   if (previewTarget && run.node_results[previewTarget.nodeId]?.status === 'success') {
     await get().loadTablePreview(previewTarget.nodeId, previewTarget.tableName, 0, { forceReload: true })
   }
+
+  // A finished run changes which nodes are fresh/stale (descendants too).
+  void get().refreshCacheStatus()
 }
 
 function scheduleExecutionPoll(
@@ -774,6 +805,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   pipelineId: initialPipeline.id,
   pipelineName: initialPipeline.name,
   databaseConnections: [],
+  projectSettings: initialPipeline.settings ?? { ...DEFAULT_PROJECT_SETTINGS },
   savedPipelineSnapshot: snapshotPipelineDefinition(initialPipeline),
   hasUnsavedChanges: false,
   projectListRevision: 0,
@@ -789,6 +821,8 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   activePreviewTarget: null,
   transientPreview: getEmptyTransientPreview(),
   csvPreprocessArtifacts: {},
+  cacheStatusByNodeId: {},
+  livePreviewsByNodeId: {},
   nodeEditorMode: 'closed',
   nodeEditorDraft: null,
   editingNodeId: null,
@@ -799,6 +833,28 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     set({
       hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
     })
+  },
+
+  updateProjectSettings: (patch) => {
+    set((state) => ({ projectSettings: { ...state.projectSettings, ...patch } }))
+    const state = get()
+    set({
+      hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
+    })
+  },
+
+  refreshCacheStatus: async () => {
+    const state = get()
+    if (state.nodes.length === 0) {
+      set({ cacheStatusByNodeId: {} })
+      return
+    }
+    try {
+      const response = await api.getCacheStatus(buildPipelineDefinitionFromState(state))
+      set({ cacheStatusByNodeId: response.nodes })
+    } catch {
+      // Keep the last known statuses; a transient failure shouldn't flicker badges.
+    }
   },
 
   onNodesChange: (changes) => {
@@ -826,6 +882,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     set({
       hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
     })
+    scheduleCacheStatusRefresh(get)
   },
 
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
@@ -1002,9 +1059,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       ? data.labelMode
       : currentLabelMetadata.labelMode
 
-    if (shouldInvalidateExecution) {
-      dropMaterializedTable(previousTableName)
-    }
+    // Config changes no longer drop the persisted table: the cache-key
+    // system marks it stale instead, and the data stays queryable until the
+    // node reruns. Renames are reconciled server-side on save.
     if (csvLoadInputsChanged) {
       invalidateCsvPreprocessArtifact(nodeId)
     }
@@ -1062,16 +1119,23 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   deleteNode: (nodeId) => {
     const node = get().nodes.find((candidate) => candidate.id === nodeId)
     if (node) {
-      dropMaterializedTable(getTableName(node))
+      // The persisted table drops when the deletion is saved (server-side
+      // reconcile), so discarding unsaved changes keeps the data.
       if (node.type === 'csv_source' || node.type === 'excel_source') {
         invalidateCsvPreprocessArtifact(nodeId)
       }
+    }
+    const liveSession = get().livePreviewsByNodeId[nodeId]
+    if (liveSession?.sessionId) {
+      void api.closePreviewSession(liveSession.sessionId).catch(() => {})
     }
 
     set((state) => {
       const nodeResults = { ...state.nodeResults }
       const csvPreprocessArtifacts = { ...state.csvPreprocessArtifacts }
       const previewTabsByNodeId = { ...state.previewTabsByNodeId }
+      const livePreviewsByNodeId = { ...state.livePreviewsByNodeId }
+      const cacheStatusByNodeId = { ...state.cacheStatusByNodeId }
       const previewTabOrder = state.previewTabOrder.filter((id) => id !== nodeId)
       const activePreviewTarget = state.activePreviewTarget?.nodeId === nodeId
         ? getFallbackActivePreviewTarget(previewTabOrder)
@@ -1082,12 +1146,16 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       delete nodeResults[nodeId]
       delete csvPreprocessArtifacts[nodeId]
       delete previewTabsByNodeId[nodeId]
+      delete livePreviewsByNodeId[nodeId]
+      delete cacheStatusByNodeId[nodeId]
 
       return {
         nodes: state.nodes.filter((n) => n.id !== nodeId),
         edges: state.edges.filter((e) => e.source !== nodeId && e.target !== nodeId),
         nodeResults,
         previewTabsByNodeId,
+        livePreviewsByNodeId,
+        cacheStatusByNodeId,
         previewTabOrder,
         activePreviewTarget,
         transientPreview,
@@ -1106,15 +1174,8 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   },
 
   executePipeline: async (force = false) => {
-    const { nodes, edges, pipelineId, pipelineName } = get()
-
-    const pipeline = {
-      id: pipelineId,
-      name: pipelineName,
-      database_connections: get().databaseConnections,
-      nodes: nodes.map(serializeNode),
-      edges: edges.map((e) => ({ id: e.id, source: e.source, target: e.target })),
-    }
+    const { nodes } = get()
+    const pipeline = buildPipelineDefinitionFromState(get())
 
     try {
       const run = await api.startPipelineExecution(pipeline, force)
@@ -1145,9 +1206,10 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     if (!node) return
 
     const tableName = (node.data as Record<string, unknown>).tableName as string
+    const pipeline = buildPipelineDefinitionFromState(get())
 
     try {
-      const run = await api.startNodeExecution(serializeNode(node))
+      const run = await api.startNodeExecution(pipeline, nodeId, options?.force ?? false)
       executionTrackedNodeIds.set(run.execution_id, [nodeId])
       if (options?.loadPreviewOnSuccess) {
         executionPreviewTargets.set(run.execution_id, { nodeId, tableName })
@@ -1225,7 +1287,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       const materializationChecks = await Promise.all(
         ancestorNodes.map(async (ancestorNode) => ({
           node: ancestorNode,
-          materialized: (await api.getTableSchema(getTableName(ancestorNode))) !== null,
+          materialized: (await api.getTableSchema(state.pipelineId, getTableName(ancestorNode))) !== null,
         }))
       )
       const missingAncestorNodes = materializationChecks
@@ -1244,6 +1306,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
           id: state.pipelineId,
           name: state.pipelineName,
           database_connections: state.databaseConnections,
+          settings: state.projectSettings,
           nodes: state.nodes.filter((candidate) => executingIds.has(candidate.id)).map(serializeNode),
           edges: state.edges
             .filter((edge) => executingIds.has(edge.source) && executingIds.has(edge.target))
@@ -1392,7 +1455,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       }
     })
     try {
-      const data = await api.previewData(tableName, offset) as TablePreviewData
+      const data = await api.previewData(get().pipelineId, tableName, offset) as TablePreviewData
       set((state) => ({
         previewTabsByNodeId: {
           ...state.previewTabsByNodeId,
@@ -1431,6 +1494,55 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     }
   },
 
+  loadMoreTablePreview: async (nodeId) => {
+    const tab = get().previewTabsByNodeId[nodeId]
+    if (!tab || tab.loading || !tab.data) return
+    const { rows, total_rows, limit, offset } = tab.data
+    const nextOffset = offset + rows.length
+    // All rows already loaded.
+    if (nextOffset >= total_rows) return
+
+    set((state) => ({
+      previewTabsByNodeId: {
+        ...state.previewTabsByNodeId,
+        [nodeId]: { ...state.previewTabsByNodeId[nodeId], loading: true },
+      },
+    }))
+    try {
+      const page = await api.previewData(get().pipelineId, tab.tableNameAtLoad, nextOffset, limit) as TablePreviewData
+      set((state) => {
+        const current = state.previewTabsByNodeId[nodeId]
+        if (!current?.data) return {}
+        return {
+          previewTabsByNodeId: {
+            ...state.previewTabsByNodeId,
+            [nodeId]: {
+              ...current,
+              loading: false,
+              data: {
+                ...page,
+                // Keep the original window offset; rows accumulate for the grid.
+                offset: current.data.offset,
+                rows: [...current.data.rows, ...page.rows],
+              },
+            },
+          },
+        }
+      })
+    } catch (err) {
+      set((state) => ({
+        previewTabsByNodeId: {
+          ...state.previewTabsByNodeId,
+          [nodeId]: {
+            ...state.previewTabsByNodeId[nodeId],
+            loading: false,
+            error: getRequestErrorMessage(err, 'Unable to load more rows'),
+          },
+        },
+      }))
+    }
+  },
+
   savePipeline: async () => {
     const pipeline = buildPipelineDefinitionFromState(get())
     await api.savePipeline(pipeline)
@@ -1439,6 +1551,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       hasUnsavedChanges: false,
       projectListRevision: state.projectListRevision + 1,
     }))
+    // Save reconciles server-side storage (drops/renames), so fresh/stale
+    // status can shift.
+    void get().refreshCacheStatus()
   },
 
   loadPipeline: async (id) => {
@@ -1449,6 +1564,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     clearAllExecutionTracking()
     const pipeline = await api.loadPipeline(id)
     set(hydratePipelineState(pipeline))
+    void get().refreshCacheStatus()
   },
 
   newPipeline: () => {
@@ -1469,5 +1585,170 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     if (!get().hasUnsavedChanges) return true
     const suffix = nextProjectName ? ` and open "${nextProjectName}"` : ''
     return window.confirm(`You have unsaved changes. Discard them${suffix}?`)
+  },
+
+  startLivePreview: async (nodeId) => {
+    const node = get().nodes.find((candidate) => candidate.id === nodeId)
+    if (!node || node.type !== 'db_source') return
+
+    // Close any prior session for this node before starting a new one.
+    const existing = get().livePreviewsByNodeId[nodeId]
+    if (existing?.sessionId) {
+      void api.closePreviewSession(existing.sessionId).catch(() => {})
+    }
+
+    set((state) => ({
+      activePreviewTarget: { kind: 'live', nodeId },
+      livePreviewsByNodeId: {
+        ...state.livePreviewsByNodeId,
+        [nodeId]: {
+          nodeId,
+          sessionId: null,
+          columns: [],
+          columnTypes: [],
+          rows: [],
+          hasMore: false,
+          bufferCapped: false,
+          loading: true,
+          materializing: false,
+          error: null,
+        },
+      },
+    }))
+
+    try {
+      const pipeline = buildPipelineDefinitionFromState(get())
+      const result = await api.startPreviewSession(pipeline, nodeId)
+      set((state) => ({
+        livePreviewsByNodeId: {
+          ...state.livePreviewsByNodeId,
+          [nodeId]: {
+            nodeId,
+            sessionId: result.session_id,
+            columns: result.columns,
+            columnTypes: result.column_types,
+            rows: result.rows,
+            hasMore: result.has_more,
+            bufferCapped: result.buffer_capped,
+            loading: false,
+            materializing: false,
+            error: null,
+          },
+        },
+      }))
+    } catch (err) {
+      set((state) => ({
+        livePreviewsByNodeId: {
+          ...state.livePreviewsByNodeId,
+          [nodeId]: {
+            ...(state.livePreviewsByNodeId[nodeId] ?? { nodeId, sessionId: null, columns: [], columnTypes: [], rows: [], hasMore: false, bufferCapped: false, materializing: false }),
+            loading: false,
+            error: getRequestErrorMessage(err, 'Unable to start preview'),
+          },
+        },
+      }))
+    }
+  },
+
+  loadMoreLivePreview: async (nodeId) => {
+    const live = get().livePreviewsByNodeId[nodeId]
+    if (!live?.sessionId || live.loading || live.materializing || !live.hasMore || live.bufferCapped) return
+
+    set((state) => ({
+      livePreviewsByNodeId: {
+        ...state.livePreviewsByNodeId,
+        [nodeId]: { ...state.livePreviewsByNodeId[nodeId], loading: true },
+      },
+    }))
+    try {
+      const chunk = await api.fetchPreviewSessionRows(live.sessionId)
+      set((state) => {
+        const current = state.livePreviewsByNodeId[nodeId]
+        if (!current) return {}
+        return {
+          livePreviewsByNodeId: {
+            ...state.livePreviewsByNodeId,
+            [nodeId]: {
+              ...current,
+              rows: [...current.rows, ...chunk.rows],
+              hasMore: chunk.has_more,
+              bufferCapped: chunk.buffer_capped,
+              loading: false,
+            },
+          },
+        }
+      })
+    } catch (err) {
+      set((state) => ({
+        livePreviewsByNodeId: {
+          ...state.livePreviewsByNodeId,
+          [nodeId]: {
+            ...state.livePreviewsByNodeId[nodeId],
+            loading: false,
+            error: getRequestErrorMessage(err, 'Unable to load more rows'),
+          },
+        },
+      }))
+    }
+  },
+
+  materializeLivePreview: async (nodeId) => {
+    const live = get().livePreviewsByNodeId[nodeId]
+    if (!live?.sessionId || live.materializing) return
+    const sessionId = live.sessionId
+    const node = get().nodes.find((candidate) => candidate.id === nodeId)
+    const tableName = node ? getTableName(node) : ''
+
+    set((state) => ({
+      livePreviewsByNodeId: {
+        ...state.livePreviewsByNodeId,
+        [nodeId]: { ...state.livePreviewsByNodeId[nodeId], materializing: true, error: null },
+      },
+    }))
+
+    try {
+      const run = await api.materializePreviewSession(sessionId)
+      // The session is consumed once materialize starts; drop the live tab and
+      // switch focus to the (forthcoming) materialized table tab.
+      executionTrackedNodeIds.set(run.execution_id, [nodeId])
+      executionPreviewTargets.set(run.execution_id, { nodeId, tableName })
+      set((state) => {
+        const livePreviewsByNodeId = { ...state.livePreviewsByNodeId }
+        delete livePreviewsByNodeId[nodeId]
+        return { livePreviewsByNodeId }
+      })
+      applyExecutionRunSnapshot(run, set, get)
+      if (run.status === 'running') {
+        scheduleExecutionPoll(run.execution_id, set, get)
+      } else {
+        await finalizeExecutionRun(run, set, get)
+      }
+    } catch (err) {
+      set((state) => ({
+        livePreviewsByNodeId: {
+          ...state.livePreviewsByNodeId,
+          [nodeId]: {
+            ...state.livePreviewsByNodeId[nodeId],
+            materializing: false,
+            error: getRequestErrorMessage(err, 'Unable to materialize preview'),
+          },
+        },
+      }))
+    }
+  },
+
+  closeLivePreview: async (nodeId) => {
+    const live = get().livePreviewsByNodeId[nodeId]
+    if (live?.sessionId) {
+      void api.closePreviewSession(live.sessionId).catch(() => {})
+    }
+    set((state) => {
+      const livePreviewsByNodeId = { ...state.livePreviewsByNodeId }
+      delete livePreviewsByNodeId[nodeId]
+      const activePreviewTarget = state.activePreviewTarget?.kind === 'live' && state.activePreviewTarget.nodeId === nodeId
+        ? getFallbackActivePreviewTarget(state.previewTabOrder)
+        : state.activePreviewTarget
+      return { livePreviewsByNodeId, activePreviewTarget }
+    })
   },
 }))

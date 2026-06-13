@@ -2,6 +2,7 @@ import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { usePipelineStore } from '../../../store/pipelineStore'
 import { useSettingsStore } from '../../../store/settingsStore'
 import NodeStatusBadge from '../NodeStatusBadge'
+import NodeCacheChip from '../NodeCacheChip'
 import {
   findSavedConnectionById,
   getConnectionSummary,
@@ -20,6 +21,8 @@ export default function DatabaseSourceNode({ id, data }: NodeProps) {
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
   const openNodeError = usePipelineStore((s) => s.openNodeError)
   const loadTablePreview = usePipelineStore((s) => s.loadTablePreview)
+  const startLivePreview = usePipelineStore((s) => s.startLivePreview)
+  const executeSingleNode = usePipelineStore((s) => s.executeSingleNode)
   const globalDatabaseConnections = useSettingsStore((s) => s.globalDatabaseConnections)
   const result = nodeResults[id]
   const hasError = result?.status === 'error'
@@ -74,14 +77,29 @@ export default function DatabaseSourceNode({ id, data }: NodeProps) {
             onViewError={result.status === 'error' ? () => openNodeError(id) : undefined}
           />
         )}
-        {result?.status === 'success' && (
+        <NodeCacheChip nodeId={id} />
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5 pt-0.5">
           <button
             className={`${style.text} hover:underline text-xs`}
-            onClick={(e) => { e.stopPropagation(); loadTablePreview(id, tableName) }}
+            onClick={(e) => { e.stopPropagation(); startLivePreview(id) }}
           >
-            Preview data
+            Preview
           </button>
-        )}
+          <button
+            className={`${style.text} hover:underline text-xs`}
+            onClick={(e) => { e.stopPropagation(); executeSingleNode(id, { loadPreviewOnSuccess: true }) }}
+          >
+            Materialize
+          </button>
+          {result?.status === 'success' && (
+            <button
+              className={`${style.text} hover:underline text-xs`}
+              onClick={(e) => { e.stopPropagation(); loadTablePreview(id, tableName) }}
+            >
+              View table
+            </button>
+          )}
+        </div>
       </div>
       <Handle type="source" position={Position.Right} className={`${style.handle} !w-3 !h-3`} />
     </div>

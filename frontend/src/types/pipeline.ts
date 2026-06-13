@@ -136,6 +136,8 @@ export interface NodeExecutionResult {
   execution_time_ms?: number
   started_at?: string
   finished_at?: string
+  /** True when served from the project's persisted cache without re-running. */
+  cached?: boolean
 }
 
 export interface ExecutionRunStatus {
@@ -145,6 +147,24 @@ export interface ExecutionRunStatus {
   started_at: string
   finished_at?: string
   node_results: Record<string, NodeExecutionResult>
+}
+
+export interface ProjectSettings {
+  max_concurrent_nodes: number
+  max_connections_per_database: number
+  duckdb_memory_limit: string
+  preview_chunk_rows: number
+  preview_max_buffer_rows: number
+  preview_session_ttl_seconds: number
+}
+
+export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
+  max_concurrent_nodes: 4,
+  max_connections_per_database: 2,
+  duckdb_memory_limit: '2GB',
+  preview_chunk_rows: 200,
+  preview_max_buffer_rows: 10000,
+  preview_session_ttl_seconds: 600,
 }
 
 export interface PipelineDefinition {
@@ -166,6 +186,40 @@ export interface PipelineDefinition {
     source: string
     target: string
   }>
+  settings?: ProjectSettings
+}
+
+export type NodeCacheState = 'fresh' | 'stale' | 'missing' | 'loading' | 'failed'
+
+export interface NodeCacheStatus {
+  state: NodeCacheState
+  row_count: number | null
+  column_count: number | null
+  finished_at: string | null
+  error: string | null
+}
+
+export interface CacheStatusResponse {
+  nodes: Record<string, NodeCacheStatus>
+}
+
+export interface PreviewSessionChunk {
+  session_id: string
+  rows: unknown[][]
+  buffered_rows: number
+  has_more: boolean
+  buffer_capped: boolean
+}
+
+export interface PreviewSessionStart extends PreviewSessionChunk {
+  node_id: string
+  columns: string[]
+  column_types: string[]
+}
+
+export interface ProjectStorageInfo {
+  file_size_bytes: number
+  path: string
 }
 
 export interface ProjectSummary {
@@ -206,6 +260,19 @@ export interface MaterializedPreviewTab {
   isStale: boolean
 }
 
+export interface LivePreviewState {
+  nodeId: string
+  sessionId: string | null
+  columns: string[]
+  columnTypes: string[]
+  rows: unknown[][]
+  hasMore: boolean
+  bufferCapped: boolean
+  loading: boolean
+  materializing: boolean
+  error: string | null
+}
+
 export interface TransientPreviewState {
   nodeId: string | null
   data: CsvTextPreviewData | null
@@ -216,3 +283,4 @@ export interface TransientPreviewState {
 export type ActivePreviewTarget =
   | { kind: 'tab'; nodeId: string }
   | { kind: 'transient'; nodeId: string }
+  | { kind: 'live'; nodeId: string }

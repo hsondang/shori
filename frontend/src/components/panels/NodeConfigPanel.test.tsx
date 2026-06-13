@@ -279,7 +279,9 @@ describe('NodeConfigPanel', () => {
     expect(updated.label).toBe('Transform Curated')
     expect(updated.tableName).toBe('orders_curated')
     expect((updated.config as Record<string, unknown>).sql).toBe('select id from orders_table')
-    expect(mockDeleteTable).toHaveBeenCalledWith('orders_final')
+    // The table is no longer dropped client-side on edit; it's marked stale and
+    // reconciled server-side on save.
+    expect(mockDeleteTable).not.toHaveBeenCalled()
     expect(usePipelineStore.getState().previewTabsByNodeId['transform-node']?.isStale).toBe(true)
   })
 

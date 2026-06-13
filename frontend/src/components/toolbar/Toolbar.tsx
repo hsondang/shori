@@ -4,6 +4,7 @@ import { getRunElapsedLabel } from '../../lib/executionTiming'
 import type { NodeType } from '../../types/pipeline'
 import { NODE_TYPE_MIME } from '../../lib/dragData'
 import DatabaseSourcePicker from './DatabaseSourcePicker'
+import ProjectSettingsModal from '../panels/ProjectSettingsModal'
 
 const nodeTypeOptions: { type: NodeType; label: string; color: string }[] = [
   { type: 'csv_source', label: 'CSV Source', color: 'bg-blue-100 text-blue-700 border-blue-300' },
@@ -22,6 +23,7 @@ export default function Toolbar() {
   const executionClockNow = usePipelineStore((s) => s.executionClockNow)
   const savePipeline = usePipelineStore((s) => s.savePipeline)
   const [saving, setSaving] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const activePipelineExecution = activePipelineExecutionId
     ? activeExecutions[activePipelineExecutionId] ?? null
     : null
@@ -76,6 +78,14 @@ export default function Toolbar() {
       <button onClick={handleSave} disabled={saving} className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50">
         {saving ? 'Saving...' : 'Save'}
       </button>
+      <button
+        onClick={() => setSettingsOpen(true)}
+        title="Project settings"
+        className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-50"
+      >
+        ⚙︎
+      </button>
+      {settingsOpen && <ProjectSettingsModal onClose={() => setSettingsOpen(false)} />}
 
       <div className="h-6 w-px bg-gray-300" />
 
