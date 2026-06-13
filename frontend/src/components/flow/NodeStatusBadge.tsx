@@ -11,6 +11,8 @@ const statusColors = {
   cancelled: 'bg-stone-200 text-stone-700',
 }
 
+const cachedColor = 'bg-sky-100 text-sky-700'
+
 export default function NodeStatusBadge({
   result,
   onViewError,
@@ -20,22 +22,25 @@ export default function NodeStatusBadge({
 }) {
   const executionClockNow = usePipelineStore((s) => s.executionClockNow)
   const runningElapsed = getResultElapsedLabel(result, executionClockNow)
+  const isCached = result.status === 'success' && result.cached
   const statusLabel = result.status === 'running'
     ? `Running${runningElapsed ? ` · ${runningElapsed}` : ''}`
     : result.status === 'connecting'
       ? 'Connecting'
       : result.status === 'cancelled'
         ? 'Cancelled'
+      : isCached
+        ? 'Cached'
       : result.status
 
   return (
     <div className="space-y-0.5">
-      <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${statusColors[result.status]}`}>
+      <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${isCached ? cachedColor : statusColors[result.status]}`}>
         {(result.status === 'running' || result.status === 'connecting') && (
           <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current align-middle" />
         )}
         {statusLabel}
-        {result.execution_time_ms != null && ` (${formatExecutionTime(result.execution_time_ms)})`}
+        {!isCached && result.execution_time_ms != null && ` (${formatExecutionTime(result.execution_time_ms)})`}
       </span>
       {result.row_count != null && (
         <div className="text-gray-500">

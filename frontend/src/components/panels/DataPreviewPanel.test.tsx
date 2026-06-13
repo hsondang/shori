@@ -145,12 +145,11 @@ describe('DataPreviewPanel', () => {
     expect(screen.getByText('NULL')).toBeInTheDocument()
   })
 
-  it('shows a stale badge for stale tabs and disables pagination', () => {
+  it('shows a stale badge for stale tabs', () => {
     seedTabPreview(makeTablePreview({ offset: 0, limit: 100, total_rows: 200 }), 'n1', 'orders_table', { isStale: true })
     render(<DataPreviewPanel />)
 
     expect(screen.getAllByText('Stale')).not.toHaveLength(0)
-    expect(screen.getByRole('button', { name: /next/i })).toBeDisabled()
   })
 
   it('uses the custom node label as the tab title when label mode is custom', () => {
@@ -257,29 +256,22 @@ describe('DataPreviewPanel', () => {
     expect(screen.getByText(/Unable to preview CSV: invalid delimiter/i)).toBeInTheDocument()
   })
 
-  it('shows correct page counter for active table tabs', () => {
-    seedTabPreview(makeTablePreview({ offset: 100, limit: 100, total_rows: 300 }))
+  it('shows the loaded row count summary for active table tabs', () => {
+    seedTabPreview(makeTablePreview({ offset: 0, limit: 100, total_rows: 300 }))
     render(<DataPreviewPanel />)
-    expect(screen.getByText(/Page 2 of 3/)).toBeInTheDocument()
+    expect(screen.getByText(/Showing 3 of 300/)).toBeInTheDocument()
   })
 
-  it('calls loadTablePreview with next offset on Next click', async () => {
-    const loadTablePreview = vi.fn()
-    act(() => usePipelineStore.setState({ loadTablePreview }))
+  it('loads more rows when scrolling near the bottom of a partially-loaded table', () => {
+    const loadMoreTablePreview = vi.fn()
+    act(() => usePipelineStore.setState({ loadMoreTablePreview }))
+    // 3 rows loaded out of 250 → more remain, so scrolling should page.
     seedTabPreview(makeTablePreview({ offset: 0, limit: 100, total_rows: 250 }))
-    render(<DataPreviewPanel />)
+    const { container } = render(<DataPreviewPanel />)
 
-    await userEvent.click(screen.getByRole('button', { name: /next/i }))
-    expect(loadTablePreview).toHaveBeenCalledWith('n1', 'my_table', 100)
-  })
+    const scrollRegion = container.querySelector('.overflow-auto') as HTMLElement
+    act(() => { scrollRegion.dispatchEvent(new Event('scroll', { bubbles: true })) })
 
-  it('calls loadTablePreview with prev offset on Prev click', async () => {
-    const loadTablePreview = vi.fn()
-    act(() => usePipelineStore.setState({ loadTablePreview }))
-    seedTabPreview(makeTablePreview({ offset: 100, limit: 100, total_rows: 300 }))
-    render(<DataPreviewPanel />)
-
-    await userEvent.click(screen.getByRole('button', { name: /prev/i }))
-    expect(loadTablePreview).toHaveBeenCalledWith('n1', 'my_table', 0)
+    expect(loadMoreTablePreview).toHaveBeenCalledWith('n1')
   })
 })

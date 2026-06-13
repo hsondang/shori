@@ -1,4 +1,5 @@
-import type { MaterializedPreviewTab } from '../../types/pipeline'
+import { useRef } from 'react'
+import type { LivePreviewState, MaterializedPreviewTab } from '../../types/pipeline'
 import { usePipelineStore } from '../../store/pipelineStore'
 
 const csvCellColors = [
@@ -22,25 +23,49 @@ const defaultLabels = {
 
 type DefaultLabelKey = keyof typeof defaultLabels
 
+// Trigger the next page when the user scrolls within this many px of the bottom.
+const INFINITE_SCROLL_THRESHOLD_PX = 200
+
+function formatCell(cell: unknown): React.ReactNode {
+  if (cell === null || cell === undefined) {
+    return <span className="italic text-gray-300">NULL</span>
+  }
+  return String(cell)
+}
+
 export default function DataPreviewPanel() {
   const previewTabsByNodeId = usePipelineStore((s) => s.previewTabsByNodeId)
   const previewTabOrder = usePipelineStore((s) => s.previewTabOrder)
   const activePreviewTarget = usePipelineStore((s) => s.activePreviewTarget)
   const transientPreview = usePipelineStore((s) => s.transientPreview)
+  const livePreviewsByNodeId = usePipelineStore((s) => s.livePreviewsByNodeId)
   const nodes = usePipelineStore((s) => s.nodes)
-  const loadTablePreview = usePipelineStore((s) => s.loadTablePreview)
+  const loadMoreTablePreview = usePipelineStore((s) => s.loadMoreTablePreview)
+  const loadMoreLivePreview = usePipelineStore((s) => s.loadMoreLivePreview)
+  const materializeLivePreview = usePipelineStore((s) => s.materializeLivePreview)
+  const closeLivePreview = usePipelineStore((s) => s.closeLivePreview)
   const selectPreviewTab = usePipelineStore((s) => s.selectPreviewTab)
+  const setActiveLivePreview = usePipelineStore((s) => s.startLivePreview)
+
+  const scrollGuard = useRef(false)
 
   const previewTabs = previewTabOrder
     .map((nodeId) => previewTabsByNodeId[nodeId])
     .filter((tab): tab is MaterializedPreviewTab => Boolean(tab))
+  const liveTabs = Object.values(livePreviewsByNodeId)
+
   const fallbackNodeId = previewTabs[previewTabs.length - 1]?.nodeId ?? null
-  const resolvedActivePreviewTarget = activePreviewTarget ?? (fallbackNodeId ? { kind: 'tab' as const, nodeId: fallbackNodeId } : null)
+  const resolvedActivePreviewTarget = activePreviewTarget
+    ?? (fallbackNodeId ? { kind: 'tab' as const, nodeId: fallbackNodeId } : null)
+
   const activeTab = resolvedActivePreviewTarget?.kind === 'tab'
     ? previewTabsByNodeId[resolvedActivePreviewTarget.nodeId] ?? null
     : null
   const activeTransient = resolvedActivePreviewTarget?.kind === 'transient'
     ? transientPreview
+    : null
+  const activeLive = resolvedActivePreviewTarget?.kind === 'live'
+    ? livePreviewsByNodeId[resolvedActivePreviewTarget.nodeId] ?? null
     : null
 
   const getNodeById = (nodeId: string) => nodes.find((node) => node.id === nodeId)
@@ -65,11 +90,33 @@ export default function DataPreviewPanel() {
     return tab.isStale ? tab.tableNameAtLoad : tableName
   }
 
+  const getLiveTitle = (live: LivePreviewState) => {
+    const node = getNodeById(live.nodeId)
+    const data = (node?.data as Record<string, unknown> | undefined) ?? {}
+    const label = typeof data.label === 'string' && data.label ? data.label : null
+    const tableName = typeof data.tableName === 'string' ? data.tableName : null
+    return label || tableName || 'Live preview'
+  }
+
   const renderEmptyState = () => (
     <div className="flex h-full min-h-0 items-center justify-center bg-white text-sm text-gray-400">
       Click "Preview data" on a node to see its contents
     </div>
   )
+
+  const handleInfiniteScroll = (
+    event: React.UIEvent<HTMLDivElement>,
+    onReachEnd: () => void,
+  ) => {
+    if (scrollGuard.current) return
+    const el = event.currentTarget
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < INFINITE_SCROLL_THRESHOLD_PX) {
+      scrollGuard.current = true
+      onReachEnd()
+      // Release the guard on the next frame so a single scroll burst fires once.
+      requestAnimationFrame(() => { scrollGuard.current = false })
+    }
+  }
 
   const renderCsvPreview = () => {
     if (!activeTransient) return renderEmptyState()
@@ -146,14 +193,91 @@ export default function DataPreviewPanel() {
     )
   }
 
+  const renderLivePreview = () => {
+    if (!activeLive) return renderEmptyState()
+
+    return (
+      <div className="flex h-full min-h-0 flex-col bg-white">
+        <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50 px-4 py-2">
+          <div className="text-sm font-medium text-gray-700">
+            <span className="font-mono text-blue-600">{getLiveTitle(activeLive)}</span>
+            <span className="ml-2 rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-blue-700">
+              Live · not materialized
+            </span>
+            <span className="ml-2 text-gray-400">
+              {activeLive.rows.length.toLocaleString()} rows loaded
+              {activeLive.hasMore ? '…' : ''}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <button
+              disabled={activeLive.materializing || !activeLive.sessionId}
+              onClick={() => materializeLivePreview(activeLive.nodeId)}
+              className="rounded bg-emerald-600 px-2.5 py-1 font-medium text-white hover:bg-emerald-700 disabled:opacity-40"
+            >
+              {activeLive.materializing ? 'Materializing…' : 'Materialize'}
+            </button>
+            <button
+              onClick={() => closeLivePreview(activeLive.nodeId)}
+              className="rounded border border-gray-300 px-2 py-1 hover:bg-gray-100"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+        {activeLive.error && (
+          <div className="border-b border-red-100 bg-red-50 px-4 py-1.5 text-xs text-red-700">{activeLive.error}</div>
+        )}
+        {activeLive.bufferCapped && (
+          <div className="border-b border-amber-100 bg-amber-50 px-4 py-1.5 text-xs text-amber-700">
+            Preview limited to {activeLive.rows.length.toLocaleString()} rows — materialize to load the full result.
+          </div>
+        )}
+        <div
+          className="flex-1 overflow-auto"
+          onScroll={(event) => handleInfiniteScroll(event, () => loadMoreLivePreview(activeLive.nodeId))}
+        >
+          {activeLive.columns.length === 0 ? (
+            <div className="px-4 py-3 text-sm text-gray-400">
+              {activeLive.loading ? 'Running query…' : 'No columns returned.'}
+            </div>
+          ) : (
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-gray-50">
+                <tr>
+                  {activeLive.columns.map((col, i) => (
+                    <th key={i} className="whitespace-nowrap border-b border-gray-200 px-3 py-1.5 text-left font-medium text-gray-600">
+                      {col}
+                      <span className="ml-1 font-normal text-gray-400">{activeLive.columnTypes[i]}</span>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {activeLive.rows.map((row, rowIndex) => (
+                  <tr key={rowIndex} className="hover:bg-blue-50">
+                    {(row as unknown[]).map((cell, cellIndex) => (
+                      <td key={cellIndex} className="max-w-[200px] truncate border-b border-gray-100 px-3 py-1 whitespace-nowrap">
+                        {formatCell(cell)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {activeLive.loading && activeLive.columns.length > 0 && (
+            <div className="px-4 py-2 text-center text-xs text-gray-400">Loading more…</div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   const renderTablePreview = () => {
     if (!activeTab) return renderEmptyState()
 
-    const node = getNodeById(activeTab.nodeId)
-    const nodeData = (node?.data as Record<string, unknown> | undefined) ?? {}
-    const currentTableName = typeof nodeData.tableName === 'string' ? nodeData.tableName : activeTab.tableNameAtLoad
-
-    if (activeTab.loading) {
+    if (activeTab.loading && !activeTab.data) {
       return (
         <div className="flex h-full min-h-0 items-center justify-center bg-white text-sm text-gray-400">
           Loading preview...
@@ -174,9 +298,8 @@ export default function DataPreviewPanel() {
     }
 
     const activeData = activeTab.data
-    const totalPages = Math.max(1, Math.ceil(activeData.total_rows / activeData.limit))
-    const currentPage = Math.floor(activeData.offset / activeData.limit) + 1
-    const paginationDisabled = activeTab.isStale
+    const loadedRows = activeData.rows.length
+    const hasMore = !activeTab.isStale && loadedRows < activeData.total_rows
 
     return (
       <div className="flex h-full min-h-0 flex-col bg-white">
@@ -192,25 +315,14 @@ export default function DataPreviewPanel() {
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2 text-xs">
-            <button
-              disabled={paginationDisabled || currentPage <= 1}
-              onClick={() => loadTablePreview(activeTab.nodeId, currentTableName, activeData.offset - activeData.limit)}
-              className="rounded border border-gray-300 px-2 py-1 hover:bg-gray-100 disabled:opacity-30"
-            >
-              Prev
-            </button>
-            <span className="text-gray-500">Page {currentPage} of {totalPages}</span>
-            <button
-              disabled={paginationDisabled || currentPage >= totalPages}
-              onClick={() => loadTablePreview(activeTab.nodeId, currentTableName, activeData.offset + activeData.limit)}
-              className="rounded border border-gray-300 px-2 py-1 hover:bg-gray-100 disabled:opacity-30"
-            >
-              Next
-            </button>
+          <div className="text-xs text-gray-500">
+            Showing {loadedRows.toLocaleString()} of {activeData.total_rows.toLocaleString()}
           </div>
         </div>
-        <div className="flex-1 overflow-auto">
+        <div
+          className="flex-1 overflow-auto"
+          onScroll={(event) => { if (hasMore) handleInfiniteScroll(event, () => loadMoreTablePreview(activeTab.nodeId)) }}
+        >
           <table className="w-full text-xs">
             <thead className="sticky top-0 bg-gray-50">
               <tr>
@@ -227,23 +339,52 @@ export default function DataPreviewPanel() {
                 <tr key={rowIndex} className="hover:bg-blue-50">
                   {row.map((cell, cellIndex) => (
                     <td key={cellIndex} className="max-w-[200px] truncate border-b border-gray-100 px-3 py-1 whitespace-nowrap">
-                      {cell === null ? <span className="italic text-gray-300">NULL</span> : String(cell)}
+                      {formatCell(cell)}
                     </td>
                   ))}
                 </tr>
               ))}
             </tbody>
           </table>
+          {activeTab.loading && (
+            <div className="px-4 py-2 text-center text-xs text-gray-400">Loading more…</div>
+          )}
         </div>
       </div>
     )
   }
 
+  const hasTabs = previewTabs.length > 0 || liveTabs.length > 0
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
-      {previewTabs.length > 0 && (
+      {hasTabs && (
         <div className="border-b border-gray-200 bg-white px-2 py-2">
           <div className="flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Preview tabs">
+            {liveTabs.map((live) => {
+              const isActive = resolvedActivePreviewTarget?.kind === 'live' && resolvedActivePreviewTarget.nodeId === live.nodeId
+              return (
+                <button
+                  key={`live-${live.nodeId}`}
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  onClick={() => setActiveLivePreview(live.nodeId)}
+                  className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-medium transition ${
+                    isActive
+                      ? 'border-blue-600 bg-blue-600 text-white'
+                      : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100'
+                  }`}
+                >
+                  <span>{getLiveTitle(live)}</span>
+                  <span className={`ml-2 rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                    isActive ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-700'
+                  }`}>
+                    Live
+                  </span>
+                </button>
+              )
+            })}
             {previewTabs.map((tab) => {
               const isActive = resolvedActivePreviewTarget?.kind === 'tab' && resolvedActivePreviewTarget.nodeId === tab.nodeId
               return (
@@ -274,7 +415,11 @@ export default function DataPreviewPanel() {
         </div>
       )}
       <div className="min-h-0 flex-1">
-        {resolvedActivePreviewTarget?.kind === 'transient' ? renderCsvPreview() : renderTablePreview()}
+        {resolvedActivePreviewTarget?.kind === 'transient'
+          ? renderCsvPreview()
+          : resolvedActivePreviewTarget?.kind === 'live'
+            ? renderLivePreview()
+            : renderTablePreview()}
       </div>
     </div>
   )

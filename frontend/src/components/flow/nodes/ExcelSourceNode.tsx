@@ -1,6 +1,7 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { usePipelineStore } from '../../../store/pipelineStore'
 import NodeStatusBadge from '../NodeStatusBadge'
+import NodeCacheChip from '../NodeCacheChip'
 import type { ExcelSourceConfig } from '../../../types/pipeline'
 
 export default function ExcelSourceNode({ id, data }: NodeProps) {
@@ -46,6 +47,7 @@ export default function ExcelSourceNode({ id, data }: NodeProps) {
             onViewError={result.status === 'error' ? () => openNodeError(id) : undefined}
           />
         )}
+        <NodeCacheChip nodeId={id} />
         {previewPath && (
           <button
             className="text-emerald-600 hover:underline text-xs"

@@ -1,6 +1,7 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { usePipelineStore } from '../../../store/pipelineStore'
 import NodeStatusBadge from '../NodeStatusBadge'
+import NodeCacheChip from '../NodeCacheChip'
 
 export default function TransformNode({ id, data }: NodeProps) {
   const nodeResults = usePipelineStore((s) => s.nodeResults)
@@ -43,6 +44,7 @@ export default function TransformNode({ id, data }: NodeProps) {
             onViewError={result.status === 'error' ? () => openNodeError(id) : undefined}
           />
         )}
+        <NodeCacheChip nodeId={id} />
         <button
           type="button"
           className={`text-xs text-left ${canRunPreview ? 'text-purple-500 hover:underline' : 'text-gray-400 cursor-not-allowed'}`}

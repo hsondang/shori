@@ -17,6 +17,11 @@ const mockDeletePreprocessedCsvArtifact = vi.fn((..._args: any[]) => Promise.res
 const mockSavePipeline = vi.fn()
 const mockLoadPipeline = vi.fn()
 const mockListPipelines = vi.fn()
+const mockGetCacheStatus = vi.fn((..._args: any[]) => Promise.resolve({ nodes: {} }))
+const mockClosePreviewSession = vi.fn((..._args: any[]) => Promise.resolve({ closed: true }))
+const mockStartPreviewSession = vi.fn()
+const mockFetchPreviewSessionRows = vi.fn()
+const mockMaterializePreviewSession = vi.fn()
 
 // Prevent real API calls
 vi.mock('../api/client', () => ({
@@ -26,9 +31,14 @@ vi.mock('../api/client', () => ({
   startNodeExecution: (...args: any[]) => mockStartNodeExecution(...args),
   getExecutionRunStatus: (...args: any[]) => mockGetExecutionRunStatus(...args),
   abortExecutionRun: (...args: any[]) => mockAbortExecutionRun(...args),
+  getCacheStatus: (...args: any[]) => mockGetCacheStatus(...args),
   previewData: (...args: any[]) => mockPreviewData(...args),
   previewCsvSource: (...args: any[]) => mockPreviewCsvSource(...args),
   previewPreprocessedCsvSource: (...args: any[]) => mockPreviewPreprocessedCsvSource(...args),
+  startPreviewSession: (...args: any[]) => mockStartPreviewSession(...args),
+  fetchPreviewSessionRows: (...args: any[]) => mockFetchPreviewSessionRows(...args),
+  materializePreviewSession: (...args: any[]) => mockMaterializePreviewSession(...args),
+  closePreviewSession: (...args: any[]) => mockClosePreviewSession(...args),
   getTableSchema: (...args: any[]) => mockGetTableSchema(...args),
   deleteTable: (...args: any[]) => mockDeleteTable(...args),
   deletePreprocessedCsvArtifact: (...args: any[]) => mockDeletePreprocessedCsvArtifact(...args),
@@ -255,7 +265,7 @@ describe('pipelineStore', () => {
       expect((updated.data as Record<string, unknown>).config).toBeDefined()
     })
 
-    it('drops the previous materialized table and clears stale state when table name changes', () => {
+    it('keeps the previous materialized table but marks the tab stale when table name changes', () => {
       act(() => {
         usePipelineStore.setState({
           nodes: [{
@@ -288,7 +298,8 @@ describe('pipelineStore', () => {
 
       act(() => usePipelineStore.getState().updateNodeData('csv-node', { tableName: 'orders_new' }))
 
-      expect(mockDeleteTable).toHaveBeenCalledWith('orders_table')
+      // The persisted table is no longer dropped client-side; save reconciles it.
+      expect(mockDeleteTable).not.toHaveBeenCalled()
       expect((usePipelineStore.getState().nodes[0].data as Record<string, unknown>).tableName).toBe('orders_new')
       expect(usePipelineStore.getState().nodeResults['csv-node']).toBeUndefined()
       expect(usePipelineStore.getState().previewTabsByNodeId['csv-node']).toEqual(
@@ -440,7 +451,7 @@ describe('pipelineStore', () => {
         },
       }))
 
-      expect(mockDeleteTable).toHaveBeenCalledWith('orders_table')
+      expect(mockDeleteTable).not.toHaveBeenCalled()
       expect(usePipelineStore.getState().nodeResults['db-node']).toBeUndefined()
       expect(usePipelineStore.getState().previewTabsByNodeId['db-node']?.isStale).toBe(true)
     })
@@ -468,7 +479,7 @@ describe('pipelineStore', () => {
       expect(usePipelineStore.getState().edges).toHaveLength(0)
     })
 
-    it('drops the materialized table and clears stale state for the deleted node', () => {
+    it('clears local state for the deleted node without dropping the table client-side', () => {
       act(() => {
         usePipelineStore.setState({
           nodes: [{
@@ -503,7 +514,8 @@ describe('pipelineStore', () => {
 
       act(() => usePipelineStore.getState().deleteNode('csv-node'))
 
-      expect(mockDeleteTable).toHaveBeenCalledWith('orders_table')
+      // Deletion takes effect server-side when the pipeline is saved (reconcile).
+      expect(mockDeleteTable).not.toHaveBeenCalled()
       expect(usePipelineStore.getState().nodes).toHaveLength(0)
       expect(usePipelineStore.getState().nodeResults['csv-node']).toBeUndefined()
       expect(usePipelineStore.getState().selectedNodeId).toBeNull()
@@ -773,12 +785,16 @@ describe('pipelineStore', () => {
         await usePipelineStore.getState().executeSingleNode(node.id, { loadPreviewOnSuccess: true })
       })
 
-      expect(mockStartNodeExecution).toHaveBeenCalledWith(expect.objectContaining({
-        id: node.id,
-        label: 'Orders CSV',
-        table_name: 'orders_table',
-      }))
-      expect(mockPreviewData).toHaveBeenCalledWith('orders_table', 0)
+      expect(mockStartNodeExecution).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nodes: expect.arrayContaining([
+            expect.objectContaining({ id: node.id, label: 'Orders CSV', table_name: 'orders_table' }),
+          ]),
+        }),
+        node.id,
+        false,
+      )
+      expect(mockPreviewData).toHaveBeenCalledWith(expect.any(String), 'orders_table', 0)
       expect(usePipelineStore.getState().nodeResults[node.id]).toEqual(expect.objectContaining({
         node_id: node.id,
         status: 'success',
@@ -825,10 +841,15 @@ describe('pipelineStore', () => {
         await usePipelineStore.getState().executeSingleNode(node.id, { loadPreviewOnSuccess: true })
       })
 
-      expect(mockStartNodeExecution).toHaveBeenCalledWith(expect.objectContaining({
-        id: node.id,
-        table_name: 'node_table',
-      }))
+      expect(mockStartNodeExecution).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nodes: expect.arrayContaining([
+            expect.objectContaining({ id: node.id, table_name: 'node_table' }),
+          ]),
+        }),
+        node.id,
+        false,
+      )
       expect(usePipelineStore.getState().nodeResults[node.id]).toEqual({
         node_id: node.id,
         status: 'error',
@@ -1397,7 +1418,7 @@ describe('pipelineStore', () => {
         await usePipelineStore.getState().loadTablePreview('second', 'second_table', 100)
       })
 
-      expect(mockPreviewData).toHaveBeenCalledWith('second_table', 100)
+      expect(mockPreviewData).toHaveBeenCalledWith(expect.any(String), 'second_table', 100)
       expect(usePipelineStore.getState().previewTabsByNodeId.second?.data?.offset).toBe(100)
       expect(usePipelineStore.getState().previewTabsByNodeId.first?.data?.offset).toBe(0)
     })
@@ -1472,13 +1493,18 @@ describe('pipelineStore', () => {
         await usePipelineStore.getState().runTransformPreview('tx-node')
       })
 
-      expect(mockGetTableSchema).toHaveBeenCalledWith('orders_table')
-      expect(mockStartNodeExecution).toHaveBeenCalledWith(expect.objectContaining({
-        id: 'tx-node',
-        table_name: 'orders_filtered',
-      }))
+      expect(mockGetTableSchema).toHaveBeenCalledWith(expect.any(String), 'orders_table')
+      expect(mockStartNodeExecution).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nodes: expect.arrayContaining([
+            expect.objectContaining({ id: 'tx-node', table_name: 'orders_filtered' }),
+          ]),
+        }),
+        'tx-node',
+        false,
+      )
       expect(mockStartPipelineExecution).not.toHaveBeenCalled()
-      expect(mockPreviewData).toHaveBeenCalledWith('orders_filtered', 0)
+      expect(mockPreviewData).toHaveBeenCalledWith(expect.any(String), 'orders_filtered', 0)
       expect(usePipelineStore.getState().previewTabsByNodeId['tx-node']?.data).toEqual(expect.objectContaining({
         rows: [[2], [3]],
       }))
@@ -1529,7 +1555,7 @@ describe('pipelineStore', () => {
         })
       })
 
-      mockGetTableSchema.mockImplementation(async (tableName: string) => {
+      mockGetTableSchema.mockImplementation(async (_projectId: string, tableName: string) => {
         if (tableName === 'orders_table') {
           return {
             table_name: 'orders_table',
@@ -1593,7 +1619,7 @@ describe('pipelineStore', () => {
         ],
       }), true)
       expect(mockStartNodeExecution).not.toHaveBeenCalled()
-      expect(mockPreviewData).toHaveBeenCalledWith('orders_final', 0)
+      expect(mockPreviewData).toHaveBeenCalledWith(expect.any(String), 'orders_final', 0)
       expect(usePipelineStore.getState().nodeResults.other).toEqual(
         expect.objectContaining({ node_id: 'other', status: 'success' })
       )
@@ -1642,6 +1668,179 @@ describe('pipelineStore', () => {
       expect(mockStartPipelineExecution).not.toHaveBeenCalled()
       expect(mockStartNodeExecution).not.toHaveBeenCalled()
       expect(mockPreviewData).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('loadMoreTablePreview', () => {
+    it('appends the next page of rows to the active tab', async () => {
+      act(() => {
+        usePipelineStore.setState({
+          previewTabsByNodeId: {
+            'tx-node': {
+              nodeId: 'tx-node',
+              tableNameAtLoad: 'orders_final',
+              data: makeTablePreview({ rows: [[1, 'Alice']], total_rows: 3, offset: 0, limit: 1 }),
+              loading: false,
+              error: null,
+              isStale: false,
+            },
+          },
+          previewTabOrder: ['tx-node'],
+          activePreviewTarget: { kind: 'tab', nodeId: 'tx-node' },
+        })
+      })
+
+      mockPreviewData.mockResolvedValueOnce(makeTablePreview({ rows: [[2, 'Bob']], total_rows: 3, offset: 1, limit: 1 }))
+
+      await act(async () => {
+        await usePipelineStore.getState().loadMoreTablePreview('tx-node')
+      })
+
+      expect(mockPreviewData).toHaveBeenCalledWith(expect.any(String), 'orders_final', 1, 1)
+      const data = usePipelineStore.getState().previewTabsByNodeId['tx-node']?.data
+      expect(data?.rows).toEqual([[1, 'Alice'], [2, 'Bob']])
+      // The window offset stays anchored at the start while rows accumulate.
+      expect(data?.offset).toBe(0)
+    })
+
+    it('does not fetch when all rows are already loaded', async () => {
+      act(() => {
+        usePipelineStore.setState({
+          previewTabsByNodeId: {
+            'tx-node': {
+              nodeId: 'tx-node',
+              tableNameAtLoad: 'orders_final',
+              data: makeTablePreview({ rows: [[1, 'Alice']], total_rows: 1, offset: 0, limit: 100 }),
+              loading: false,
+              error: null,
+              isStale: false,
+            },
+          },
+          previewTabOrder: ['tx-node'],
+        })
+      })
+
+      await act(async () => {
+        await usePipelineStore.getState().loadMoreTablePreview('tx-node')
+      })
+
+      expect(mockPreviewData).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('live preview sessions', () => {
+    function seedDbNode() {
+      act(() => {
+        usePipelineStore.setState({
+          nodes: [{
+            id: 'db-node',
+            type: 'db_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Warehouse',
+              tableName: 'orders_table',
+              config: {
+                db_type: 'postgres',
+                connection: { host: 'localhost', port: 5432, database: 'analytics', user: 'user', password: 'secret' },
+                query: 'SELECT * FROM orders',
+              },
+            },
+          }],
+        })
+      })
+    }
+
+    it('starts a session and stores the first chunk without creating a table', async () => {
+      seedDbNode()
+      mockStartPreviewSession.mockResolvedValueOnce({
+        session_id: 'sess-1',
+        node_id: 'db-node',
+        columns: ['id', 'name'],
+        column_types: ['INTEGER', 'VARCHAR'],
+        rows: [[1, 'Alice']],
+        buffered_rows: 1,
+        has_more: true,
+        buffer_capped: false,
+      })
+
+      await act(async () => {
+        await usePipelineStore.getState().startLivePreview('db-node')
+      })
+
+      const live = usePipelineStore.getState().livePreviewsByNodeId['db-node']
+      expect(live.sessionId).toBe('sess-1')
+      expect(live.rows).toEqual([[1, 'Alice']])
+      expect(live.hasMore).toBe(true)
+      expect(usePipelineStore.getState().activePreviewTarget).toEqual({ kind: 'live', nodeId: 'db-node' })
+      expect(usePipelineStore.getState().previewTabsByNodeId['db-node']).toBeUndefined()
+    })
+
+    it('appends rows on loadMore and stops at the buffer cap', async () => {
+      seedDbNode()
+      mockStartPreviewSession.mockResolvedValueOnce({
+        session_id: 'sess-1', node_id: 'db-node', columns: ['id'], column_types: ['INTEGER'],
+        rows: [[1]], buffered_rows: 1, has_more: true, buffer_capped: false,
+      })
+      await act(async () => { await usePipelineStore.getState().startLivePreview('db-node') })
+
+      mockFetchPreviewSessionRows.mockResolvedValueOnce({
+        session_id: 'sess-1', rows: [[2]], buffered_rows: 2, has_more: true, buffer_capped: true,
+      })
+      await act(async () => { await usePipelineStore.getState().loadMoreLivePreview('db-node') })
+
+      const live = usePipelineStore.getState().livePreviewsByNodeId['db-node']
+      expect(live.rows).toEqual([[1], [2]])
+      expect(live.bufferCapped).toBe(true)
+
+      // Capped sessions don't page further.
+      await act(async () => { await usePipelineStore.getState().loadMoreLivePreview('db-node') })
+      expect(mockFetchPreviewSessionRows).toHaveBeenCalledTimes(1)
+    })
+
+    it('materialize consumes the session and tracks an execution run', async () => {
+      seedDbNode()
+      mockStartPreviewSession.mockResolvedValueOnce({
+        session_id: 'sess-1', node_id: 'db-node', columns: ['id'], column_types: ['INTEGER'],
+        rows: [[1]], buffered_rows: 1, has_more: false, buffer_capped: false,
+      })
+      await act(async () => { await usePipelineStore.getState().startLivePreview('db-node') })
+
+      mockMaterializePreviewSession.mockResolvedValueOnce(makeExecutionRun({
+        execution_id: 'exec-mat',
+        status: 'success',
+        node_results: {
+          'db-node': {
+            node_id: 'db-node', status: 'success', row_count: 1, column_count: 1, columns: ['id'],
+            started_at: '2026-04-08T10:00:00Z', finished_at: '2026-04-08T10:00:01Z',
+          },
+        },
+      }))
+      mockPreviewData.mockResolvedValueOnce(makeTablePreview({ rows: [[1, 'Alice']] }))
+
+      await act(async () => {
+        await usePipelineStore.getState().materializeLivePreview('db-node')
+      })
+
+      expect(mockMaterializePreviewSession).toHaveBeenCalledWith('sess-1')
+      // The live tab is consumed; the node now has a success result.
+      expect(usePipelineStore.getState().livePreviewsByNodeId['db-node']).toBeUndefined()
+      expect(usePipelineStore.getState().nodeResults['db-node']).toEqual(expect.objectContaining({
+        status: 'success',
+      }))
+    })
+
+    it('closeLivePreview releases the session', async () => {
+      seedDbNode()
+      mockStartPreviewSession.mockResolvedValueOnce({
+        session_id: 'sess-1', node_id: 'db-node', columns: ['id'], column_types: ['INTEGER'],
+        rows: [[1]], buffered_rows: 1, has_more: false, buffer_capped: false,
+      })
+      await act(async () => { await usePipelineStore.getState().startLivePreview('db-node') })
+
+      await act(async () => { await usePipelineStore.getState().closeLivePreview('db-node') })
+
+      expect(mockClosePreviewSession).toHaveBeenCalledWith('sess-1')
+      expect(usePipelineStore.getState().livePreviewsByNodeId['db-node']).toBeUndefined()
     })
   })
 

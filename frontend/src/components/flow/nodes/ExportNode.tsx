@@ -9,6 +9,7 @@ export default function ExportNode({ id, data }: NodeProps) {
   const openNodeError = usePipelineStore((s) => s.openNodeError)
   const edges = usePipelineStore((s) => s.edges)
   const nodes = usePipelineStore((s) => s.nodes)
+  const pipelineId = usePipelineStore((s) => s.pipelineId)
   const result = nodeResults[id]
   const hasError = result?.status === 'error'
   const d = data as Record<string, unknown>
@@ -50,7 +51,7 @@ export default function ExportNode({ id, data }: NodeProps) {
             className="bg-green-100 text-green-700 px-2 py-1 rounded text-xs hover:bg-green-200"
             onClick={(e) => {
               e.stopPropagation()
-              exportData(sourceTableName)
+              exportData(pipelineId, sourceTableName)
             }}
           >
             Download CSV

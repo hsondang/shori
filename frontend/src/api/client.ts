@@ -1,5 +1,6 @@
 import axios from 'axios'
 import type {
+  CacheStatusResponse,
   CsvPreprocessingConfig,
   DataPreview,
   DatabaseConnectionConfig,
@@ -7,6 +8,9 @@ import type {
   ExecutionRunStatus,
   NodeExecutionResult,
   PipelineDefinition,
+  PreviewSessionChunk,
+  PreviewSessionStart,
+  ProjectStorageInfo,
   ProjectSummary,
   SavedDatabaseConnection,
   SavedDatabaseConnectionInput,
@@ -53,9 +57,11 @@ export async function executePipeline(
 }
 
 export async function executeNode(
-  node: PipelineDefinition['nodes'][0]
+  pipeline: PipelineDefinition,
+  nodeId: string,
+  force = false
 ): Promise<NodeExecutionResult> {
-  const { data } = await api.post('/execute/node', node)
+  const { data } = await api.post('/execute/node', { pipeline, node_id: nodeId, force })
   return data
 }
 
@@ -68,9 +74,18 @@ export async function startPipelineExecution(
 }
 
 export async function startNodeExecution(
-  node: PipelineDefinition['nodes'][0]
+  pipeline: PipelineDefinition,
+  nodeId: string,
+  force = false
 ): Promise<ExecutionRunStatus> {
-  const { data } = await api.post('/execute/node/start', node)
+  const { data } = await api.post('/execute/node/start', { pipeline, node_id: nodeId, force })
+  return data
+}
+
+export async function getCacheStatus(
+  pipeline: PipelineDefinition,
+): Promise<CacheStatusResponse> {
+  const { data } = await api.post('/execute/cache-status', pipeline)
   return data
 }
 
@@ -88,13 +103,54 @@ export async function abortExecutionRun(executionId: string): Promise<ExecutionR
 }
 
 export async function previewData(
+  projectId: string,
   tableName: string,
   offset = 0,
   limit = 100
 ): Promise<DataPreview> {
-  const { data } = await api.get(`/data/preview/${tableName}`, {
+  const { data } = await api.get(`/data/${projectId}/preview/${tableName}`, {
     params: { offset, limit },
   })
+  return data
+}
+
+export async function startPreviewSession(
+  pipeline: PipelineDefinition,
+  nodeId: string,
+): Promise<PreviewSessionStart> {
+  const { data } = await api.post('/data/preview-session/start', {
+    pipeline,
+    node_id: nodeId,
+  })
+  return data
+}
+
+export async function fetchPreviewSessionRows(
+  sessionId: string,
+): Promise<PreviewSessionChunk> {
+  const { data } = await api.post(`/data/preview-session/${sessionId}/fetch`)
+  return data
+}
+
+export async function materializePreviewSession(
+  sessionId: string,
+): Promise<ExecutionRunStatus> {
+  const { data } = await api.post(`/data/preview-session/${sessionId}/materialize`)
+  return data
+}
+
+export async function closePreviewSession(sessionId: string): Promise<{ closed: boolean }> {
+  const { data } = await api.delete(`/data/preview-session/${sessionId}`)
+  return data
+}
+
+export async function getProjectStorage(projectId: string): Promise<ProjectStorageInfo> {
+  const { data } = await api.get(`/pipelines/${projectId}/storage`)
+  return data
+}
+
+export async function compactProjectStorage(projectId: string): Promise<ProjectStorageInfo> {
+  const { data } = await api.post(`/pipelines/${projectId}/compact`)
   return data
 }
 
@@ -130,10 +186,11 @@ export async function deletePreprocessedCsvArtifact(nodeId: string): Promise<{ d
 }
 
 export async function getTableSchema(
+  projectId: string,
   tableName: string
 ): Promise<{ table_name: string; columns: string[]; column_types: string[]; total_rows: number } | null> {
   try {
-    const { data } = await api.get(`/data/schema/${tableName}`)
+    const { data } = await api.get(`/data/${projectId}/schema/${tableName}`)
     return data
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 404) {
@@ -143,13 +200,13 @@ export async function getTableSchema(
   }
 }
 
-export async function deleteTable(tableName: string): Promise<{ deleted: boolean }> {
-  const { data } = await api.delete(`/data/table/${tableName}`)
+export async function deleteTable(projectId: string, tableName: string): Promise<{ deleted: boolean }> {
+  const { data } = await api.delete(`/data/${projectId}/table/${tableName}`)
   return data
 }
 
-export async function exportData(tableName: string): Promise<void> {
-  const { data } = await api.get(`/data/export/${tableName}`, {
+export async function exportData(projectId: string, tableName: string): Promise<void> {
+  const { data } = await api.get(`/data/${projectId}/export/${tableName}`, {
     responseType: 'blob',
   })
   const url = URL.createObjectURL(data)
