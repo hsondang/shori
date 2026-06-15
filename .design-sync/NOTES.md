@@ -21,9 +21,15 @@
 
 All 11 components authored in `.design-sync/previews/`, 27 cells graded `good`. Grades stored in `.design-sync/.cache/review/<Name>.grade.json` (gitignored — carry forward via uploaded `_ds_sync.json`).
 
-## Auth note
+## Upload status (2026-06-16)
 
-First upload was blocked because the session used `CLAUDE_CODE_OAUTH_TOKEN` env var which can't get design scopes. User ran `/login` in an interactive terminal. **To upload: start a fresh `claude` session from a terminal where `/login` was done (so it reads disk credentials with design scopes, not the env var).**
+- **Uploaded** to Claude Design project `1d1d05ce-06fb-4e3e-9b19-933f61662b19` ("Shori Design System") — https://claude.ai/design/p/1d1d05ce-06fb-4e3e-9b19-933f61662b19
+- 11 components, 29 cells all graded `good`, render check clean. `projectId` pinned in config.json.
+- Conventions header authored at `.design-sync/conventions.md`, wired via `cfg.readmeHeader`.
+
+## Auth note (RESOLVED)
+
+First upload (prior session) was blocked because it used `CLAUDE_CODE_OAUTH_TOKEN` env var which can't get design scopes. Resolved by running from a session with disk credentials (no env token) after `/login` — `list_projects` then auto-upgraded the login with `user:design:read/write`. **If upload fails with a scope error again: ensure `CLAUDE_CODE_OAUTH_TOKEN` is NOT set and that `/login` was done in an interactive terminal.**
 
 ## Re-sync checklist
 
@@ -37,10 +43,15 @@ First upload was blocked because the session used `CLAUDE_CODE_OAUTH_TOKEN` env 
 8. Validate + capture only the `changed`/`added` partition
 9. Upload per §5 (full writes, `deletePaths` from diff)
 
+## Grid-overflow card modes (applied 2026-06-16)
+
+Button, SqlEditor, Toolbar tripped `[GRID_OVERFLOW]` (`wide`) — their stories render wider than a grid cell and crop in the product pane. Fixed with `cfg.overrides.<Name>: {"cardMode": "column"}` (full card width, one story per row). Modal stays `{"cardMode":"single","viewport":"700x500"}`. If a future restyle narrows these, the column mode is harmless; if a new component renders wide, expect the same warn and apply the same override.
+
 ## Re-sync risks
 
 - **DS version bump without rebuild**: `dist/` can lag `src/` if `npm run build` wasn't run before the converter. Always rebuild.
 - **Authored previews tied to component API**: if a component prop is renamed (e.g. `NodeCard.subtitle` type changes from `ReactNode` to `string`), the preview `.tsx` will silently compile to a floor card. Check build log for `! preview build failed:` lines.
 - **Switch label**: `label` prop is aria-only — no visible text rendered. Previews correctly show toggles only. If a future version adds visible labels, update `Switch.tsx` preview.
 - **DockPanel height**: previews use fixed-height parent wrappers. If DS adds `height` prop or changes to `min-height`, revisit.
-- **Playwright version vs chromium cache**: installed playwright@latest into `.ds-sync/` on 2026-06-15, pinned to chromium-1228. If you `npm i playwright` again and it bumps to a version expecting a different build, re-run `playwright install chromium`.
+- **Playwright version vs chromium cache**: installed playwright@1.61.0 into `.ds-sync/` (chromium-1228). On macOS the browser cache is `~/Library/Caches/ms-playwright/` (NOT `~/.cache/`); `playwright install chromium` may report "already downloaded" while `~/.cache` looks empty — check the Library path. If `npm i playwright` bumps the version, re-run `playwright install chromium`.
+- **`.d.ts` contract change clears ALL grades on rebuild**: on 2026-06-16 a `src/styles.css` edit + rebuild regenerated `dist/index.d.ts`; the capture step then cleared every grade ("contract changed") and forced a full re-grade of all 29 cells, even though component logic was unchanged. Expect this whenever the DS is rebuilt and tsup emits a structurally different `.d.ts` — budget for re-grading from the fresh review sheets. Grades are carried forward only when the contract is byte-stable.

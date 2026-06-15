@@ -5,8 +5,12 @@
   "buildCmd": "cd packages/design-system && npm run build",
   "cssEntry": "dist/styles.css",
   "runtimeFontPrefixes": ["Cambria"],
+  "readmeHeader": ".design-sync/conventions.md",
   "overrides": {
-    "Modal": { "cardMode": "single", "viewport": "700x500" }
+    "Modal": { "cardMode": "single", "viewport": "700x500" },
+    "Button": { "cardMode": "column" },
+    "SqlEditor": { "cardMode": "column" },
+    "Toolbar": { "cardMode": "column" }
   },
-  "projectId": ""
+  "projectId": "1d1d05ce-06fb-4e3e-9b19-933f61662b19"
 }
