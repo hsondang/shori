@@ -1597,8 +1597,17 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       void api.closePreviewSession(existing.sessionId).catch(() => {})
     }
 
+    // Snapshot the current result so we can restore it when the preview ends.
+    // This is the F1 fix: mirror the live-preview loading state into nodeResults
+    // so canvas node badges reflect "Running" while the preview is in flight.
+    const prevNodeResult = get().nodeResults[nodeId] ?? null
+
     set((state) => ({
       activePreviewTarget: { kind: 'live', nodeId },
+      nodeResults: {
+        ...state.nodeResults,
+        [nodeId]: { ...(prevNodeResult ?? { node_id: nodeId }), node_id: nodeId, status: 'running' },
+      },
       livePreviewsByNodeId: {
         ...state.livePreviewsByNodeId,
         [nodeId]: {
@@ -1620,6 +1629,10 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       const pipeline = buildPipelineDefinitionFromState(get())
       const result = await api.startPreviewSession(pipeline, nodeId)
       set((state) => ({
+        // Restore the pre-preview result; the live preview doesn't change materialized state.
+        nodeResults: prevNodeResult
+          ? { ...state.nodeResults, [nodeId]: prevNodeResult }
+          : (() => { const r = { ...state.nodeResults }; delete r[nodeId]; return r })(),
         livePreviewsByNodeId: {
           ...state.livePreviewsByNodeId,
           [nodeId]: {
@@ -1638,6 +1651,10 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       }))
     } catch (err) {
       set((state) => ({
+        // Restore the pre-preview result on error too.
+        nodeResults: prevNodeResult
+          ? { ...state.nodeResults, [nodeId]: prevNodeResult }
+          : (() => { const r = { ...state.nodeResults }; delete r[nodeId]; return r })(),
         livePreviewsByNodeId: {
           ...state.livePreviewsByNodeId,
           [nodeId]: {

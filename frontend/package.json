@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
+    "@shori/design-system": "file:../packages/design-system",
     "@tanstack/react-table": "^8.21.3",
     "@xyflow/react": "^12.10.1",
     "axios": "^1.13.6",

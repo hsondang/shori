@@ -22,6 +22,7 @@ import {
 import { getCsvPreprocessFingerprint } from '../../lib/csvPreprocessing'
 import { createExcelUploadHandler } from '../../lib/excelUpload'
 import { getResultElapsedLabel } from '../../lib/executionTiming'
+import { statusPresentation, toResultLike } from '../../lib/dsStatus'
 import SqlEditor from './SqlEditor'
 import type {
   CsvPreprocessingConfig,
@@ -119,13 +120,36 @@ function NodeConfigPanelShell({
   widthPx,
   layoutState,
   onResizeStart,
+  panelHidden,
+  onTogglePanelHidden,
   children,
 }: {
   widthPx: number
   layoutState: 'collapsed' | 'expanded'
   onResizeStart: (event: ReactMouseEvent<HTMLDivElement>) => void
+  panelHidden: boolean
+  onTogglePanelHidden: () => void
   children: ReactNode
 }) {
+  if (panelHidden) {
+    return (
+      <div
+        data-testid="node-config-panel"
+        data-layout-state="hidden"
+        className="flex min-h-0 w-11 shrink-0 flex-col items-center border-l border-gray-200 bg-white py-2"
+      >
+        <button
+          type="button"
+          title="Expand configuration panel"
+          onClick={onTogglePanelHidden}
+          className="ds-dock__collapse"
+        >
+          ‹
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div
       data-testid="node-config-panel"
@@ -144,6 +168,16 @@ function NodeConfigPanelShell({
         <div className="h-16 w-1 rounded-full bg-stone-200 transition group-hover:bg-stone-300" />
       </div>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-l border-gray-200 bg-white">
+        <div className="flex shrink-0 items-center justify-end border-b border-gray-100 px-2 py-1">
+          <button
+            type="button"
+            title="Collapse configuration panel"
+            onClick={onTogglePanelHidden}
+            className="ds-dock__collapse"
+          >
+            ›
+          </button>
+        </div>
         {children}
       </div>
     </div>
@@ -172,6 +206,7 @@ export default function NodeConfigPanel() {
   const [menuOpen, setMenuOpen] = useState(false)
   const [isDbEditMode, setIsDbEditMode] = useState(false)
   const [isTransformEditMode, setIsTransformEditMode] = useState(false)
+  const [panelHidden, setPanelHidden] = useState(false)
   const [collapsedWidthPx, setCollapsedWidthPx] = useState(NODE_CONFIG_PANEL_WIDTH_PX)
   const [expandedWidthPx, setExpandedWidthPx] = useState(() =>
     getDefaultExpandedNodeConfigPanelWidth(typeof window === 'undefined' ? 0 : window.innerWidth)
@@ -397,6 +432,8 @@ export default function NodeConfigPanel() {
         widthPx={collapsedWidthPx}
         layoutState="collapsed"
         onResizeStart={startResize}
+        panelHidden={panelHidden}
+        onTogglePanelHidden={() => setPanelHidden((h) => !h)}
       >
         <div className="flex flex-1 items-center justify-center p-4 text-sm text-gray-400">
           Select a node to configure
@@ -422,11 +459,10 @@ export default function NodeConfigPanel() {
   const canExecuteDb = Boolean(dbQuery.trim()) && !isDbNodeBusy
   const canExecuteTransform = Boolean(transformQuery.trim()) && nodeResult?.status !== 'running'
   const nodeRunningElapsed = nodeResult ? getResultElapsedLabel(nodeResult, executionClockNow) : null
-  const nodeStatusLabel = nodeResult?.status === 'running'
-    ? `Running${nodeRunningElapsed ? ` · ${nodeRunningElapsed}` : ''}`
-    : nodeResult?.status === 'connecting'
-      ? 'Connecting'
-    : (nodeResult ? `Status: ${nodeResult.status}` : null)
+  const nodePresentation = statusPresentation(
+    nodeResult ? toResultLike(nodeResult, nodeRunningElapsed) : null,
+  )
+  const nodeStatusLabel = nodeResult ? nodePresentation.label : null
 
   const renderActionsMenu = () => (
     <div ref={menuRef} className="relative shrink-0">
@@ -508,6 +544,8 @@ export default function NodeConfigPanel() {
       widthPx={expanded ? expandedWidthPx : collapsedWidthPx}
       layoutState={expanded ? 'expanded' : 'collapsed'}
       onResizeStart={startResize}
+      panelHidden={panelHidden}
+      onTogglePanelHidden={() => setPanelHidden((h) => !h)}
     >
       <div className="border-b border-gray-200 px-4 py-4">
         <div className="flex items-start justify-between gap-3">
@@ -586,11 +624,9 @@ export default function NodeConfigPanel() {
         >
           {isBusy
             ? (busyActionLabel ?? 'Abort')
-            : nodeResult?.status === 'connecting'
-              ? 'Connecting...'
-              : nodeResult?.status === 'running'
-                ? 'Running...'
-                : actionLabel}
+            : nodePresentation.isBusy
+              ? nodePresentation.label
+              : actionLabel}
         </button>
       </div>
     </NodeConfigPanelShell>
@@ -683,6 +719,8 @@ export default function NodeConfigPanel() {
       widthPx={collapsedWidthPx}
       layoutState="collapsed"
       onResizeStart={startResize}
+      panelHidden={panelHidden}
+      onTogglePanelHidden={() => setPanelHidden((h) => !h)}
     >
       <div className="border-b border-gray-200 p-4">
         <div className="flex items-start justify-between gap-3">
