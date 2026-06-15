@@ -1,0 +1,12 @@
+{
+  "pkg": "@shori/design-system",
+  "globalName": "ShoriDS",
+  "shape": "package",
+  "buildCmd": "cd packages/design-system && npm run build",
+  "cssEntry": "dist/styles.css",
+  "runtimeFontPrefixes": ["Cambria"],
+  "overrides": {
+    "Modal": { "cardMode": "single", "viewport": "700x500" }
+  },
+  "projectId": ""
+}

@@ -11,3 +11,9 @@ dist/
 .vite/
 .venv/
 .pytest_cache/
+
+# design-sync build artifacts (regenerated; durable set committed separately)
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
