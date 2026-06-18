@@ -63,7 +63,7 @@ describe('TransformNode', () => {
 
   it('truncates long SQL at 50 characters with ellipsis', () => {
     render(<TransformNode {...makeProps(LONG_SQL)} />)
-    const preview = LONG_SQL.substring(0, 50) + '...'
+    const preview = LONG_SQL.substring(0, 50) + '…'
     expect(screen.getByText(preview)).toBeInTheDocument()
   })
 

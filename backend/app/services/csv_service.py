@@ -8,17 +8,20 @@ import subprocess
 import sys
 import tempfile
 from collections import Counter
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Mapping
+from typing import Mapping
 import threading
 
+import pyarrow as pa
+import pyarrow.ipc
+import pyarrow.parquet
 from fastapi import UploadFile
 
 from app.config import UPLOAD_DIR
 
 PREPROCESS_TIMEOUT_SECONDS = 60
+PREPROCESS_ENTRYPOINT = "preprocess"
 CSV_PREVIEW_LIMIT = 100
 CSV_PREVIEW_SAMPLE_SIZE = 4096
 CSV_PREVIEW_SAMPLE_ROWS = 25
@@ -116,18 +119,15 @@ def preview_preprocessed_csv_text(
     if config is None:
         raise ValueError("Preprocessing must be enabled before running Preprocess")
 
-    processed_path = _run_preprocessing_to_temp_file(file_path, config["runtime"], config["script"])
+    table = _run_preprocess_to_arrow(file_path, config["script_path"])
     fingerprint = preprocessing_fingerprint(file_path, preprocessing)
     if fingerprint is None:
         raise ValueError("Unable to fingerprint preprocessing configuration")
 
-    artifact_store.store(node_id, fingerprint, processed_path)
-    return preview_csv_text(
-        processed_path,
-        limit=limit,
-        stage="preprocessed",
-        artifact_ready=True,
-    )
+    # Cache the result as a typed Parquet artifact so the later load skips re-running.
+    parquet_path = _write_parquet_artifact(table)
+    artifact_store.store(node_id, fingerprint, parquet_path)
+    return _arrow_table_preview(table, limit)
 
 
 def register_csv_source(
@@ -136,13 +136,17 @@ def register_csv_source(
     table_name: str,
     config: Mapping[str, object],
     artifact_store: CsvPreprocessArtifactStore,
+    cache_key: str | None = None,
+    into_memory: bool = False,
 ) -> dict:
     file_path = _materialization_file_path(config)
     preprocessing = config.get("preprocessing")
     normalized = _normalize_preprocessing(preprocessing)
 
     if normalized is None:
-        return duckdb.register_csv(table_name, file_path)
+        return duckdb.register_csv(
+            table_name, file_path, node_id=node_id, cache_key=cache_key, into_memory=into_memory
+        )
 
     fingerprint = preprocessing_fingerprint(file_path, preprocessing)
     if fingerprint is None:
@@ -154,33 +158,9 @@ def register_csv_source(
             "Preprocessing is enabled for this CSV source. Click Preprocess and review the output before loading data."
         )
 
-    return duckdb.register_csv(table_name, artifact_path)
-
-
-@contextmanager
-def prepared_csv_path(
-    file_path: str,
-    preprocessing: object | None,
-) -> Iterator[str]:
-    path = Path(file_path)
-    if not path.exists():
-        raise FileNotFoundError(f"CSV file '{file_path}' not found")
-
-    config = _normalize_preprocessing(preprocessing)
-    if config is None:
-        yield str(path)
-        return
-
-    fd, temp_path = tempfile.mkstemp(suffix=".csv")
-    os.close(fd)
-
-    try:
-        Path(temp_path).write_bytes(
-            _run_preprocessing_output(str(path), config["runtime"], config["script"])
-        )
-        yield temp_path
-    finally:
-        Path(temp_path).unlink(missing_ok=True)
+    return duckdb.register_parquet(
+        table_name, artifact_path, node_id=node_id, cache_key=cache_key, into_memory=into_memory
+    )
 
 
 def preprocessing_fingerprint(file_path: str, preprocessing: object | None) -> str | None:
@@ -188,11 +168,13 @@ def preprocessing_fingerprint(file_path: str, preprocessing: object | None) -> s
     if config is None:
         return None
 
+    script_path = config["script_path"]
     payload = json.dumps(
         {
             "file_path": file_path,
-            "runtime": config["runtime"],
-            "script": config["script"],
+            "script_path": script_path,
+            # Hash the script body so editing the .py invalidates a cached artifact.
+            "script_sha256": _file_sha256(script_path),
         },
         sort_keys=True,
     )
@@ -344,46 +326,82 @@ def _normalize_preprocessing(preprocessing: object | None) -> dict[str, str] | N
     if not enabled:
         return None
 
-    runtime = str(preprocessing.get("runtime", "")).strip()
-    script = str(preprocessing.get("script", "")).strip()
+    script_path = str(preprocessing.get("script_path", "")).strip()
+    if not script_path:
+        raise ValueError("Preprocessing is enabled but no script_path was provided")
+    if not Path(script_path).is_file():
+        raise ValueError(f"Preprocessing script '{script_path}' was not found")
 
-    if runtime not in {"python", "bash"}:
-        raise ValueError("Preprocessing runtime must be either 'python' or 'bash'")
-    if not script:
-        raise ValueError("Preprocessing is enabled but no script was provided")
-
-    return {"runtime": runtime, "script": script}
+    return {"script_path": script_path}
 
 
-def _run_preprocessing_to_temp_file(file_path: str, runtime: str, script: str) -> str:
-    fd, temp_path = tempfile.mkstemp(suffix=".csv")
+def _file_sha256(path: str) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _write_parquet_artifact(table: "pa.Table") -> str:
+    fd, temp_path = tempfile.mkstemp(suffix=".parquet")
     os.close(fd)
-    Path(temp_path).write_bytes(_run_preprocessing_output(file_path, runtime, script))
+    pa.parquet.write_table(table, temp_path)  # type: ignore[attr-defined]
     return temp_path
 
 
-def _run_preprocessing_output(file_path: str, runtime: str, script: str) -> bytes:
-    result = _run_preprocessing_script(file_path, runtime, script)
-    stdout = result.stdout
-    if not stdout:
-        raise RuntimeError("Preprocessing script did not emit any CSV content to stdout")
-    return stdout
+def _arrow_table_preview(table: "pa.Table", limit: int) -> dict:
+    truncated = table.num_rows > limit
+    head = table.slice(0, limit).to_pylist()
+    columns = table.column_names
+    rows: list[list[str]] = [list(columns)]
+    for record in head:
+        rows.append(["" if record[c] is None else str(record[c]) for c in columns])
+    return {
+        "kind": "csv_text",
+        "csv_stage": "preprocessed",
+        "rows": rows,
+        "limit": limit,
+        "truncated": truncated,
+        "artifact_ready": True,
+    }
 
 
-def _run_preprocessing_script(file_path: str, runtime: str, script: str) -> subprocess.CompletedProcess[bytes]:
-    env = os.environ.copy()
-    env["SHORI_INPUT_CSV"] = file_path
+# Subprocess runner: load the user's .py module, call preprocess(file) with an
+# open text handle to the source, and stream the returned DataFrame back as an
+# Arrow IPC stream on stdout. Isolating it in a child process keeps user code
+# from crashing or leaking into the API process.
+_PREPROCESS_RUNNER = """
+import runpy, sys
+import pandas as pd
+import pyarrow as pa
 
-    if runtime == "python":
-        command = [sys.executable, "-c", script, file_path]
-    else:
-        command = ["bash", "-c", script, "shori_csv", file_path]
+script_path, input_path = sys.argv[1], sys.argv[2]
+namespace = runpy.run_path(script_path)
+fn = namespace.get("preprocess")
+if not callable(fn):
+    sys.stderr.write("Preprocessing script must define a callable 'preprocess(file)'.")
+    raise SystemExit(2)
+with open(input_path, "r") as handle:
+    result = fn(handle)
+if isinstance(result, pd.DataFrame):
+    table = pa.Table.from_pandas(result, preserve_index=False)
+elif isinstance(result, pa.Table):
+    table = result
+else:
+    sys.stderr.write("preprocess(file) must return a pandas.DataFrame.")
+    raise SystemExit(3)
+with pa.ipc.new_stream(sys.stdout.buffer, table.schema) as writer:
+    writer.write_table(table)
+"""
+
+
+def _run_preprocess_to_arrow(file_path: str, script_path: str) -> "pa.Table":
+    if not Path(file_path).exists():
+        raise FileNotFoundError(f"CSV file '{file_path}' not found")
+    if not Path(script_path).is_file():
+        raise ValueError(f"Preprocessing script '{script_path}' was not found")
 
     try:
         result = subprocess.run(
-            command,
+            [sys.executable, "-c", _PREPROCESS_RUNNER, script_path, file_path],
             capture_output=True,
-            env=env,
             timeout=PREPROCESS_TIMEOUT_SECONDS,
             check=False,
         )
@@ -394,12 +412,12 @@ def _run_preprocessing_script(file_path: str, runtime: str, script: str) -> subp
 
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", errors="replace").strip()
-        if stderr:
-            raise RuntimeError(
-                f"Preprocessing script failed with exit code {result.returncode}: {stderr}"
-            )
+        detail = f": {stderr}" if stderr else ""
         raise RuntimeError(
-            f"Preprocessing script failed with exit code {result.returncode}"
+            f"Preprocessing script failed with exit code {result.returncode}{detail}"
         )
+    if not result.stdout:
+        raise RuntimeError("Preprocessing script did not emit any data")
 
-    return result
+    reader = pa.ipc.open_stream(pa.BufferReader(result.stdout))
+    return reader.read_all()

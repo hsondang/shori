@@ -170,25 +170,12 @@ describe('FlowCanvas', () => {
     expect(usePipelineStore.getState().nodes).toHaveLength(0)
   })
 
-  it('uploads an excel workbook in the create modal and materializes the first sheet', async () => {
+  it('uploads an excel workbook in the create modal and selects the first sheet', async () => {
     const user = userEvent.setup()
     mockUploadExcel.mockResolvedValue({
       file_path: '/tmp/orders.xlsx',
       filename: 'orders.xlsx',
-      sheet_names: ['Orders'],
-      sheets: [
-        {
-          name: 'Orders',
-          rows: [['id', 'name'], ['1', 'Alice']],
-          truncated_rows: false,
-          truncated_columns: false,
-        },
-      ],
-    })
-    mockMaterializeExcelSheet.mockResolvedValue({
-      file_path: '/tmp/orders_Orders.csv',
-      filename: 'orders_Orders.csv',
-      sheet_name: 'Orders',
+      sheet_names: ['Orders', 'Summary'],
     })
 
     renderCanvas()
@@ -206,7 +193,7 @@ describe('FlowCanvas', () => {
     }))
 
     expect(await within(modal).findByText('orders.xlsx')).toBeInTheDocument()
-    expect(mockMaterializeExcelSheet).toHaveBeenCalledWith('/tmp/orders.xlsx', 'Orders')
+    expect(mockMaterializeExcelSheet).not.toHaveBeenCalled()
     expect(within(modal).getByLabelText('Sheet')).toHaveValue('Orders')
 
     await user.click(within(modal).getByRole('button', { name: 'Create' }))
@@ -215,9 +202,9 @@ describe('FlowCanvas', () => {
     expect(state.nodes).toHaveLength(1)
     const config = (state.nodes[0].data as Record<string, unknown>).config as Record<string, unknown>
     expect(config).toMatchObject({
+      file_path: '/tmp/orders.xlsx',
       selected_sheet: 'Orders',
-      materialized_csv_path: '/tmp/orders_Orders.csv',
-      materialized_csv_filename: 'orders_Orders.csv',
+      sheet_names: ['Orders', 'Summary'],
     })
   })
 

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@shori/design-system — gallery</title>
+    <style>
+      body {
+        margin: 0;
+        background: var(--ds-color-bg, #f5f5f4);
+        color: var(--ds-color-text, #1c1917);
+        font-family: var(--ds-font-sans, system-ui, sans-serif);
+      }
+      .gallery { max-width: 1100px; margin: 0 auto; padding: 40px 32px 80px; }
+      .gallery__title { font-size: 28px; font-weight: 700; margin: 0; }
+      .gallery__sub { color: var(--ds-color-text-muted, #57534e); margin: 6px 0 0; font-size: 14px; }
+      .section { margin-top: 40px; }
+      .section__head { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.18em; color: var(--ds-color-text-subtle, #a8a29e); border-bottom: 1px solid var(--ds-color-border, #e7e5e4); padding-bottom: 8px; margin-bottom: 18px; }
+      .row { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-bottom: 16px; }
+      .swatch { display: flex; flex-direction: column; gap: 6px; }
+      .swatch__label { font-size: 11px; color: var(--ds-color-text-subtle, #a8a29e); }
+      .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; align-items: start; }
+      .panel { background: #fff; border: 1px solid var(--ds-color-border, #e7e5e4); border-radius: 12px; padding: 20px; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/gallery/main.tsx"></script>
+  </body>
+</html>

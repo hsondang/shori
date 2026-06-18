@@ -145,32 +145,45 @@ describe('NodeConfigPanel', () => {
     expect(within(menu).getByRole('button', { name: 'Delete' })).toBeInTheDocument()
   })
 
-  it('uploads an excel workbook, shows sheet previews, and materializes the selected sheet', async () => {
+  it('renders a CSV node saved with the legacy preprocessing shape without crashing', () => {
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'legacy-csv',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Legacy CSV',
+              autoLabel: 'Legacy CSV',
+              labelMode: 'auto',
+              tableName: 'prod',
+              config: {
+                file_path: '/tmp/prod.csv',
+                original_filename: 'prod.csv',
+                // Pre-refactor shape: no script_path, has runtime/script.
+                preprocessing: { enabled: true, runtime: 'python', script: 'print(1)' },
+              },
+            },
+          },
+        ],
+        selectedNodeId: 'legacy-csv',
+      })
+    })
+
+    renderPanel()
+
+    expect(screen.getByText('prod.csv')).toBeInTheDocument()
+    expect(screen.getByText('Load to memory')).toBeInTheDocument()
+  })
+
+  it('uploads an excel workbook and selects a sheet for native read_xlsx', async () => {
     const user = userEvent.setup()
     mockUploadExcel.mockResolvedValue({
       file_path: '/tmp/orders.xlsx',
       filename: 'orders.xlsx',
       sheet_names: ['Orders', 'Summary'],
-      sheets: [
-        {
-          name: 'Orders',
-          rows: [['id', 'name'], ['1', 'Alice']],
-          truncated_rows: false,
-          truncated_columns: false,
-        },
-        {
-          name: 'Summary',
-          rows: [['metric', 'value'], ['total', '1']],
-          truncated_rows: false,
-          truncated_columns: false,
-        },
-      ],
     })
-    mockMaterializeExcelSheet.mockImplementation((_filePath: string, sheetName: string) => Promise.resolve({
-      file_path: `/tmp/orders_${sheetName}.csv`,
-      filename: `orders_${sheetName}.csv`,
-      sheet_name: sheetName,
-    }))
 
     act(() => {
       usePipelineStore.setState({
@@ -188,10 +201,9 @@ describe('NodeConfigPanel', () => {
                 file_path: '',
                 original_filename: '',
                 sheet_names: [],
-                sheets: [],
                 selected_sheet: '',
-                materialized_csv_path: '',
-                materialized_csv_filename: '',
+                load_mode: 'in_memory',
+                header: true,
               },
             },
           },
@@ -207,18 +219,16 @@ describe('NodeConfigPanel', () => {
     }))
 
     expect(await screen.findByText('orders.xlsx')).toBeInTheDocument()
-    expect(mockMaterializeExcelSheet).toHaveBeenCalledWith('/tmp/orders.xlsx', 'Orders')
+    expect(mockMaterializeExcelSheet).not.toHaveBeenCalled()
     expect(screen.getByLabelText('Sheet')).toHaveValue('Orders')
 
     await user.selectOptions(screen.getByLabelText('Sheet'), 'Summary')
 
-    expect(mockMaterializeExcelSheet).toHaveBeenCalledWith('/tmp/orders.xlsx', 'Summary')
-    expect(await screen.findByText('metric')).toBeInTheDocument()
     const config = (usePipelineStore.getState().nodes[0].data as Record<string, unknown>).config as Record<string, unknown>
     expect(config).toMatchObject({
+      file_path: '/tmp/orders.xlsx',
       selected_sheet: 'Summary',
-      materialized_csv_path: '/tmp/orders_Summary.csv',
-      materialized_csv_filename: 'orders_Summary.csv',
+      sheet_names: ['Orders', 'Summary'],
     })
   })
 
@@ -279,7 +289,9 @@ describe('NodeConfigPanel', () => {
     expect(updated.label).toBe('Transform Curated')
     expect(updated.tableName).toBe('orders_curated')
     expect((updated.config as Record<string, unknown>).sql).toBe('select id from orders_table')
-    expect(mockDeleteTable).toHaveBeenCalledWith('orders_final')
+    // The table is no longer dropped client-side on edit; it's marked stale and
+    // reconciled server-side on save.
+    expect(mockDeleteTable).not.toHaveBeenCalled()
     expect(usePipelineStore.getState().previewTabsByNodeId['transform-node']?.isStale).toBe(true)
   })
 

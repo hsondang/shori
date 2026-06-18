@@ -2,17 +2,23 @@ import pytest
 
 from app.main import app
 
+PROJECT_ID = "test-pipeline-1"
+
 
 @pytest.fixture
 async def populated_client(client, pipeline_def):
-    """Client with a CSV table already loaded into DuckDB."""
-    await client.post("/api/execute/node", json=pipeline_def["nodes"][0])
+    """Client with a CSV table already loaded into the project's DuckDB."""
+    resp = await client.post(
+        "/api/execute/node",
+        json={"pipeline": pipeline_def, "node_id": pipeline_def["nodes"][0]["id"]},
+    )
+    assert resp.status_code == 200
     return client
 
 
 @pytest.mark.asyncio
 async def test_preview_not_found(client):
-    resp = await client.get("/api/data/preview/nonexistent_table")
+    resp = await client.get(f"/api/data/{PROJECT_ID}/preview/nonexistent_table")
     assert resp.status_code == 404
 
 
@@ -58,18 +64,23 @@ async def test_csv_source_preview_handles_excel_style_commas_and_notes(client, e
     assert data["truncated"] is False
 
 
+_SKIP_TWO_LINES = (
+    "import pandas as pd\n"
+    "def preprocess(file):\n"
+    "    return pd.read_csv(file, skiprows=2)\n"
+)
+
+
 @pytest.mark.asyncio
-async def test_preprocessed_csv_source_preview_returns_reviewed_rows(client, office365_csv_file):
+async def test_preprocessed_csv_source_preview_returns_reviewed_rows(client, office365_csv_file, tmp_path):
+    script_path = tmp_path / "pp.py"
+    script_path.write_text(_SKIP_TWO_LINES, encoding="utf-8")
     resp = await client.post(
         "/api/data/preview/csv-source/preprocessed",
         json={
             "node_id": "node-1",
             "file_path": office365_csv_file,
-            "preprocessing": {
-                "enabled": True,
-                "runtime": "python",
-                "script": "import sys; from pathlib import Path; lines = Path(sys.argv[1]).read_text().splitlines()[2:]; sys.stdout.write('\\n'.join(lines))",
-            },
+            "preprocessing": {"enabled": True, "script_path": str(script_path)},
             "limit": 3,
         },
     )
@@ -86,17 +97,15 @@ async def test_preprocessed_csv_source_preview_returns_reviewed_rows(client, off
 
 
 @pytest.mark.asyncio
-async def test_delete_preprocessed_csv_artifact(client, office365_csv_file):
+async def test_delete_preprocessed_csv_artifact(client, office365_csv_file, tmp_path):
+    script_path = tmp_path / "pp.py"
+    script_path.write_text(_SKIP_TWO_LINES, encoding="utf-8")
     await client.post(
         "/api/data/preview/csv-source/preprocessed",
         json={
             "node_id": "node-1",
             "file_path": office365_csv_file,
-            "preprocessing": {
-                "enabled": True,
-                "runtime": "bash",
-                "script": "tail -n +3 \"$1\"",
-            },
+            "preprocessing": {"enabled": True, "script_path": str(script_path)},
         },
     )
 
@@ -107,7 +116,7 @@ async def test_delete_preprocessed_csv_artifact(client, office365_csv_file):
 
 @pytest.mark.asyncio
 async def test_preview_returns_rows(populated_client):
-    resp = await populated_client.get("/api/data/preview/my_table")
+    resp = await populated_client.get(f"/api/data/{PROJECT_ID}/preview/my_table")
     assert resp.status_code == 200
     data = resp.json()
     assert data["kind"] == "table"
@@ -118,7 +127,7 @@ async def test_preview_returns_rows(populated_client):
 
 @pytest.mark.asyncio
 async def test_preview_pagination(populated_client):
-    resp = await populated_client.get("/api/data/preview/my_table?offset=2&limit=2")
+    resp = await populated_client.get(f"/api/data/{PROJECT_ID}/preview/my_table?offset=2&limit=2")
     assert resp.status_code == 200
     data = resp.json()
     assert len(data["rows"]) == 2
@@ -129,7 +138,7 @@ async def test_preview_pagination(populated_client):
 
 @pytest.mark.asyncio
 async def test_preview_offset_beyond_total(populated_client):
-    resp = await populated_client.get("/api/data/preview/my_table?offset=100")
+    resp = await populated_client.get(f"/api/data/{PROJECT_ID}/preview/my_table?offset=100")
     assert resp.status_code == 200
     data = resp.json()
     assert data["rows"] == []
@@ -138,26 +147,33 @@ async def test_preview_offset_beyond_total(populated_client):
 
 @pytest.mark.asyncio
 async def test_preview_returns_json_safe_non_finite_float_values(client):
-    app.state.duckdb.execute_transform(
+    app.state.project_dbs.get(PROJECT_ID).execute_transform(
         "non_finite_values",
         "SELECT 'NaN'::DOUBLE AS score, 'Infinity'::DOUBLE AS high",
     )
 
-    resp = await client.get("/api/data/preview/non_finite_values")
+    resp = await client.get(f"/api/data/{PROJECT_ID}/preview/non_finite_values")
 
     assert resp.status_code == 200
     assert resp.json()["rows"] == [["NaN", "Infinity"]]
 
 
 @pytest.mark.asyncio
+async def test_preview_internal_metadata_table_is_hidden(client):
+    app.state.project_dbs.get(PROJECT_ID)  # ensure the project db (and meta table) exists
+    resp = await client.get(f"/api/data/{PROJECT_ID}/preview/_shori_node_meta")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_schema_not_found(client):
-    resp = await client.get("/api/data/schema/nonexistent_table")
+    resp = await client.get(f"/api/data/{PROJECT_ID}/schema/nonexistent_table")
     assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_schema_structure(populated_client):
-    resp = await populated_client.get("/api/data/schema/my_table")
+    resp = await populated_client.get(f"/api/data/{PROJECT_ID}/schema/my_table")
     assert resp.status_code == 200
     data = resp.json()
     assert data["table_name"] == "my_table"
@@ -168,13 +184,13 @@ async def test_schema_structure(populated_client):
 
 @pytest.mark.asyncio
 async def test_export_not_found(client):
-    resp = await client.get("/api/data/export/nonexistent_table")
+    resp = await client.get(f"/api/data/{PROJECT_ID}/export/nonexistent_table")
     assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_export_returns_csv(populated_client):
-    resp = await populated_client.get("/api/data/export/my_table")
+    resp = await populated_client.get(f"/api/data/{PROJECT_ID}/export/my_table")
     assert resp.status_code == 200
     assert "text/csv" in resp.headers["content-type"]
     content = resp.text
@@ -183,17 +199,50 @@ async def test_export_returns_csv(populated_client):
 
 
 @pytest.mark.asyncio
+async def test_export_to_path_writes_local_file(populated_client, tmp_path):
+    out = tmp_path / "export.parquet"
+    resp = await populated_client.post(
+        f"/api/data/{PROJECT_ID}/export-to-path",
+        json={"table_name": "my_table", "output_path": str(out), "format": "parquet"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["format"] == "parquet"
+    assert body["row_count"] == 5
+    assert out.exists()
+
+
+@pytest.mark.asyncio
+async def test_export_to_path_rejects_missing_table(populated_client, tmp_path):
+    resp = await populated_client.post(
+        f"/api/data/{PROJECT_ID}/export-to-path",
+        json={"table_name": "nope", "output_path": str(tmp_path / "x.csv"), "format": "csv"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_delete_table_removes_materialized_table(populated_client):
-    delete_resp = await populated_client.delete("/api/data/table/my_table")
+    delete_resp = await populated_client.delete(f"/api/data/{PROJECT_ID}/table/my_table")
     assert delete_resp.status_code == 200
     assert delete_resp.json() == {"deleted": True}
 
-    preview_resp = await populated_client.get("/api/data/preview/my_table")
+    preview_resp = await populated_client.get(f"/api/data/{PROJECT_ID}/preview/my_table")
     assert preview_resp.status_code == 404
 
 
 @pytest.mark.asyncio
+async def test_delete_table_clears_node_metadata(populated_client, pipeline_def):
+    node_id = pipeline_def["nodes"][0]["id"]
+    manager = app.state.project_dbs.get(PROJECT_ID)
+    assert manager.get_node_meta(node_id) is not None
+
+    await populated_client.delete(f"/api/data/{PROJECT_ID}/table/my_table")
+    assert manager.get_node_meta(node_id) is None
+
+
+@pytest.mark.asyncio
 async def test_delete_table_is_idempotent(client):
-    resp = await client.delete("/api/data/table/nonexistent_table")
+    resp = await client.delete(f"/api/data/{PROJECT_ID}/table/nonexistent_table")
     assert resp.status_code == 200
     assert resp.json() == {"deleted": False}

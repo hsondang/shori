@@ -14,7 +14,7 @@ function badge(overrides: Partial<NodeExecutionResult> = {}) {
 describe('NodeStatusBadge', () => {
   it('shows idle status text', () => {
     badge({ status: 'idle' })
-    expect(screen.getByText(/idle/)).toBeInTheDocument()
+    expect(screen.getByText(/idle/i)).toBeInTheDocument()
   })
 
   it('shows running status text', () => {
@@ -36,7 +36,7 @@ describe('NodeStatusBadge', () => {
 
   it('shows success status text', () => {
     badge({ status: 'success', row_count: 5, column_count: 3 })
-    expect(screen.getByText(/success/)).toBeInTheDocument()
+    expect(screen.getByText(/success/i)).toBeInTheDocument()
   })
 
   it('shows cancelled status text', () => {
@@ -46,7 +46,7 @@ describe('NodeStatusBadge', () => {
 
   it('shows error status text', () => {
     badge({ status: 'error', error: 'Something broke' })
-    expect(screen.getByText(/error/)).toBeInTheDocument()
+    expect(screen.getByText(/error/i)).toBeInTheDocument()
     expect(screen.queryByText('Something broke')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /view error/i })).not.toBeInTheDocument()
   })
@@ -81,9 +81,9 @@ describe('NodeStatusBadge', () => {
     expect(screen.getByText(/123ms/)).toBeInTheDocument()
   })
 
-  it('shows human-readable execution time for long durations', () => {
+  it('shows execution time for long durations', () => {
     badge({ status: 'success', execution_time_ms: 65500, row_count: 1, column_count: 1 })
-    expect(screen.getByText(/1m 5s 500ms/)).toBeInTheDocument()
+    expect(screen.getByText(/65\.5s/)).toBeInTheDocument()
   })
 
   it('does not show row count when null', () => {

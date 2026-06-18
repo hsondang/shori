@@ -10,7 +10,6 @@ export function getCsvPreprocessFingerprint(
 
   return JSON.stringify({
     file_path: config.file_path,
-    runtime: preprocessing.runtime,
-    script: preprocessing.script,
+    script_path: preprocessing.script_path,
   })
 }

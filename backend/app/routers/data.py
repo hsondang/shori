@@ -11,8 +11,16 @@ from app.services.csv_service import (
     preview_csv_text,
     preview_preprocessed_csv_text,
 )
+from app.services.duckdb_manager import is_reserved_table_name
+from app.services.export_service import export_table_to_local
 
 router = APIRouter()
+
+
+class ExportToPathRequest(BaseModel):
+    table_name: str
+    output_path: str
+    format: str = "csv"
 
 
 class CsvSourcePreviewRequest(BaseModel):
@@ -57,19 +65,29 @@ def delete_preprocessed_csv_source(node_id: str, request: Request):
     return {"deleted": deleted}
 
 
-@router.get("/preview/{table_name}")
-def preview_data(table_name: str, request: Request, offset: int = 0, limit: int = 100):
-    db = request.app.state.duckdb
-    if not db.table_exists(table_name):
+def _get_project_db(request: Request, project_id: str):
+    try:
+        return request.app.state.project_dbs.get(project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _require_user_table(db, table_name: str):
+    if is_reserved_table_name(table_name) or not db.table_exists(table_name):
         raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+
+
+@router.get("/{project_id}/preview/{table_name}")
+def preview_data(project_id: str, table_name: str, request: Request, offset: int = 0, limit: int = 100):
+    db = _get_project_db(request, project_id)
+    _require_user_table(db, table_name)
     return db.preview(table_name, offset=offset, limit=limit)
 
 
-@router.get("/export/{table_name}")
-def export_data(table_name: str, request: Request):
-    db = request.app.state.duckdb
-    if not db.table_exists(table_name):
-        raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+@router.get("/{project_id}/export/{table_name}")
+def export_data(project_id: str, table_name: str, request: Request):
+    db = _get_project_db(request, project_id)
+    _require_user_table(db, table_name)
 
     output_path = EXPORT_DIR / f"{table_name}.csv"
     db.export_to_csv(table_name, str(output_path))
@@ -80,11 +98,19 @@ def export_data(table_name: str, request: Request):
     )
 
 
-@router.get("/schema/{table_name}")
-def get_schema(table_name: str, request: Request):
-    db = request.app.state.duckdb
-    if not db.table_exists(table_name):
-        raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+@router.post("/{project_id}/export-to-path")
+def export_to_path(project_id: str, payload: ExportToPathRequest, request: Request):
+    db = _get_project_db(request, project_id)
+    try:
+        return export_table_to_local(db, payload.table_name, payload.output_path, payload.format)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/{project_id}/schema/{table_name}")
+def get_schema(project_id: str, table_name: str, request: Request):
+    db = _get_project_db(request, project_id)
+    _require_user_table(db, table_name)
 
     preview = db.preview(table_name, offset=0, limit=0)
     return {
@@ -95,9 +121,11 @@ def get_schema(table_name: str, request: Request):
     }
 
 
-@router.delete("/table/{table_name}")
-def delete_table(table_name: str, request: Request):
-    db = request.app.state.duckdb
+@router.delete("/{project_id}/table/{table_name}")
+def delete_table(project_id: str, table_name: str, request: Request):
+    db = _get_project_db(request, project_id)
+    if is_reserved_table_name(table_name):
+        raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
     existed = db.table_exists(table_name)
     db.drop_table(table_name)
     return {"deleted": existed}

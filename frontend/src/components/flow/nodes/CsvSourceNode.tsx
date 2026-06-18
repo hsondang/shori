@@ -1,56 +1,51 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
+import { NodeCard } from '@shori/design-system'
 import { usePipelineStore } from '../../../store/pipelineStore'
-import NodeStatusBadge from '../NodeStatusBadge'
+import NodeCacheChip from '../NodeCacheChip'
+import { toResultLike } from '../../../lib/dsStatus'
+import { getResultElapsedLabel } from '../../../lib/executionTiming'
 import type { CsvSourceConfig } from '../../../types/pipeline'
 
 export default function CsvSourceNode({ id, data }: NodeProps) {
   const nodeResults = usePipelineStore((s) => s.nodeResults)
+  const executionClockNow = usePipelineStore((s) => s.executionClockNow)
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
   const openNodeError = usePipelineStore((s) => s.openNodeError)
   const loadCsvPreview = usePipelineStore((s) => s.loadCsvPreview)
+  const runNodeWithLoadMode = usePipelineStore((s) => s.runNodeWithLoadMode)
   const result = nodeResults[id]
-  const hasError = result?.status === 'error'
   const d = data as Record<string, unknown>
   const config = d.config as CsvSourceConfig
   const tableName = d.tableName as string
+  const elapsed = result ? getResultElapsedLabel(result, executionClockNow) : null
+  const preprocessingPending = Boolean(config.preprocessing?.enabled)
+  const actions = config.file_path
+    ? [
+        { label: 'Preview data', onClick: () => loadCsvPreview(id, config.file_path) },
+        ...(preprocessingPending
+          ? []
+          : [
+              { label: 'Load to memory', onClick: () => runNodeWithLoadMode(id, 'in_memory') },
+              { label: 'Materialize', tone: 'muted' as const, onClick: () => runNodeWithLoadMode(id, 'materialized') },
+            ]),
+      ]
+    : []
 
   return (
-    <div
-      className={`bg-white border-2 rounded-lg min-w-[180px] cursor-pointer ${
-        hasError
-          ? 'border-red-500 shadow-lg shadow-red-100 ring-2 ring-red-200/80'
-          : 'border-blue-400 shadow-md'
-      }`}
-      onClick={() => setSelectedNodeId(id)}
-    >
-      <div
-        className={`text-white px-3 py-1.5 rounded-t-md text-sm flex items-center gap-2 ${
-          hasError ? 'bg-red-500 font-bold' : 'bg-blue-400 font-semibold'
-        }`}
+    <div>
+      <NodeCard
+        kind="csv"
+        icon="📄"
+        title={(d.label as string) || 'CSV Source'}
+        tableName={tableName}
+        subtitle={config.original_filename || undefined}
+        result={result ? toResultLike(result, elapsed) : undefined}
+        onSelect={() => setSelectedNodeId(id)}
+        onViewError={result?.status === 'error' ? () => openNodeError(id) : undefined}
+        actions={actions}
       >
-        <span>📄</span>
-        <span>{(d.label as string) || 'CSV Source'}</span>
-      </div>
-      <div className="px-3 py-2 text-xs space-y-1">
-        <div className="text-gray-500 font-mono">{tableName}</div>
-        {config.original_filename && (
-          <div className="text-gray-700 truncate max-w-[160px]">{config.original_filename}</div>
-        )}
-        {result && (
-          <NodeStatusBadge
-            result={result}
-            onViewError={result.status === 'error' ? () => openNodeError(id) : undefined}
-          />
-        )}
-        {config.file_path && (
-          <button
-            className="text-blue-500 hover:underline text-xs"
-            onClick={(e) => { e.stopPropagation(); loadCsvPreview(id, config.file_path) }}
-          >
-            Preview data
-          </button>
-        )}
-      </div>
+        <NodeCacheChip nodeId={id} />
+      </NodeCard>
       <Handle type="source" position={Position.Right} className="!bg-blue-400 !w-3 !h-3" />
     </div>
   )

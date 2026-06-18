@@ -1,7 +1,10 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
+import { NodeCard } from '@shori/design-system'
 import { usePipelineStore } from '../../../store/pipelineStore'
 import { useSettingsStore } from '../../../store/settingsStore'
-import NodeStatusBadge from '../NodeStatusBadge'
+import NodeCacheChip from '../NodeCacheChip'
+import { toResultLike } from '../../../lib/dsStatus'
+import { getResultElapsedLabel } from '../../../lib/executionTiming'
 import {
   findSavedConnectionById,
   getConnectionSummary,
@@ -10,80 +13,68 @@ import {
 } from '../../../lib/databaseConnections'
 import type { DatabaseConnectionConfig, DbType } from '../../../types/pipeline'
 
-const dbStyles = {
-  oracle: { border: 'border-orange-400', bg: 'bg-orange-400', text: 'text-orange-500', handle: '!bg-orange-400', emoji: '🗄️' },
-  postgres: { border: 'border-teal-400', bg: 'bg-teal-400', text: 'text-teal-500', handle: '!bg-teal-400', emoji: '🐘' },
-}
-
 export default function DatabaseSourceNode({ id, data }: NodeProps) {
   const nodeResults = usePipelineStore((s) => s.nodeResults)
+  const executionClockNow = usePipelineStore((s) => s.executionClockNow)
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
   const openNodeError = usePipelineStore((s) => s.openNodeError)
   const loadTablePreview = usePipelineStore((s) => s.loadTablePreview)
+  const startLivePreview = usePipelineStore((s) => s.startLivePreview)
+  const runNodeWithLoadMode = usePipelineStore((s) => s.runNodeWithLoadMode)
   const globalDatabaseConnections = useSettingsStore((s) => s.globalDatabaseConnections)
   const result = nodeResults[id]
-  const hasError = result?.status === 'error'
   const d = data as Record<string, unknown>
   const config = d.config as Record<string, unknown>
+  const tableName = d.tableName as string
+  const elapsed = result ? getResultElapsedLabel(result, executionClockNow) : null
+
   const connectionScope = getDatabaseSourceConnectionScope(config)
   const globalConnection = findSavedConnectionById(
     globalDatabaseConnections,
     getDatabaseSourceConnectionSourceId(config),
   )
   const connection = (
-    connectionScope === 'global'
-      ? globalConnection
-      : config.connection
+    connectionScope === 'global' ? globalConnection : config.connection
   ) as DatabaseConnectionConfig | undefined
   const dbType = ((config.db_type as string) || 'postgres') as DbType
-  const tableName = d.tableName as string
-  const style = dbStyles[dbType as keyof typeof dbStyles] || dbStyles.postgres
+
+  const accentMap = { oracle: 'oracle', postgres: 'postgres' } as const
+  const accent = accentMap[dbType as keyof typeof accentMap] ?? 'postgres'
+  const iconMap = { oracle: '🗄️', postgres: '🐘' }
+  const icon = iconMap[dbType as keyof typeof iconMap] ?? '🗄️'
+
+  const subtitle = connectionScope === 'global'
+    ? (globalConnection ? `Global · ${globalConnection.name}` : 'Global · Missing source')
+    : connection?.host
+      ? getConnectionSummary(dbType, connection)
+      : undefined
+
+  const actions = [
+    { label: 'Preview', onClick: () => startLivePreview(id) },
+    { label: 'Load to memory', onClick: () => runNodeWithLoadMode(id, 'in_memory') },
+    { label: 'Materialize', tone: 'muted' as const, onClick: () => runNodeWithLoadMode(id, 'materialized') },
+    ...(result?.status === 'success'
+      ? [{ label: 'View table', tone: 'muted' as const, onClick: () => loadTablePreview(id, tableName) }]
+      : []),
+  ]
 
   return (
-    <div
-      className={`bg-white border-2 rounded-lg min-w-[180px] cursor-pointer ${
-        hasError
-          ? 'border-red-500 shadow-lg shadow-red-100 ring-2 ring-red-200/80'
-          : `${style.border} shadow-md`
-      }`}
-      onClick={() => setSelectedNodeId(id)}
-    >
-      <div
-        className={`text-white px-3 py-1.5 rounded-t-md text-sm flex items-center gap-2 ${
-          hasError ? 'bg-red-500 font-bold' : `${style.bg} font-semibold`
-        }`}
+    <div>
+      <NodeCard
+        kind="db"
+        accent={accent}
+        icon={icon}
+        title={(d.label as string) || 'Database Source'}
+        tableName={tableName}
+        subtitle={subtitle}
+        result={result ? toResultLike(result, elapsed) : undefined}
+        onSelect={() => setSelectedNodeId(id)}
+        onViewError={result?.status === 'error' ? () => openNodeError(id) : undefined}
+        actions={actions}
       >
-        <span>{style.emoji}</span>
-        <span>{(d.label as string) || 'Database Source'}</span>
-      </div>
-      <div className="px-3 py-2 text-xs space-y-1">
-        <div className="text-gray-500 font-mono">{tableName}</div>
-        {connectionScope === 'global' && (
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-stone-400">
-            {globalConnection ? `Global · ${globalConnection.name}` : 'Global · Missing source'}
-          </div>
-        )}
-        {connection?.host && (
-          <div className="text-gray-700 truncate max-w-[160px]">
-            {getConnectionSummary(dbType, connection)}
-          </div>
-        )}
-        {result && (
-          <NodeStatusBadge
-            result={result}
-            onViewError={result.status === 'error' ? () => openNodeError(id) : undefined}
-          />
-        )}
-        {result?.status === 'success' && (
-          <button
-            className={`${style.text} hover:underline text-xs`}
-            onClick={(e) => { e.stopPropagation(); loadTablePreview(id, tableName) }}
-          >
-            Preview data
-          </button>
-        )}
-      </div>
-      <Handle type="source" position={Position.Right} className={`${style.handle} !w-3 !h-3`} />
+        <NodeCacheChip nodeId={id} />
+      </NodeCard>
+      <Handle type="source" position={Position.Right} className="!bg-teal-400 !w-3 !h-3" />
     </div>
   )
 }

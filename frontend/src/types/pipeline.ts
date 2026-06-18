@@ -4,6 +4,10 @@ export type ConnectionScope = 'local' | 'global'
 export type NodeStatus = 'idle' | 'connecting' | 'running' | 'success' | 'error' | 'cancelled'
 export type NodeLabelMode = 'auto' | 'custom'
 export type NodeEditorMode = 'closed' | 'create' | 'edit'
+/** Where a node's result is held: RAM-only scratch vs the project DuckDB file. */
+export type NodeLoadMode = 'in_memory' | 'materialized'
+/** Single derived card label combining activity + location + freshness. */
+export type NodeLifecycle = 'new' | 'idle' | 'in_memory' | 'materialized' | 'running' | 'error'
 
 export interface PostgresConnectionConfig {
   host: string
@@ -34,31 +38,28 @@ export type DatabaseConnectionConfig = PostgresConnectionConfig | OracleConnecti
 export interface CsvSourceConfig {
   file_path: string
   original_filename: string
+  load_mode?: NodeLoadMode
   preprocessing?: CsvPreprocessingConfig
-}
-
-export interface ExcelSheetPreview {
-  name: string
-  rows: string[][]
-  truncated_rows: boolean
-  truncated_columns: boolean
 }
 
 export interface ExcelSourceConfig {
   file_path: string
   original_filename: string
   sheet_names: string[]
-  sheets?: ExcelSheetPreview[]
   selected_sheet: string
-  materialized_csv_path: string
-  materialized_csv_filename: string
-  preprocessing?: CsvPreprocessingConfig
+  load_mode?: NodeLoadMode
+  /** A1-style range passed to DuckDB read_xlsx, e.g. "A1:C100". */
+  cell_range?: string
+  /** Treat the first row as column names (read_xlsx header). */
+  header?: boolean
+  /** Disable type inference; every column comes back VARCHAR. */
+  all_varchar?: boolean
 }
 
 export interface CsvPreprocessingConfig {
   enabled: boolean
-  runtime: 'python' | 'bash'
-  script: string
+  /** Path to a .py file exposing `preprocess(file) -> pandas.DataFrame`. */
+  script_path: string
 }
 
 export interface PostgresDatabaseSourceConfig {
@@ -66,6 +67,7 @@ export interface PostgresDatabaseSourceConfig {
   db_type: 'postgres'
   connection: PostgresConnectionConfig
   query: string
+  load_mode?: NodeLoadMode
 }
 
 export interface OracleDatabaseSourceConfig {
@@ -74,6 +76,7 @@ export interface OracleDatabaseSourceConfig {
   connection: OracleConnectionConfig
   query: string
   fetch_config?: OracleFetchConfig
+  load_mode?: NodeLoadMode
 }
 
 export interface GlobalPostgresDatabaseSourceConfig {
@@ -81,6 +84,7 @@ export interface GlobalPostgresDatabaseSourceConfig {
   connection_source_id: string
   db_type: 'postgres'
   query: string
+  load_mode?: NodeLoadMode
 }
 
 export interface GlobalOracleDatabaseSourceConfig {
@@ -89,6 +93,7 @@ export interface GlobalOracleDatabaseSourceConfig {
   db_type: 'oracle'
   query: string
   fetch_config?: OracleFetchConfig
+  load_mode?: NodeLoadMode
 }
 
 export type DatabaseSourceConfig =
@@ -109,10 +114,14 @@ export type ScopedDatabaseConnection = SavedDatabaseConnection & { scope: Connec
 
 export interface TransformConfig {
   sql: string
+  load_mode?: NodeLoadMode
 }
 
 export interface ExportConfig {
   format: string
+  /** Only 'local' for now; structured so other destinations can be added. */
+  destination?: 'local'
+  output_path?: string
 }
 
 export interface NodeEditorDraft {
@@ -120,6 +129,7 @@ export interface NodeEditorDraft {
   type: NodeType
   position: { x: number; y: number }
   label: string
+  description?: string
   autoLabel: string
   labelMode: NodeLabelMode
   tableName: string
@@ -136,6 +146,8 @@ export interface NodeExecutionResult {
   execution_time_ms?: number
   started_at?: string
   finished_at?: string
+  /** True when served from the project's persisted cache without re-running. */
+  cached?: boolean
 }
 
 export interface ExecutionRunStatus {
@@ -147,6 +159,24 @@ export interface ExecutionRunStatus {
   node_results: Record<string, NodeExecutionResult>
 }
 
+export interface ProjectSettings {
+  max_concurrent_nodes: number
+  max_connections_per_database: number
+  duckdb_memory_limit: string
+  preview_chunk_rows: number
+  preview_max_buffer_rows: number
+  preview_session_ttl_seconds: number
+}
+
+export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
+  max_concurrent_nodes: 4,
+  max_connections_per_database: 2,
+  duckdb_memory_limit: '2GB',
+  preview_chunk_rows: 200,
+  preview_max_buffer_rows: 10000,
+  preview_session_ttl_seconds: 600,
+}
+
 export interface PipelineDefinition {
   id: string
   name: string
@@ -156,6 +186,7 @@ export interface PipelineDefinition {
     type: NodeType
     table_name: string
     label: string
+    description?: string
     auto_label?: string
     label_mode?: NodeLabelMode
     position: { x: number; y: number }
@@ -166,6 +197,44 @@ export interface PipelineDefinition {
     source: string
     target: string
   }>
+  settings?: ProjectSettings
+}
+
+export type NodeCacheState = 'fresh' | 'stale' | 'missing' | 'loading' | 'failed'
+
+export interface NodeCacheStatus {
+  state: NodeCacheState
+  /** Where the cached table lives, or null when nothing is cached. */
+  location: NodeLoadMode | null
+  /** Single derived card label (activity + location + freshness). */
+  lifecycle: NodeLifecycle
+  row_count: number | null
+  column_count: number | null
+  finished_at: string | null
+  error: string | null
+}
+
+export interface CacheStatusResponse {
+  nodes: Record<string, NodeCacheStatus>
+}
+
+export interface PreviewSessionChunk {
+  session_id: string
+  rows: unknown[][]
+  buffered_rows: number
+  has_more: boolean
+  buffer_capped: boolean
+}
+
+export interface PreviewSessionStart extends PreviewSessionChunk {
+  node_id: string
+  columns: string[]
+  column_types: string[]
+}
+
+export interface ProjectStorageInfo {
+  file_size_bytes: number
+  path: string
 }
 
 export interface ProjectSummary {
@@ -206,6 +275,19 @@ export interface MaterializedPreviewTab {
   isStale: boolean
 }
 
+export interface LivePreviewState {
+  nodeId: string
+  sessionId: string | null
+  columns: string[]
+  columnTypes: string[]
+  rows: unknown[][]
+  hasMore: boolean
+  bufferCapped: boolean
+  loading: boolean
+  materializing: boolean
+  error: string | null
+}
+
 export interface TransientPreviewState {
   nodeId: string | null
   data: CsvTextPreviewData | null
@@ -216,3 +298,4 @@ export interface TransientPreviewState {
 export type ActivePreviewTarget =
   | { kind: 'tab'; nodeId: string }
   | { kind: 'transient'; nodeId: string }
+  | { kind: 'live'; nodeId: string }

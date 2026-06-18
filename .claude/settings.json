@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git push *)",
+      "Bash(gh pr create --title 'docs: add AGENTS.md for AI coding agents' --body ' *)"
+    ]
+  }
+}

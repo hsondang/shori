@@ -21,6 +21,18 @@ class NodeStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+# Where a source/transform node's result is held. `in_memory` lives in the
+# attached scratch catalog (RAM-only, gone on restart); `materialized` is a
+# real table in the project's DuckDB file.
+NodeLoadMode = Literal["in_memory", "materialized"]
+
+# The single derived label the node card shows, blending activity + location +
+# freshness. Computed in the cache-status endpoint from the persisted meta.
+NodeLifecycle = Literal[
+    "new", "idle", "in_memory", "materialized", "running", "error"
+]
+
+
 class OracleConnectionConfig(BaseModel):
     host: str
     port: int = 1521
@@ -97,6 +109,7 @@ class NodeDefinition(BaseModel):
     type: NodeType
     table_name: str
     label: str
+    description: Optional[str] = None
     auto_label: Optional[str] = None
     label_mode: Optional[Literal["auto", "custom"]] = None
     position: Position
@@ -109,12 +122,26 @@ class EdgeDefinition(BaseModel):
     target: str
 
 
+class ProjectSettings(BaseModel):
+    """Per-project advanced execution/storage settings."""
+
+    max_concurrent_nodes: int = Field(default=4, ge=1, le=32)
+    max_connections_per_database: int = Field(default=2, ge=1, le=16)
+    duckdb_memory_limit: str = Field(
+        default="2GB", pattern=r"^\d+(\.\d+)?\s*(?i:[KMGT]i?B)$"
+    )
+    preview_chunk_rows: int = Field(default=200, ge=10, le=2000)
+    preview_max_buffer_rows: int = Field(default=10_000, ge=200, le=1_000_000)
+    preview_session_ttl_seconds: int = Field(default=600, ge=30, le=86_400)
+
+
 class PipelineDefinition(BaseModel):
     id: str
     name: str
     database_connections: list[DatabaseConnectionDefinition] = Field(default_factory=list)
     nodes: list[NodeDefinition]
     edges: list[EdgeDefinition]
+    settings: ProjectSettings = Field(default_factory=ProjectSettings)
 
 
 class ProjectSummary(BaseModel):
@@ -139,6 +166,9 @@ class NodeExecutionResult(BaseModel):
     execution_time_ms: Optional[float] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
+    # True when the result was served from the project's persisted cache
+    # without re-executing the node.
+    cached: bool = False
 
 
 class ExecutionRunStatus(BaseModel):

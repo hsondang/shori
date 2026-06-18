@@ -113,8 +113,8 @@ describe('CsvSourceNode', () => {
       </>
     )
 
-    expect(container.firstChild).toHaveClass('border-red-500')
-    expect(screen.getByText('CSV Source').parentElement).toHaveClass('font-bold')
+    expect(container.querySelector('.ds-node-card')).toHaveClass('is-error')
+    expect(screen.getByText('CSV Source')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /view error/i }))
 
