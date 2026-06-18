@@ -4,6 +4,10 @@ export type ConnectionScope = 'local' | 'global'
 export type NodeStatus = 'idle' | 'connecting' | 'running' | 'success' | 'error' | 'cancelled'
 export type NodeLabelMode = 'auto' | 'custom'
 export type NodeEditorMode = 'closed' | 'create' | 'edit'
+/** Where a node's result is held: RAM-only scratch vs the project DuckDB file. */
+export type NodeLoadMode = 'in_memory' | 'materialized'
+/** Single derived card label combining activity + location + freshness. */
+export type NodeLifecycle = 'new' | 'idle' | 'in_memory' | 'materialized' | 'running' | 'error'
 
 export interface PostgresConnectionConfig {
   host: string
@@ -34,31 +38,28 @@ export type DatabaseConnectionConfig = PostgresConnectionConfig | OracleConnecti
 export interface CsvSourceConfig {
   file_path: string
   original_filename: string
+  load_mode?: NodeLoadMode
   preprocessing?: CsvPreprocessingConfig
-}
-
-export interface ExcelSheetPreview {
-  name: string
-  rows: string[][]
-  truncated_rows: boolean
-  truncated_columns: boolean
 }
 
 export interface ExcelSourceConfig {
   file_path: string
   original_filename: string
   sheet_names: string[]
-  sheets?: ExcelSheetPreview[]
   selected_sheet: string
-  materialized_csv_path: string
-  materialized_csv_filename: string
-  preprocessing?: CsvPreprocessingConfig
+  load_mode?: NodeLoadMode
+  /** A1-style range passed to DuckDB read_xlsx, e.g. "A1:C100". */
+  cell_range?: string
+  /** Treat the first row as column names (read_xlsx header). */
+  header?: boolean
+  /** Disable type inference; every column comes back VARCHAR. */
+  all_varchar?: boolean
 }
 
 export interface CsvPreprocessingConfig {
   enabled: boolean
-  runtime: 'python' | 'bash'
-  script: string
+  /** Path to a .py file exposing `preprocess(file) -> pandas.DataFrame`. */
+  script_path: string
 }
 
 export interface PostgresDatabaseSourceConfig {
@@ -66,6 +67,7 @@ export interface PostgresDatabaseSourceConfig {
   db_type: 'postgres'
   connection: PostgresConnectionConfig
   query: string
+  load_mode?: NodeLoadMode
 }
 
 export interface OracleDatabaseSourceConfig {
@@ -74,6 +76,7 @@ export interface OracleDatabaseSourceConfig {
   connection: OracleConnectionConfig
   query: string
   fetch_config?: OracleFetchConfig
+  load_mode?: NodeLoadMode
 }
 
 export interface GlobalPostgresDatabaseSourceConfig {
@@ -81,6 +84,7 @@ export interface GlobalPostgresDatabaseSourceConfig {
   connection_source_id: string
   db_type: 'postgres'
   query: string
+  load_mode?: NodeLoadMode
 }
 
 export interface GlobalOracleDatabaseSourceConfig {
@@ -89,6 +93,7 @@ export interface GlobalOracleDatabaseSourceConfig {
   db_type: 'oracle'
   query: string
   fetch_config?: OracleFetchConfig
+  load_mode?: NodeLoadMode
 }
 
 export type DatabaseSourceConfig =
@@ -109,10 +114,14 @@ export type ScopedDatabaseConnection = SavedDatabaseConnection & { scope: Connec
 
 export interface TransformConfig {
   sql: string
+  load_mode?: NodeLoadMode
 }
 
 export interface ExportConfig {
   format: string
+  /** Only 'local' for now; structured so other destinations can be added. */
+  destination?: 'local'
+  output_path?: string
 }
 
 export interface NodeEditorDraft {
@@ -120,6 +129,7 @@ export interface NodeEditorDraft {
   type: NodeType
   position: { x: number; y: number }
   label: string
+  description?: string
   autoLabel: string
   labelMode: NodeLabelMode
   tableName: string
@@ -176,6 +186,7 @@ export interface PipelineDefinition {
     type: NodeType
     table_name: string
     label: string
+    description?: string
     auto_label?: string
     label_mode?: NodeLabelMode
     position: { x: number; y: number }
@@ -193,6 +204,10 @@ export type NodeCacheState = 'fresh' | 'stale' | 'missing' | 'loading' | 'failed
 
 export interface NodeCacheStatus {
   state: NodeCacheState
+  /** Where the cached table lives, or null when nothing is cached. */
+  location: NodeLoadMode | null
+  /** Single derived card label (activity + location + freshness). */
+  lifecycle: NodeLifecycle
   row_count: number | null
   column_count: number | null
   finished_at: string | null

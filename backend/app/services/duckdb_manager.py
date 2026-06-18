@@ -16,12 +16,22 @@ RESERVED_TABLE_PREFIX = "_shori_"
 STAGING_SUFFIX = "__staging"
 META_TABLE = "_shori_node_meta"
 
+# Catalog holding RAM-only "in-memory" node tables. It is an attached
+# `:memory:` database: visible across every cursor of the project's DuckDB
+# instance (so Transform nodes can join it), but gone the moment the process
+# exits — which is exactly the lifecycle the in-memory load mode wants.
+SCRATCH_CATALOG = "scratch"
+
+LOCATION_MEMORY = "in_memory"
+LOCATION_MATERIALIZED = "materialized"
+
 META_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS {META_TABLE} (
     node_id VARCHAR PRIMARY KEY,
     table_name VARCHAR NOT NULL,
     cache_key VARCHAR,
     status VARCHAR NOT NULL,
+    location VARCHAR,
     row_count BIGINT,
     column_count INTEGER,
     columns_json VARCHAR,
@@ -37,6 +47,7 @@ META_COLUMNS = [
     "table_name",
     "cache_key",
     "status",
+    "location",
     "row_count",
     "column_count",
     "columns_json",
@@ -97,10 +108,32 @@ class DuckDBManager:
         self._active_lock = threading.Lock()
         self._closed = False
         self._postgres_extension_ready: bool | None = None
+        self._excel_extension_ready: bool | None = None
+        self._catalog = "memory"
+        self._search_path = ""
         self.conn = duckdb.connect(self.db_path)
+        self._attach_scratch(self.conn)
         self._apply_settings()
         self._ensure_meta_schema()
         self._recover_interrupted_loads()
+
+    def _attach_scratch(self, conn):
+        """Attach the RAM-only scratch catalog and pin the cross-catalog search path."""
+        conn.execute(f"ATTACH IF NOT EXISTS ':memory:' AS {SCRATCH_CATALOG}")
+        self._catalog = conn.execute("SELECT current_database()").fetchone()[0]
+        # Quoted, no space after the comma: DuckDB parses a leading space as part
+        # of the next schema name. Putting the project catalog first means
+        # unqualified CREATE/resolution prefers persisted tables.
+        self._search_path = f'"{self._catalog}".main,{SCRATCH_CATALOG}.main'
+        self._set_search_path(conn)
+
+    def _set_search_path(self, cur):
+        """search_path is connection-local, so every cursor must pin it itself."""
+        if self._search_path:
+            cur.execute(f"SET search_path = '{self._search_path}'")
+
+    def _catalog_for(self, into_memory: bool) -> str:
+        return SCRATCH_CATALOG if into_memory else self._catalog
 
     def _apply_settings(self):
         if self._memory_limit:
@@ -111,6 +144,10 @@ class DuckDBManager:
 
     def _ensure_meta_schema(self):
         self.conn.execute(META_SCHEMA)
+        # Migrate older project files that predate the location column.
+        self.conn.execute(
+            f"ALTER TABLE {META_TABLE} ADD COLUMN IF NOT EXISTS location VARCHAR"
+        )
 
     def _recover_interrupted_loads(self):
         """Drop leftover staging tables and fail metadata rows stuck in 'loading'."""
@@ -133,6 +170,7 @@ class DuckDBManager:
     def _cursor(self):
         with self._track():
             cur = self.conn.cursor()
+            self._set_search_path(cur)
             try:
                 yield cur
             finally:
@@ -154,8 +192,15 @@ class DuckDBManager:
     # Node loads (staging + atomic swap)
     # ------------------------------------------------------------------
 
-    def begin_load(self, node_id: str, table_name: str, cache_key: str | None = None) -> "StagingLoad":
-        return StagingLoad(self, node_id, table_name, cache_key)
+    def begin_load(
+        self,
+        node_id: str,
+        table_name: str,
+        cache_key: str | None = None,
+        *,
+        into_memory: bool = False,
+    ) -> "StagingLoad":
+        return StagingLoad(self, node_id, table_name, cache_key, into_memory=into_memory)
 
     def register_csv(
         self,
@@ -164,9 +209,10 @@ class DuckDBManager:
         *,
         node_id: str | None = None,
         cache_key: str | None = None,
+        into_memory: bool = False,
         register_interrupt=None,
     ) -> dict:
-        load = self.begin_load(node_id or table_name, table_name, cache_key)
+        load = self.begin_load(node_id or table_name, table_name, cache_key, into_memory=into_memory)
         try:
             if node_id is not None:
                 load.mark_loading()
@@ -181,6 +227,66 @@ class DuckDBManager:
             load.abort(str(exc), record_meta=node_id is not None)
             raise
 
+    def register_parquet(
+        self,
+        table_name: str,
+        file_path: str,
+        *,
+        node_id: str | None = None,
+        cache_key: str | None = None,
+        into_memory: bool = False,
+    ) -> dict:
+        """Load a Parquet file (e.g. a cached preprocessing artifact) as a node table."""
+        load = self.begin_load(node_id or table_name, table_name, cache_key, into_memory=into_memory)
+        try:
+            if node_id is not None:
+                load.mark_loading()
+            load.create_staging_as("SELECT * FROM read_parquet(?)", [file_path])
+            return load.commit(record_meta=node_id is not None)
+        except BaseException as exc:
+            load.abort(str(exc), record_meta=node_id is not None)
+            raise
+
+    def register_excel(
+        self,
+        table_name: str,
+        file_path: str,
+        *,
+        sheet: str | None = None,
+        cell_range: str | None = None,
+        header: bool = True,
+        all_varchar: bool = False,
+        node_id: str | None = None,
+        cache_key: str | None = None,
+        into_memory: bool = False,
+        register_interrupt=None,
+    ) -> dict:
+        self.ensure_excel_extension()
+        params: list = [file_path]
+        options = ["header => ?"]
+        params.append(header)
+        if sheet:
+            options.append("sheet => ?")
+            params.append(sheet)
+        if cell_range:
+            options.append("range => ?")
+            params.append(cell_range)
+        if all_varchar:
+            options.append("all_varchar => ?")
+            params.append(all_varchar)
+        select_sql = f"SELECT * FROM read_xlsx(?, {', '.join(options)})"
+        load = self.begin_load(node_id or table_name, table_name, cache_key, into_memory=into_memory)
+        try:
+            if node_id is not None:
+                load.mark_loading()
+            if register_interrupt is not None:
+                register_interrupt(load.interrupt)
+            load.create_staging_as(select_sql, params)
+            return load.commit(record_meta=node_id is not None)
+        except BaseException as exc:
+            load.abort(str(exc), record_meta=node_id is not None)
+            raise
+
     def register_dataframe(
         self,
         table_name: str,
@@ -188,8 +294,9 @@ class DuckDBManager:
         *,
         node_id: str | None = None,
         cache_key: str | None = None,
+        into_memory: bool = False,
     ) -> dict:
-        load = self.begin_load(node_id or table_name, table_name, cache_key)
+        load = self.begin_load(node_id or table_name, table_name, cache_key, into_memory=into_memory)
         try:
             if node_id is not None:
                 load.mark_loading()
@@ -206,9 +313,10 @@ class DuckDBManager:
         *,
         node_id: str | None = None,
         cache_key: str | None = None,
+        into_memory: bool = False,
         register_interrupt=None,
     ) -> dict:
-        load = self.begin_load(node_id or table_name, table_name, cache_key)
+        load = self.begin_load(node_id or table_name, table_name, cache_key, into_memory=into_memory)
         try:
             if node_id is not None:
                 load.mark_loading()
@@ -228,7 +336,7 @@ class DuckDBManager:
                 cur.execute(f"INSERT INTO {quoted} SELECT * FROM _shori_append_src")
             finally:
                 cur.unregister("_shori_append_src")
-            return _table_stats(cur, table_name)
+            return _table_stats(cur, quoted)
 
     # ------------------------------------------------------------------
     # Node metadata
@@ -260,10 +368,12 @@ class DuckDBManager:
         existed = meta is not None
         with self._cursor() as cur:
             if meta is not None:
-                cur.execute(f"DROP TABLE IF EXISTS {_quote_identifier(meta['table_name'])}")
-                cur.execute(
-                    f"DROP TABLE IF EXISTS {_quote_identifier(meta['table_name'] + STAGING_SUFFIX)}"
-                )
+                name = meta["table_name"]
+                # Drop from both catalogs: the row's location may be stale
+                # (legacy rows have none) and a mode switch can leave a copy behind.
+                for catalog in (self._catalog, SCRATCH_CATALOG):
+                    cur.execute(f"DROP TABLE IF EXISTS {_qualified(catalog, name)}")
+                    cur.execute(f"DROP TABLE IF EXISTS {_qualified(catalog, name + STAGING_SUFFIX)}")
             cur.execute(f"DELETE FROM {META_TABLE} WHERE node_id = ?", [node_id])
         return existed
 
@@ -273,15 +383,19 @@ class DuckDBManager:
         meta = self.get_node_meta(node_id)
         if meta is None or meta["table_name"] == new_table_name:
             return False
+        catalog = self._catalog_for(meta.get("location") == LOCATION_MEMORY)
         with self._cursor() as cur:
+            # An in-memory rename touches scratch (table) and project (meta) — two
+            # databases — so the table rename and meta update can't share a
+            # transaction. Rename first, then record it; both are idempotent on retry.
+            if _table_exists(cur, meta["table_name"], catalog):
+                cur.execute(f"DROP TABLE IF EXISTS {_qualified(catalog, new_table_name)}")
+                cur.execute(
+                    f"ALTER TABLE {_qualified(catalog, meta['table_name'])} "
+                    f"RENAME TO {_quote_identifier(new_table_name)}"
+                )
             cur.execute("BEGIN TRANSACTION")
             try:
-                if _table_exists(cur, meta["table_name"]):
-                    cur.execute(f"DROP TABLE IF EXISTS {_quote_identifier(new_table_name)}")
-                    cur.execute(
-                        f"ALTER TABLE {_quote_identifier(meta['table_name'])} "
-                        f"RENAME TO {_quote_identifier(new_table_name)}"
-                    )
                 cur.execute(
                     f"UPDATE {META_TABLE} SET table_name = ? WHERE node_id = ?",
                     [new_table_name, node_id],
@@ -325,20 +439,44 @@ class DuckDBManager:
                 f"COPY {_quote_identifier(table_name)} TO '{output_path}' (HEADER, DELIMITER ',')"
             )
 
+    def copy_table_to(self, table_name: str, output_path: str, fmt: str):
+        """Write a node table to a local path as CSV, Parquet, or XLSX.
+
+        The table reference is unqualified so search_path resolves it in whichever
+        catalog holds it (in-memory tables export the same as materialized ones).
+        """
+        fmt = fmt.lower()
+        copy_options = {
+            "csv": "(FORMAT csv, HEADER)",
+            "parquet": "(FORMAT parquet)",
+            "xlsx": "(FORMAT xlsx, HEADER true)",
+        }.get(fmt)
+        if copy_options is None:
+            raise ValueError(f"Unsupported export format '{fmt}'")
+        if fmt == "xlsx":
+            self.ensure_excel_extension()
+        safe_path = output_path.replace("'", "''")
+        with self._cursor() as cur:
+            cur.execute(
+                f"COPY {_quote_identifier(table_name)} TO '{safe_path}' {copy_options}"
+            )
+
     def drop_table(self, table_name: str):
         if table_name.startswith(RESERVED_TABLE_PREFIX):
             raise ValueError(f"Cannot drop internal table '{table_name}'")
         with self._cursor() as cur:
-            cur.execute(f"DROP TABLE IF EXISTS {_quote_identifier(table_name)}")
+            for catalog in (self._catalog, SCRATCH_CATALOG):
+                cur.execute(f"DROP TABLE IF EXISTS {_qualified(catalog, table_name)}")
             cur.execute(f"DELETE FROM {META_TABLE} WHERE table_name = ?", [table_name])
 
-    def table_exists(self, table_name: str) -> bool:
+    def table_exists(self, table_name: str, *, location: str | None = None) -> bool:
+        catalog = None if location is None else self._catalog_for(location == LOCATION_MEMORY)
         with self._cursor() as cur:
-            return _table_exists(cur, table_name)
+            return _table_exists(cur, table_name, catalog)
 
     def table_stats(self, table_name: str) -> dict:
         with self._cursor() as cur:
-            return _table_stats(cur, table_name)
+            return _table_stats(cur, _quote_identifier(table_name))
 
     # ------------------------------------------------------------------
     # File maintenance
@@ -386,7 +524,10 @@ class DuckDBManager:
                 if os.path.exists(leftover):
                     os.remove(leftover)
             self.conn = duckdb.connect(self.db_path)
+            self._attach_scratch(self.conn)
             self._apply_settings()
+            self._excel_extension_ready = None
+            self._postgres_extension_ready = None
         finally:
             with self._active_lock:
                 self._closed = False
@@ -416,6 +557,15 @@ class DuckDBManager:
                 )
                 self._postgres_extension_ready = False
         return self._postgres_extension_ready
+
+    def ensure_excel_extension(self) -> None:
+        """Install/load DuckDB's excel extension once per manager (for read_xlsx)."""
+        if self._excel_extension_ready:
+            return
+        with self._cursor() as cur:
+            cur.execute("INSTALL excel")
+            cur.execute("LOAD excel")
+        self._excel_extension_ready = True
 
     def _fetch_preview_rows(
         self,
@@ -464,21 +614,40 @@ class StagingLoad:
     the previous version of the table stays intact and queryable.
     """
 
-    def __init__(self, manager: DuckDBManager, node_id: str, table_name: str, cache_key: str | None):
+    def __init__(
+        self,
+        manager: DuckDBManager,
+        node_id: str,
+        table_name: str,
+        cache_key: str | None,
+        *,
+        into_memory: bool = False,
+    ):
         validate_user_table_name(table_name)
         self.node_id = node_id
         self.table_name = table_name
         self.cache_key = cache_key
+        self.into_memory = into_memory
+        self.location = LOCATION_MEMORY if into_memory else LOCATION_MATERIALIZED
         self.staging_name = table_name + STAGING_SUFFIX
         self.started_at = utc_now_iso()
         self._manager = manager
+        # In-memory loads land in the scratch catalog; materialized in the project
+        # file. Staging + final tables are catalog-qualified so the swap stays
+        # inside the chosen catalog regardless of search_path.
+        self._catalog = manager._catalog_for(into_memory)
+        self._other_catalog = manager._catalog_for(not into_memory)
+        self._staging_ref = _qualified(self._catalog, self.staging_name)
+        self._table_ref = _qualified(self._catalog, self.table_name)
+        self._other_table_ref = _qualified(self._other_catalog, self.table_name)
         self._track = manager._track()
         self._track.__enter__()
         self._cur = manager.conn.cursor()
+        manager._set_search_path(self._cur)
         self._created = False
         self._finished = False
         try:
-            self._cur.execute(f"DROP TABLE IF EXISTS {_quote_identifier(self.staging_name)}")
+            self._cur.execute(f"DROP TABLE IF EXISTS {self._staging_ref}")
         except BaseException:
             self._cleanup()
             raise
@@ -492,6 +661,7 @@ class StagingLoad:
                 "table_name": self.table_name,
                 "cache_key": self.cache_key,
                 "status": "loading",
+                "location": self.location,
                 "started_at": self.started_at,
             },
         )
@@ -503,14 +673,12 @@ class StagingLoad:
         try:
             if not self._created:
                 self._cur.execute(
-                    f"CREATE TABLE {_quote_identifier(self.staging_name)} "
-                    "AS SELECT * FROM _shori_chunk_src"
+                    f"CREATE TABLE {self._staging_ref} AS SELECT * FROM _shori_chunk_src"
                 )
                 self._created = True
             else:
                 self._cur.execute(
-                    f"INSERT INTO {_quote_identifier(self.staging_name)} "
-                    "SELECT * FROM _shori_chunk_src"
+                    f"INSERT INTO {self._staging_ref} SELECT * FROM _shori_chunk_src"
                 )
         finally:
             self._cur.unregister("_shori_chunk_src")
@@ -520,7 +688,7 @@ class StagingLoad:
         if self._created:
             raise RuntimeError("Staging table already created")
         self._cur.execute(
-            f"CREATE TABLE {_quote_identifier(self.staging_name)} AS {select_sql}",
+            f"CREATE TABLE {self._staging_ref} AS {select_sql}",
             params or [],
         )
         self._created = True
@@ -541,49 +709,74 @@ class StagingLoad:
         if not self._created:
             raise RuntimeError("Cannot commit a load with no data appended")
         try:
-            stats = _table_stats(self._cur, self.staging_name)
+            stats = _table_stats(self._cur, self._staging_ref)
             finished_at = utc_now_iso()
             duration_ms = (
                 datetime.fromisoformat(finished_at) - datetime.fromisoformat(self.started_at)
             ).total_seconds() * 1000
-            self._cur.execute("BEGIN TRANSACTION")
-            try:
-                self._cur.execute(f"DROP TABLE IF EXISTS {_quote_identifier(self.table_name)}")
-                self._cur.execute(
-                    f"ALTER TABLE {_quote_identifier(self.staging_name)} "
-                    f"RENAME TO {_quote_identifier(self.table_name)}"
-                )
-                if record_meta:
-                    _upsert_meta(
-                        self._cur,
-                        {
-                            "node_id": self.node_id,
-                            "table_name": self.table_name,
-                            "cache_key": self.cache_key,
-                            "status": "complete",
-                            "row_count": stats["row_count"],
-                            "column_count": stats["column_count"],
-                            "columns_json": json.dumps(stats["columns"]),
-                            "started_at": self.started_at,
-                            "finished_at": finished_at,
-                            "duration_ms": duration_ms,
-                        },
-                    )
-                self._cur.execute("COMMIT")
-            except BaseException:
-                self._cur.execute("ROLLBACK")
-                raise
+            meta = (
+                {
+                    "node_id": self.node_id,
+                    "table_name": self.table_name,
+                    "cache_key": self.cache_key,
+                    "status": "complete",
+                    "location": self.location,
+                    "row_count": stats["row_count"],
+                    "column_count": stats["column_count"],
+                    "columns_json": json.dumps(stats["columns"]),
+                    "started_at": self.started_at,
+                    "finished_at": finished_at,
+                    "duration_ms": duration_ms,
+                }
+                if record_meta
+                else None
+            )
+            # Table names are unique project-wide; if this node previously loaded
+            # into the other catalog (a load-mode switch), drop that stale copy.
+            self._cur.execute(f"DROP TABLE IF EXISTS {self._other_table_ref}")
+            if self.into_memory:
+                # The scratch swap and the (project) meta write hit different
+                # databases — DuckDB forbids that in one transaction — so the
+                # swap is atomic on its own and the meta row follows it.
+                self._run_swap_txn()
+                if meta is not None:
+                    _upsert_meta(self._cur, meta)
+            else:
+                self._cur.execute("BEGIN TRANSACTION")
+                try:
+                    self._apply_swap()
+                    if meta is not None:
+                        _upsert_meta(self._cur, meta)
+                    self._cur.execute("COMMIT")
+                except BaseException:
+                    self._cur.execute("ROLLBACK")
+                    raise
             return stats
         finally:
             self._finished = True
             self._cleanup()
+
+    def _apply_swap(self):
+        self._cur.execute(f"DROP TABLE IF EXISTS {self._table_ref}")
+        self._cur.execute(
+            f"ALTER TABLE {self._staging_ref} RENAME TO {_quote_identifier(self.table_name)}"
+        )
+
+    def _run_swap_txn(self):
+        self._cur.execute("BEGIN TRANSACTION")
+        try:
+            self._apply_swap()
+            self._cur.execute("COMMIT")
+        except BaseException:
+            self._cur.execute("ROLLBACK")
+            raise
 
     def abort(self, error: str | None = None, record_meta: bool = True) -> None:
         if self._finished:
             return
         self._finished = True
         try:
-            self._cur.execute(f"DROP TABLE IF EXISTS {_quote_identifier(self.staging_name)}")
+            self._cur.execute(f"DROP TABLE IF EXISTS {self._staging_ref}")
             if record_meta:
                 _upsert_meta(
                     self._cur,
@@ -592,6 +785,7 @@ class StagingLoad:
                         "table_name": self.table_name,
                         "cache_key": self.cache_key,
                         "status": "failed",
+                        "location": self.location,
                         "error": error,
                         "started_at": self.started_at,
                         "finished_at": utc_now_iso(),
@@ -627,18 +821,32 @@ def _meta_row_to_dict(row: tuple) -> dict:
     return meta
 
 
-def _table_exists(cur, table_name: str) -> bool:
-    result = cur.execute(
-        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
-        [table_name],
-    ).fetchone()
+def _qualified(catalog: str, name: str) -> str:
+    """Build a fully catalog-qualified `"catalog".main."name"` reference."""
+    return f"{_quote_identifier(catalog)}.main.{_quote_identifier(name)}"
+
+
+def _table_exists(cur, table_name: str, catalog: str | None = None) -> bool:
+    # information_schema.tables spans every attached catalog (project + scratch),
+    # so the unqualified check is true if the table lives in either one.
+    if catalog is None:
+        result = cur.execute(
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+            [table_name],
+        ).fetchone()
+    else:
+        result = cur.execute(
+            "SELECT COUNT(*) FROM information_schema.tables "
+            "WHERE table_catalog = ? AND table_name = ?",
+            [catalog, table_name],
+        ).fetchone()
     return result[0] > 0
 
 
-def _table_stats(cur, table_name: str) -> dict:
-    quoted_table_name = _quote_identifier(table_name)
-    count = cur.execute(f"SELECT COUNT(*) FROM {quoted_table_name}").fetchone()[0]
-    cols = cur.execute(f"DESCRIBE {quoted_table_name}").fetchall()
+def _table_stats(cur, ref: str) -> dict:
+    """Stats for an already-quoted/qualified table reference."""
+    count = cur.execute(f"SELECT COUNT(*) FROM {ref}").fetchone()[0]
+    cols = cur.execute(f"DESCRIBE {ref}").fetchall()
     return {
         "row_count": count,
         "column_count": len(cols),

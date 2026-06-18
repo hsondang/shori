@@ -23,6 +23,7 @@ import type {
   NodeEditorDraft,
   NodeEditorMode,
   NodeLabelMode,
+  NodeLoadMode,
   NodeType,
   NodeExecutionResult,
   PipelineDefinition,
@@ -94,7 +95,7 @@ interface PipelineState {
   livePreviewsByNodeId: Record<string, LivePreviewState>
   startLivePreview: (nodeId: string) => Promise<void>
   loadMoreLivePreview: (nodeId: string) => Promise<void>
-  materializeLivePreview: (nodeId: string) => Promise<void>
+  materializeLivePreview: (nodeId: string, intoMemory?: boolean) => Promise<void>
   closeLivePreview: (nodeId: string) => Promise<void>
 
   // Node editor
@@ -117,6 +118,7 @@ interface PipelineState {
   deleteNode: (nodeId: string) => void
   executePipeline: (force?: boolean) => Promise<void>
   executeSingleNode: (nodeId: string, options?: { loadPreviewOnSuccess?: boolean; force?: boolean }) => Promise<void>
+  runNodeWithLoadMode: (nodeId: string, loadMode: NodeLoadMode, options?: { loadPreviewOnSuccess?: boolean; force?: boolean }) => Promise<void>
   runTransformPreview: (nodeId: string) => Promise<void>
   loadCsvPreview: (nodeId: string, filePath: string) => Promise<void>
   loadPreprocessedCsvPreview: (nodeId: string, filePath: string, preprocessing: CsvPreprocessingConfig) => Promise<void>
@@ -165,29 +167,24 @@ function defaultConfig(type: NodeType): Record<string, unknown> {
     case 'csv_source': return {
       file_path: '',
       original_filename: '',
+      load_mode: 'in_memory',
       preprocessing: {
         enabled: false,
-        runtime: 'python',
-        script: '',
+        script_path: '',
       },
     }
     case 'excel_source': return {
       file_path: '',
       original_filename: '',
       sheet_names: [],
-      sheets: [],
       selected_sheet: '',
-      materialized_csv_path: '',
-      materialized_csv_filename: '',
-      preprocessing: {
-        enabled: false,
-        runtime: 'python',
-        script: '',
-      },
+      load_mode: 'in_memory',
+      header: true,
+      all_varchar: false,
     }
     case 'db_source': return defaultDatabaseSourceConfig('postgres') as unknown as Record<string, unknown>
-    case 'transform': return { sql: '' }
-    case 'export': return { format: 'csv' }
+    case 'transform': return { sql: '', load_mode: 'in_memory' }
+    case 'export': return { format: 'csv', destination: 'local', output_path: '' }
   }
 }
 
@@ -223,6 +220,7 @@ function buildNodeFromDraft(draft: NodeEditorDraft): Node {
     position: draft.position,
     data: {
       label: draft.label,
+      description: draft.description ?? '',
       autoLabel: draft.autoLabel,
       labelMode: draft.labelMode,
       tableName: draft.tableName,
@@ -278,6 +276,7 @@ function nodeToDraft(node: Node): NodeEditorDraft {
     type: node.type as NodeType,
     position: cloneValue(node.position),
     label,
+    description: ((node.data as Record<string, unknown>).description as string | undefined) ?? '',
     autoLabel,
     labelMode,
     tableName: getTableName(node),
@@ -295,6 +294,7 @@ function normalizeHydratedNode(nodeDef: PipelineDefinition['nodes'][number]): No
     position: nodeDef.position,
     data: {
       label,
+      description: nodeDef.description ?? '',
       autoLabel: nodeDef.auto_label ?? inferred.autoLabel,
       labelMode: nodeDef.label_mode ?? inferred.labelMode,
       tableName: nodeDef.table_name,
@@ -324,6 +324,7 @@ function serializeNode(node: Node): PipelineDefinition['nodes'][number] {
     type: node.type as NodeType,
     table_name: (node.data as Record<string, unknown>).tableName as string,
     label: (node.data as Record<string, unknown>).label as string,
+    description: ((node.data as Record<string, unknown>).description as string | undefined) || undefined,
     auto_label: autoLabel,
     label_mode: labelMode,
     position: node.position,
@@ -416,27 +417,13 @@ function invalidateCsvPreprocessArtifact(nodeId: string | undefined) {
   void api.deletePreprocessedCsvArtifact(nodeId).catch(() => {})
 }
 
-function getCsvLikeConfig(node: Node, configOverride?: Record<string, unknown>): CsvSourceConfig | null {
-  const config = (configOverride ?? getNodeConfig(node)) as Record<string, unknown>
-  if (node.type === 'csv_source') {
-    return config as unknown as CsvSourceConfig
-  }
-  if (node.type === 'excel_source') {
-    const excelConfig = config as unknown as ExcelSourceConfig
-    return {
-      file_path: excelConfig.materialized_csv_path ?? '',
-      original_filename: excelConfig.materialized_csv_filename || excelConfig.original_filename || '',
-      preprocessing: excelConfig.preprocessing,
-    }
-  }
-  return null
-}
-
 function getExcelLoadFingerprint(config: ExcelSourceConfig): string {
   return JSON.stringify({
     file_path: config.file_path ?? '',
     selected_sheet: config.selected_sheet ?? '',
-    materialized_csv_path: config.materialized_csv_path ?? '',
+    cell_range: config.cell_range ?? '',
+    header: config.header ?? true,
+    all_varchar: config.all_varchar ?? false,
   })
 }
 
@@ -503,7 +490,6 @@ function hasCsvLoadInputsChanged(
     const currentExcel = currentConfig as unknown as ExcelSourceConfig
     const mergedExcel = mergedConfig as unknown as ExcelSourceConfig
     return getExcelLoadFingerprint(currentExcel) !== getExcelLoadFingerprint(mergedExcel)
-      || getCsvPreprocessFingerprint(getCsvLikeConfig(node, currentConfig)) !== getCsvPreprocessFingerprint(getCsvLikeConfig(node, mergedConfig))
   }
 
   const currentCsvConfig = currentConfig as unknown as CsvSourceConfig
@@ -1235,6 +1221,16 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     }
   },
 
+  runNodeWithLoadMode: async (nodeId, loadMode, options) => {
+    // Persist the chosen location, then run; the engine reads load_mode from config.
+    const node = get().nodes.find((candidate) => candidate.id === nodeId)
+    if (node) {
+      const config = { ...((node.data as Record<string, unknown>).config as Record<string, unknown>), load_mode: loadMode }
+      get().updateNodeData(nodeId, { config })
+    }
+    await get().executeSingleNode(nodeId, { loadPreviewOnSuccess: true, ...options })
+  },
+
   abortDatabaseNodeExecution: async (nodeId) => {
     const executionId = get().activeExecutionIdByNodeId[nodeId]
     if (!executionId) return
@@ -1709,7 +1705,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     }
   },
 
-  materializeLivePreview: async (nodeId) => {
+  materializeLivePreview: async (nodeId, intoMemory = false) => {
     const live = get().livePreviewsByNodeId[nodeId]
     if (!live?.sessionId || live.materializing) return
     const sessionId = live.sessionId
@@ -1724,7 +1720,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     }))
 
     try {
-      const run = await api.materializePreviewSession(sessionId)
+      const run = await api.materializePreviewSession(sessionId, intoMemory)
       // The session is consumed once materialize starts; drop the live tab and
       // switch focus to the (forthcoming) materialized table tab.
       executionTrackedNodeIds.set(run.execution_id, [nodeId])

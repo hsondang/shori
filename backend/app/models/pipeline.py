@@ -21,6 +21,18 @@ class NodeStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+# Where a source/transform node's result is held. `in_memory` lives in the
+# attached scratch catalog (RAM-only, gone on restart); `materialized` is a
+# real table in the project's DuckDB file.
+NodeLoadMode = Literal["in_memory", "materialized"]
+
+# The single derived label the node card shows, blending activity + location +
+# freshness. Computed in the cache-status endpoint from the persisted meta.
+NodeLifecycle = Literal[
+    "new", "idle", "in_memory", "materialized", "running", "error"
+]
+
+
 class OracleConnectionConfig(BaseModel):
     host: str
     port: int = 1521
@@ -97,6 +109,7 @@ class NodeDefinition(BaseModel):
     type: NodeType
     table_name: str
     label: str
+    description: Optional[str] = None
     auto_label: Optional[str] = None
     label_mode: Optional[Literal["auto", "custom"]] = None
     position: Position

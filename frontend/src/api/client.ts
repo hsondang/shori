@@ -4,7 +4,6 @@ import type {
   CsvPreprocessingConfig,
   DataPreview,
   DatabaseConnectionConfig,
-  ExcelSheetPreview,
   ExecutionRunStatus,
   NodeExecutionResult,
   PipelineDefinition,
@@ -29,22 +28,10 @@ export async function uploadExcel(file: File): Promise<{
   file_path: string
   filename: string
   sheet_names: string[]
-  sheets: ExcelSheetPreview[]
 }> {
   const form = new FormData()
   form.append('file', file)
   const { data } = await api.post('/upload/excel', form)
-  return data
-}
-
-export async function materializeExcelSheet(
-  filePath: string,
-  sheetName: string,
-): Promise<{ file_path: string; filename: string; sheet_name: string }> {
-  const { data } = await api.post('/upload/excel/materialize-sheet', {
-    file_path: filePath,
-    sheet_name: sheetName,
-  })
   return data
 }
 
@@ -134,8 +121,11 @@ export async function fetchPreviewSessionRows(
 
 export async function materializePreviewSession(
   sessionId: string,
+  intoMemory = false,
 ): Promise<ExecutionRunStatus> {
-  const { data } = await api.post(`/data/preview-session/${sessionId}/materialize`)
+  const { data } = await api.post(
+    `/data/preview-session/${sessionId}/materialize?into_memory=${intoMemory}`,
+  )
   return data
 }
 
@@ -202,6 +192,20 @@ export async function getTableSchema(
 
 export async function deleteTable(projectId: string, tableName: string): Promise<{ deleted: boolean }> {
   const { data } = await api.delete(`/data/${projectId}/table/${tableName}`)
+  return data
+}
+
+export async function exportToPath(
+  projectId: string,
+  tableName: string,
+  outputPath: string,
+  format: string,
+): Promise<{ output_path: string; format: string; row_count: number }> {
+  const { data } = await api.post(`/data/${projectId}/export-to-path`, {
+    table_name: tableName,
+    output_path: outputPath,
+    format,
+  })
   return data
 }
 

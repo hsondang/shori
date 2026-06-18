@@ -12,11 +12,24 @@ export default function CsvSourceNode({ id, data }: NodeProps) {
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
   const openNodeError = usePipelineStore((s) => s.openNodeError)
   const loadCsvPreview = usePipelineStore((s) => s.loadCsvPreview)
+  const runNodeWithLoadMode = usePipelineStore((s) => s.runNodeWithLoadMode)
   const result = nodeResults[id]
   const d = data as Record<string, unknown>
   const config = d.config as CsvSourceConfig
   const tableName = d.tableName as string
   const elapsed = result ? getResultElapsedLabel(result, executionClockNow) : null
+  const preprocessingPending = Boolean(config.preprocessing?.enabled)
+  const actions = config.file_path
+    ? [
+        { label: 'Preview data', onClick: () => loadCsvPreview(id, config.file_path) },
+        ...(preprocessingPending
+          ? []
+          : [
+              { label: 'Load to memory', onClick: () => runNodeWithLoadMode(id, 'in_memory') },
+              { label: 'Materialize', tone: 'muted' as const, onClick: () => runNodeWithLoadMode(id, 'materialized') },
+            ]),
+      ]
+    : []
 
   return (
     <div>
@@ -29,7 +42,7 @@ export default function CsvSourceNode({ id, data }: NodeProps) {
         result={result ? toResultLike(result, elapsed) : undefined}
         onSelect={() => setSelectedNodeId(id)}
         onViewError={result?.status === 'error' ? () => openNodeError(id) : undefined}
-        actions={config.file_path ? [{ label: 'Preview data', onClick: () => loadCsvPreview(id, config.file_path) }] : []}
+        actions={actions}
       >
         <NodeCacheChip nodeId={id} />
       </NodeCard>

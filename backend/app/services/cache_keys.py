@@ -17,7 +17,7 @@ import json
 
 from app.models.pipeline import NodeType, PipelineDefinition
 
-from app.services.csv_service import _normalize_preprocessing
+from app.services.csv_service import _file_sha256, _normalize_preprocessing
 
 
 def _connection_identity(config: dict) -> dict:
@@ -47,9 +47,11 @@ def _own_payload(node) -> dict:
         }
     if node.type == NodeType.EXCEL_SOURCE:
         return {
-            "file_path": config.get("materialized_csv_path"),
+            "file_path": config.get("file_path"),
             "selected_sheet": config.get("selected_sheet"),
-            "preprocessing": _safe_preprocessing(config.get("preprocessing")),
+            "cell_range": config.get("cell_range"),
+            "header": config.get("header", True),
+            "all_varchar": config.get("all_varchar", False),
         }
     if node.type == NodeType.TRANSFORM:
         return {"sql": config.get("sql")}
@@ -58,11 +60,18 @@ def _own_payload(node) -> dict:
 
 def _safe_preprocessing(preprocessing) -> dict | None:
     try:
-        return _normalize_preprocessing(preprocessing)
+        normalized = _normalize_preprocessing(preprocessing)
     except ValueError:
         # Invalid preprocessing config still distinguishes the node from a
         # valid one; execution will surface the real error.
         return {"invalid": str(preprocessing)}
+    if normalized is None:
+        return None
+    # Fold in the script body so editing the .py invalidates descendants too.
+    try:
+        return {**normalized, "script_sha256": _file_sha256(normalized["script_path"])}
+    except OSError:
+        return normalized
 
 
 def compute_cache_keys(pipeline: PipelineDefinition) -> dict[str, str]:

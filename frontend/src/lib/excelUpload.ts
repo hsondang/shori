@@ -1,21 +1,19 @@
 import type { ChangeEvent } from 'react'
-import { materializeExcelSheet, uploadExcel } from '../api/client'
-import type { CsvPreprocessingConfig, ExcelSourceConfig } from '../types/pipeline'
+import { uploadExcel } from '../api/client'
+import type { ExcelSourceConfig } from '../types/pipeline'
 
 /**
  * Builds the file-input change handler shared by the Excel source editors.
  *
- * Uploading a workbook auto-selects and materializes its first sheet so the
- * node is immediately usable. The only thing call sites differ on is how the
- * resulting config is persisted, which they supply via `applyConfig`.
+ * Uploading a workbook just records its path and sheet names (read straight
+ * from the file) and auto-selects the first sheet. The actual load happens
+ * later via DuckDB read_xlsx; there is no preview/materialize roundtrip.
  */
 export function createExcelUploadHandler({
   excelConfig,
-  csvPreprocessing,
   applyConfig,
 }: {
   excelConfig: ExcelSourceConfig | null
-  csvPreprocessing: CsvPreprocessingConfig
   applyConfig: (config: ExcelSourceConfig) => void
 }) {
   return async (event: ChangeEvent<HTMLInputElement>) => {
@@ -24,29 +22,14 @@ export function createExcelUploadHandler({
 
     try {
       const result = await uploadExcel(file)
-      const selectedSheet = result.sheet_names[0] ?? ''
-      const nextConfig: ExcelSourceConfig = {
+      applyConfig({
         ...excelConfig,
         file_path: result.file_path,
         original_filename: result.filename,
         sheet_names: result.sheet_names,
-        sheets: result.sheets,
-        selected_sheet: selectedSheet,
-        materialized_csv_path: '',
-        materialized_csv_filename: '',
-        preprocessing: excelConfig.preprocessing ?? csvPreprocessing,
-      }
-
-      applyConfig(nextConfig)
-
-      if (selectedSheet) {
-        const materialized = await materializeExcelSheet(result.file_path, selectedSheet)
-        applyConfig({
-          ...nextConfig,
-          materialized_csv_path: materialized.file_path,
-          materialized_csv_filename: materialized.filename,
-        })
-      }
+        selected_sheet: result.sheet_names[0] ?? '',
+        header: excelConfig.header ?? true,
+      })
     } finally {
       event.target.value = ''
     }

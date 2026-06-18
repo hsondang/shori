@@ -11,7 +11,8 @@ export default function ExcelSourceNode({ id, data }: NodeProps) {
   const executionClockNow = usePipelineStore((s) => s.executionClockNow)
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
   const openNodeError = usePipelineStore((s) => s.openNodeError)
-  const loadCsvPreview = usePipelineStore((s) => s.loadCsvPreview)
+  const runNodeWithLoadMode = usePipelineStore((s) => s.runNodeWithLoadMode)
+  const loadTablePreview = usePipelineStore((s) => s.loadTablePreview)
   const result = nodeResults[id]
   const d = data as Record<string, unknown>
   const config = d.config as ExcelSourceConfig
@@ -21,6 +22,19 @@ export default function ExcelSourceNode({ id, data }: NodeProps) {
     config.original_filename,
     config.selected_sheet ? `Sheet: ${config.selected_sheet}` : null,
   ].filter(Boolean).join(' · ') || undefined
+
+  const canRun = Boolean(config.selected_sheet)
+  const actions = [
+    ...(canRun
+      ? [
+          { label: 'Load to memory', onClick: () => runNodeWithLoadMode(id, 'in_memory') },
+          { label: 'Materialize', onClick: () => runNodeWithLoadMode(id, 'materialized') },
+        ]
+      : []),
+    ...(result?.status === 'success'
+      ? [{ label: 'View table', tone: 'muted' as const, onClick: () => loadTablePreview(id, tableName) }]
+      : []),
+  ]
 
   return (
     <div>
@@ -33,7 +47,7 @@ export default function ExcelSourceNode({ id, data }: NodeProps) {
         result={result ? toResultLike(result, elapsed) : undefined}
         onSelect={() => setSelectedNodeId(id)}
         onViewError={result?.status === 'error' ? () => openNodeError(id) : undefined}
-        actions={config.materialized_csv_path ? [{ label: 'Preview data', onClick: () => loadCsvPreview(id, config.materialized_csv_path!) }] : []}
+        actions={actions}
       >
         <NodeCacheChip nodeId={id} />
       </NodeCard>

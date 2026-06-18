@@ -20,7 +20,7 @@ export default function DatabaseSourceNode({ id, data }: NodeProps) {
   const openNodeError = usePipelineStore((s) => s.openNodeError)
   const loadTablePreview = usePipelineStore((s) => s.loadTablePreview)
   const startLivePreview = usePipelineStore((s) => s.startLivePreview)
-  const executeSingleNode = usePipelineStore((s) => s.executeSingleNode)
+  const runNodeWithLoadMode = usePipelineStore((s) => s.runNodeWithLoadMode)
   const globalDatabaseConnections = useSettingsStore((s) => s.globalDatabaseConnections)
   const result = nodeResults[id]
   const d = data as Record<string, unknown>
@@ -51,7 +51,8 @@ export default function DatabaseSourceNode({ id, data }: NodeProps) {
 
   const actions = [
     { label: 'Preview', onClick: () => startLivePreview(id) },
-    { label: 'Materialize', onClick: () => executeSingleNode(id, { loadPreviewOnSuccess: true }) },
+    { label: 'Load to memory', onClick: () => runNodeWithLoadMode(id, 'in_memory') },
+    { label: 'Materialize', tone: 'muted' as const, onClick: () => runNodeWithLoadMode(id, 'materialized') },
     ...(result?.status === 'success'
       ? [{ label: 'View table', tone: 'muted' as const, onClick: () => loadTablePreview(id, tableName) }]
       : []),

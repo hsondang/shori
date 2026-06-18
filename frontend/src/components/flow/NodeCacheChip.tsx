@@ -35,9 +35,16 @@ export default function NodeCacheChip({ nodeId }: { nodeId: string }) {
   }
 
   if (status.state === 'fresh' && !result) {
+    const inMemory = status.location === 'in_memory'
     return (
-      <span className="inline-block rounded-full bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-sky-700">
-        Cached
+      <span
+        className={[
+          'inline-block rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+          inMemory ? 'bg-violet-100 text-violet-700' : 'bg-sky-100 text-sky-700',
+        ].join(' ')}
+        title={inMemory ? 'Held in memory (RAM); cleared on restart' : 'Materialized to the project file'}
+      >
+        {inMemory ? 'In memory' : 'Loaded'}
       </span>
     )
   }

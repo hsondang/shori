@@ -50,11 +50,24 @@ def test_preview_csv_text_handles_excel_style_commas_and_notes(excel_style_csv_f
     assert all(len(row) == 4 for row in preview["rows"])
 
 
-def test_preview_preprocessed_csv_text_stores_artifact(csv_artifact_store, office365_csv_file):
+def _write_preprocess_script(tmp_path, body: str) -> str:
+    path = tmp_path / "preprocess.py"
+    path.write_text(body, encoding="utf-8")
+    return str(path)
+
+
+# Skips the two metadata header lines, then parses the rest into a DataFrame.
+SKIP_TWO_LINES_SCRIPT = (
+    "import pandas as pd\n"
+    "def preprocess(file):\n"
+    "    return pd.read_csv(file, skiprows=2)\n"
+)
+
+
+def test_preview_preprocessed_csv_text_stores_artifact(csv_artifact_store, office365_csv_file, tmp_path):
     preprocessing = {
         "enabled": True,
-        "runtime": "python",
-        "script": "import sys; from pathlib import Path; lines = Path(sys.argv[1]).read_text().splitlines()[2:]; sys.stdout.write('\\n'.join(lines))",
+        "script_path": _write_preprocess_script(tmp_path, SKIP_TWO_LINES_SCRIPT),
     }
 
     preview = csv_service.preview_preprocessed_csv_text(
@@ -77,68 +90,50 @@ def test_preview_preprocessed_csv_text_stores_artifact(csv_artifact_store, offic
     artifact_path = csv_artifact_store.get("node-1", fingerprint)
     assert artifact_path is not None
     assert Path(artifact_path).exists()
+    assert artifact_path.endswith(".parquet")
 
 
-def test_prepared_csv_path_runs_python_preprocessing(office365_csv_file):
-    preprocessing = {
-        "enabled": True,
-        "runtime": "python",
-        "script": "import sys; from pathlib import Path; lines = Path(sys.argv[1]).read_text().splitlines()[2:]; sys.stdout.write('\\n'.join(lines))",
-    }
+def test_run_preprocess_to_arrow_returns_dataframe(office365_csv_file, tmp_path):
+    script_path = _write_preprocess_script(tmp_path, SKIP_TWO_LINES_SCRIPT)
 
-    with csv_service.prepared_csv_path(office365_csv_file, preprocessing) as processed_path:
-        processed = Path(processed_path)
-        assert processed.exists()
-        assert processed.read_text().splitlines() == [
-            "id,name,value",
-            "1,Alice,10.5",
-            "2,Bob,20.0",
-        ]
+    table = csv_service._run_preprocess_to_arrow(office365_csv_file, script_path)
 
-    assert not processed.exists()
+    assert table.column_names == ["id", "name", "value"]
+    assert table.num_rows == 2
 
 
-def test_prepared_csv_path_runs_bash_preprocessing(office365_csv_file):
-    preprocessing = {
-        "enabled": True,
-        "runtime": "bash",
-        "script": "tail -n +3 \"$1\"",
-    }
-
-    with csv_service.prepared_csv_path(office365_csv_file, preprocessing) as processed_path:
-        assert Path(processed_path).read_text().splitlines()[0] == "id,name,value"
-
-
-def test_prepared_csv_path_raises_for_script_failure(sample_csv_file):
-    preprocessing = {
-        "enabled": True,
-        "runtime": "python",
-        "script": "import sys; sys.stderr.write('boom'); raise SystemExit(2)",
-    }
+def test_run_preprocess_to_arrow_raises_for_script_failure(sample_csv_file, tmp_path):
+    script_path = _write_preprocess_script(
+        tmp_path,
+        "def preprocess(file):\n    raise ValueError('boom')\n",
+    )
 
     with pytest.raises(RuntimeError, match="boom"):
-        with csv_service.prepared_csv_path(sample_csv_file, preprocessing):
-            pass
+        csv_service._run_preprocess_to_arrow(sample_csv_file, script_path)
 
 
-def test_prepared_csv_path_raises_for_timeout(sample_csv_file, monkeypatch):
+def test_run_preprocess_to_arrow_raises_when_entrypoint_missing(sample_csv_file, tmp_path):
+    script_path = _write_preprocess_script(tmp_path, "x = 1\n")
+
+    with pytest.raises(RuntimeError, match="preprocess"):
+        csv_service._run_preprocess_to_arrow(sample_csv_file, script_path)
+
+
+def test_run_preprocess_to_arrow_raises_for_timeout(sample_csv_file, tmp_path, monkeypatch):
     monkeypatch.setattr(csv_service, "PREPROCESS_TIMEOUT_SECONDS", 0.01)
-    preprocessing = {
-        "enabled": True,
-        "runtime": "python",
-        "script": "import time; time.sleep(0.1)",
-    }
+    script_path = _write_preprocess_script(
+        tmp_path,
+        "import time\ndef preprocess(file):\n    time.sleep(0.5)\n",
+    )
 
     with pytest.raises(RuntimeError, match="timed out"):
-        with csv_service.prepared_csv_path(sample_csv_file, preprocessing):
-            pass
+        csv_service._run_preprocess_to_arrow(sample_csv_file, script_path)
 
 
-def test_artifact_store_invalidate_deletes_temp_file(csv_artifact_store, office365_csv_file):
+def test_artifact_store_invalidate_deletes_temp_file(csv_artifact_store, office365_csv_file, tmp_path):
     preprocessing = {
         "enabled": True,
-        "runtime": "bash",
-        "script": "tail -n +3 \"$1\"",
+        "script_path": _write_preprocess_script(tmp_path, SKIP_TWO_LINES_SCRIPT),
     }
 
     csv_service.preview_preprocessed_csv_text(

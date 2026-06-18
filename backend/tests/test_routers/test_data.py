@@ -64,18 +64,23 @@ async def test_csv_source_preview_handles_excel_style_commas_and_notes(client, e
     assert data["truncated"] is False
 
 
+_SKIP_TWO_LINES = (
+    "import pandas as pd\n"
+    "def preprocess(file):\n"
+    "    return pd.read_csv(file, skiprows=2)\n"
+)
+
+
 @pytest.mark.asyncio
-async def test_preprocessed_csv_source_preview_returns_reviewed_rows(client, office365_csv_file):
+async def test_preprocessed_csv_source_preview_returns_reviewed_rows(client, office365_csv_file, tmp_path):
+    script_path = tmp_path / "pp.py"
+    script_path.write_text(_SKIP_TWO_LINES, encoding="utf-8")
     resp = await client.post(
         "/api/data/preview/csv-source/preprocessed",
         json={
             "node_id": "node-1",
             "file_path": office365_csv_file,
-            "preprocessing": {
-                "enabled": True,
-                "runtime": "python",
-                "script": "import sys; from pathlib import Path; lines = Path(sys.argv[1]).read_text().splitlines()[2:]; sys.stdout.write('\\n'.join(lines))",
-            },
+            "preprocessing": {"enabled": True, "script_path": str(script_path)},
             "limit": 3,
         },
     )
@@ -92,17 +97,15 @@ async def test_preprocessed_csv_source_preview_returns_reviewed_rows(client, off
 
 
 @pytest.mark.asyncio
-async def test_delete_preprocessed_csv_artifact(client, office365_csv_file):
+async def test_delete_preprocessed_csv_artifact(client, office365_csv_file, tmp_path):
+    script_path = tmp_path / "pp.py"
+    script_path.write_text(_SKIP_TWO_LINES, encoding="utf-8")
     await client.post(
         "/api/data/preview/csv-source/preprocessed",
         json={
             "node_id": "node-1",
             "file_path": office365_csv_file,
-            "preprocessing": {
-                "enabled": True,
-                "runtime": "bash",
-                "script": "tail -n +3 \"$1\"",
-            },
+            "preprocessing": {"enabled": True, "script_path": str(script_path)},
         },
     )
 
@@ -193,6 +196,29 @@ async def test_export_returns_csv(populated_client):
     content = resp.text
     assert "id" in content
     assert "Alice" in content
+
+
+@pytest.mark.asyncio
+async def test_export_to_path_writes_local_file(populated_client, tmp_path):
+    out = tmp_path / "export.parquet"
+    resp = await populated_client.post(
+        f"/api/data/{PROJECT_ID}/export-to-path",
+        json={"table_name": "my_table", "output_path": str(out), "format": "parquet"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["format"] == "parquet"
+    assert body["row_count"] == 5
+    assert out.exists()
+
+
+@pytest.mark.asyncio
+async def test_export_to_path_rejects_missing_table(populated_client, tmp_path):
+    resp = await populated_client.post(
+        f"/api/data/{PROJECT_ID}/export-to-path",
+        json={"table_name": "nope", "output_path": str(tmp_path / "x.csv"), "format": "csv"},
+    )
+    assert resp.status_code == 400
 
 
 @pytest.mark.asyncio

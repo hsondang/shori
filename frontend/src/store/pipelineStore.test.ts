@@ -107,7 +107,7 @@ describe('pipelineStore', () => {
       expect(config).toHaveProperty('preprocessing')
     })
 
-    it('adds an excel_source node with workbook and materialized csv defaults', () => {
+    it('adds an excel_source node with native read_xlsx defaults', () => {
       act(() => usePipelineStore.getState().addNode('excel_source', { x: 0, y: 0 }))
       const { nodes } = usePipelineStore.getState()
       expect(nodes).toHaveLength(1)
@@ -120,10 +120,10 @@ describe('pipelineStore', () => {
         original_filename: '',
         sheet_names: [],
         selected_sheet: '',
-        materialized_csv_path: '',
-        materialized_csv_filename: '',
+        load_mode: 'in_memory',
+        header: true,
+        all_varchar: false,
       })
-      expect(config).toHaveProperty('preprocessing')
     })
 
     it('adds a db_source node with connection and query defaults', () => {
@@ -323,7 +323,7 @@ describe('pipelineStore', () => {
               config: {
                 file_path: '/tmp/orders.csv',
                 original_filename: 'orders.csv',
-                preprocessing: { enabled: true, runtime: 'python', script: 'print(1)' },
+                preprocessing: { enabled: true, script_path: '/tmp/pp1.py' },
               },
             },
           }],
@@ -333,8 +333,7 @@ describe('pipelineStore', () => {
           csvPreprocessArtifacts: {
             'csv-node': JSON.stringify({
               file_path: '/tmp/orders.csv',
-              runtime: 'python',
-              script: 'print(1)',
+              script_path: '/tmp/pp1.py',
             }),
           },
         })
@@ -344,7 +343,7 @@ describe('pipelineStore', () => {
         config: {
           file_path: '/tmp/orders.csv',
           original_filename: 'orders.csv',
-          preprocessing: { enabled: true, runtime: 'python', script: 'print(2)' },
+          preprocessing: { enabled: true, script_path: '/tmp/pp2.py' },
         },
       }))
 
@@ -803,6 +802,32 @@ describe('pipelineStore', () => {
         columns: ['id', 'name'],
       }))
       expect(usePipelineStore.getState().activePreviewTarget).toEqual({ kind: 'tab', nodeId: node.id })
+    })
+
+    it('runNodeWithLoadMode persists the load_mode on the node before running', async () => {
+      act(() => {
+        usePipelineStore.getState().addNode('csv_source', { x: 0, y: 0 })
+        usePipelineStore.getState().updateNodeData(usePipelineStore.getState().nodes[0].id, {
+          tableName: 'orders_table',
+          config: { file_path: '/tmp/orders.csv', original_filename: 'orders.csv', load_mode: 'in_memory' },
+        })
+      })
+      const node = usePipelineStore.getState().nodes[0]
+      mockStartNodeExecution.mockResolvedValueOnce(makeExecutionRun({
+        status: 'success',
+        node_results: { [node.id]: { node_id: node.id, status: 'success', row_count: 1, column_count: 1 } },
+      }))
+      mockPreviewData.mockResolvedValueOnce({
+        kind: 'table', columns: ['id'], column_types: ['INTEGER'], rows: [[1]], total_rows: 1, offset: 0, limit: 100,
+      })
+
+      await act(async () => {
+        await usePipelineStore.getState().runNodeWithLoadMode(node.id, 'materialized')
+      })
+
+      const config = (usePipelineStore.getState().nodes[0].data as Record<string, unknown>).config as Record<string, unknown>
+      expect(config.load_mode).toBe('materialized')
+      expect(mockStartNodeExecution).toHaveBeenCalled()
     })
 
     it('stores an error result and does not load preview when execution fails', async () => {
@@ -1320,7 +1345,7 @@ describe('pipelineStore', () => {
               config: {
                 file_path: '/tmp/orders.csv',
                 original_filename: 'orders.csv',
-                preprocessing: { enabled: true, runtime: 'python', script: 'print(1)' },
+                preprocessing: { enabled: true, script_path: '/tmp/pp.py' },
               },
             },
           }],
@@ -1336,14 +1361,14 @@ describe('pipelineStore', () => {
         await usePipelineStore.getState().loadPreprocessedCsvPreview(
           'csv-node',
           '/tmp/orders.csv',
-          { enabled: true, runtime: 'python', script: 'print(1)' },
+          { enabled: true, script_path: '/tmp/pp.py' },
         )
       })
 
       expect(mockPreviewPreprocessedCsvSource).toHaveBeenCalledWith(
         'csv-node',
         '/tmp/orders.csv',
-        { enabled: true, runtime: 'python', script: 'print(1)' },
+        { enabled: true, script_path: '/tmp/pp.py' },
       )
       expect(usePipelineStore.getState().transientPreview.data).toEqual(makeCsvTextPreview({
         csv_stage: 'preprocessed',
@@ -1352,8 +1377,7 @@ describe('pipelineStore', () => {
       expect(usePipelineStore.getState().csvPreprocessArtifacts['csv-node']).toBe(
         JSON.stringify({
           file_path: '/tmp/orders.csv',
-          runtime: 'python',
-          script: 'print(1)',
+          script_path: '/tmp/pp.py',
         })
       )
     })
@@ -1821,7 +1845,7 @@ describe('pipelineStore', () => {
         await usePipelineStore.getState().materializeLivePreview('db-node')
       })
 
-      expect(mockMaterializePreviewSession).toHaveBeenCalledWith('sess-1')
+      expect(mockMaterializePreviewSession).toHaveBeenCalledWith('sess-1', false)
       // The live tab is consumed; the node now has a success result.
       expect(usePipelineStore.getState().livePreviewsByNodeId['db-node']).toBeUndefined()
       expect(usePipelineStore.getState().nodeResults['db-node']).toEqual(expect.objectContaining({

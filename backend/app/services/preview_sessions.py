@@ -267,6 +267,7 @@ class PreviewSessionManager:
         session_id: str,
         duckdb_manager,
         *,
+        into_memory: bool = False,
         register_interrupt=None,
     ) -> dict:
         """Stream buffered rows into the node's table, then keep draining the
@@ -275,7 +276,9 @@ class PreviewSessionManager:
         async with session.lock:
             session.touch()
             node = session.node
-            load = duckdb_manager.begin_load(node.id, node.table_name, session.cache_key)
+            load = duckdb_manager.begin_load(
+                node.id, node.table_name, session.cache_key, into_memory=into_memory
+            )
             try:
                 load.mark_loading()
                 if register_interrupt is not None:

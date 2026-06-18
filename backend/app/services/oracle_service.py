@@ -122,10 +122,13 @@ class OracleService:
         *,
         node_id: str | None = None,
         cache_key: str | None = None,
+        into_memory: bool = False,
     ) -> dict:
         normalized = normalize_fetch_config(fetch_config)
         record_meta = node_id is not None
-        load = duckdb_manager.begin_load(node_id or table_name, table_name, cache_key)
+        load = duckdb_manager.begin_load(
+            node_id or table_name, table_name, cache_key, into_memory=into_memory
+        )
         try:
             if record_meta:
                 load.mark_loading()
@@ -218,6 +221,7 @@ class OracleService:
         *,
         node_id: str | None = None,
         cache_key: str | None = None,
+        into_memory: bool = False,
     ) -> dict:
         return await asyncio.to_thread(
             lambda: self._load_query_to_duckdb_sync(
@@ -228,6 +232,7 @@ class OracleService:
                 fetch_config,
                 node_id=node_id,
                 cache_key=cache_key,
+                into_memory=into_memory,
             )
         )
 

@@ -75,7 +75,7 @@ class FakeDuckDBManager:
         self.committed_loads = []
         self.aborted_loads = []
 
-    def begin_load(self, node_id, table_name, cache_key=None):
+    def begin_load(self, node_id, table_name, cache_key=None, *, into_memory=False):
         return FakeStagingLoad(self, node_id, table_name, cache_key)
 
 

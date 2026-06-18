@@ -58,6 +58,7 @@ class PostgresService:
         *,
         node_id: str | None = None,
         cache_key: str | None = None,
+        into_memory: bool = False,
         register_interrupt=None,
     ) -> dict:
         """Materialize the query without the data passing through Python:
@@ -70,6 +71,7 @@ class PostgresService:
                 duckdb_manager,
                 node_id=node_id,
                 cache_key=cache_key,
+                into_memory=into_memory,
                 register_interrupt=register_interrupt,
             )
         )
@@ -83,6 +85,7 @@ class PostgresService:
         *,
         node_id: str | None = None,
         cache_key: str | None = None,
+        into_memory: bool = False,
         register_interrupt=None,
     ) -> dict:
         if not duckdb_manager.ensure_postgres_extension():
@@ -90,7 +93,9 @@ class PostgresService:
 
         record_meta = node_id is not None
         alias = f"_shori_pg_{uuid4().hex[:8]}"
-        load = duckdb_manager.begin_load(node_id or table_name, table_name, cache_key)
+        load = duckdb_manager.begin_load(
+            node_id or table_name, table_name, cache_key, into_memory=into_memory
+        )
         try:
             if record_meta:
                 load.mark_loading()

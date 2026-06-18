@@ -72,10 +72,11 @@ async def fetch_preview_rows(session_id: str, request: Request):
 
 
 @router.post("/{session_id}/materialize")
-async def materialize_preview_session(session_id: str, request: Request):
-    """Turn the live preview into the node's persisted table: buffered rows
-    stream in first, then the open cursor is drained to completion. Returns
-    an execution-run snapshot so the node badge tracks progress."""
+async def materialize_preview_session(session_id: str, request: Request, into_memory: bool = False):
+    """Drain the live preview into the node's table: buffered rows stream in
+    first, then the open cursor is drained to completion. `into_memory` chooses
+    the RAM-only scratch catalog ("Load to memory") vs the project file
+    ("Materialize"). Returns an execution-run snapshot so the badge tracks progress."""
     sessions = _get_sessions(request)
     try:
         session = await sessions.get_session(session_id)
@@ -98,6 +99,7 @@ async def materialize_preview_session(session_id: str, request: Request):
             stats = await sessions.materialize(
                 session_id,
                 manager,
+                into_memory=into_memory,
                 register_interrupt=register_interrupt,
             )
             registry.set_node_result(

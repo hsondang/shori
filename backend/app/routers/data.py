@@ -12,8 +12,15 @@ from app.services.csv_service import (
     preview_preprocessed_csv_text,
 )
 from app.services.duckdb_manager import is_reserved_table_name
+from app.services.export_service import export_table_to_local
 
 router = APIRouter()
+
+
+class ExportToPathRequest(BaseModel):
+    table_name: str
+    output_path: str
+    format: str = "csv"
 
 
 class CsvSourcePreviewRequest(BaseModel):
@@ -89,6 +96,15 @@ def export_data(project_id: str, table_name: str, request: Request):
         filename=f"{table_name}.csv",
         media_type="text/csv",
     )
+
+
+@router.post("/{project_id}/export-to-path")
+def export_to_path(project_id: str, payload: ExportToPathRequest, request: Request):
+    db = _get_project_db(request, project_id)
+    try:
+        return export_table_to_local(db, payload.table_name, payload.output_path, payload.format)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/{project_id}/schema/{table_name}")

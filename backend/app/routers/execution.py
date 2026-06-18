@@ -193,6 +193,14 @@ async def get_cache_status(pipeline: PipelineDefinition, request: Request):
         if node.type == NodeType.EXPORT:
             continue
         meta = metas.get(node.id)
+        location = meta.get("location") if meta else None
+        # An in-memory table is gone after a restart (scratch is RAM-only), so a
+        # "complete" meta row doesn't guarantee the table is still there.
+        table_present = bool(
+            meta
+            and meta["status"] == "complete"
+            and manager.table_exists(meta["table_name"], location=location)
+        )
         if meta is None:
             state = "missing"
         elif node.id in unresolvable:
@@ -201,18 +209,36 @@ async def get_cache_status(pipeline: PipelineDefinition, request: Request):
             state = "loading"
         elif meta["status"] == "failed":
             state = "failed"
+        elif not table_present:
+            state = "missing"
         elif meta["cache_key"] == cache_keys.get(node.id):
             state = "fresh"
         else:
             state = "stale"
         statuses[node.id] = {
             "state": state,
+            "location": location if table_present else None,
+            "lifecycle": _derive_lifecycle(meta, table_present, location),
             "row_count": meta["row_count"] if meta else None,
             "column_count": meta["column_count"] if meta else None,
             "finished_at": meta["finished_at"] if meta else None,
             "error": meta["error"] if meta else None,
         }
     return {"nodes": statuses}
+
+
+def _derive_lifecycle(meta: dict | None, table_present: bool, location: str | None) -> str:
+    """Single card label blending activity + data location + presence."""
+    if meta is None:
+        return "new"
+    if meta["status"] == "loading":
+        return "running"
+    if meta["status"] == "failed":
+        return "error"
+    if not table_present:
+        # Ran before, but the data isn't here now (e.g. in-memory lost on restart).
+        return "idle"
+    return "in_memory" if location == "in_memory" else "materialized"
 
 
 @router.post("/pipeline/{pipeline_id}")

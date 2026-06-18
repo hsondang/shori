@@ -1,4 +1,4 @@
-import { materializeExcelSheet, uploadCsv } from '../../api/client'
+import { exportToPath, uploadCsv } from '../../api/client'
 import {
   useCallback,
   useEffect,
@@ -29,8 +29,9 @@ import type {
   CsvSourceConfig,
   DatabaseConnectionConfig,
   DbType,
-  ExcelSheetPreview,
   ExcelSourceConfig,
+  ExportConfig,
+  NodeLoadMode,
 } from '../../types/pipeline'
 import {
   clampNodeConfigPanelWidth,
@@ -76,42 +77,138 @@ function QueryPreview({
   )
 }
 
-function ExcelSheetPreviewGrid({ sheet }: { sheet: ExcelSheetPreview | null }) {
-  if (!sheet) {
-    return (
-      <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3 text-sm text-gray-400">
-        Select a sheet to preview its first cells.
+function DescriptionField({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (description: string) => void
+}) {
+  return (
+    <div>
+      <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Description</label>
+      <textarea
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        rows={2}
+        placeholder="Optional notes about this node"
+        className="w-full rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-700"
+      />
+    </div>
+  )
+}
+
+function LoadModeToggle({
+  value,
+  onChange,
+}: {
+  value: NodeLoadMode
+  onChange: (mode: NodeLoadMode) => void
+}) {
+  const options: { mode: NodeLoadMode; label: string; hint: string }[] = [
+    { mode: 'in_memory', label: 'In memory', hint: 'RAM-only; cleared on restart' },
+    { mode: 'materialized', label: 'Materialize', hint: 'Persisted to the project file' },
+  ]
+  return (
+    <div>
+      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">Default load mode</div>
+      <div className="flex gap-1 rounded-lg border border-gray-200 bg-gray-50 p-1">
+        {options.map((option) => (
+          <button
+            key={option.mode}
+            type="button"
+            title={option.hint}
+            aria-pressed={value === option.mode}
+            onClick={() => onChange(option.mode)}
+            className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition ${
+              value === option.mode ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            {option.label}
+          </button>
+        ))}
       </div>
-    )
+      <p className="mt-1 text-[11px] text-gray-400">Used when running the whole pipeline.</p>
+    </div>
+  )
+}
+
+function ExportNodeConfig({
+  config,
+  sourceTableName,
+  projectId,
+  onChange,
+  description,
+  onDescriptionChange,
+}: {
+  config: ExportConfig
+  sourceTableName: string | null
+  projectId: string
+  onChange: (patch: Partial<ExportConfig>) => void
+  description: string
+  onDescriptionChange: (description: string) => void
+}) {
+  const [status, setStatus] = useState<{ kind: 'idle' | 'running' | 'done' | 'error'; message?: string }>({ kind: 'idle' })
+  const format = config.format || 'csv'
+  const outputPath = config.output_path ?? ''
+  const canExport = Boolean(sourceTableName) && Boolean(outputPath.trim()) && status.kind !== 'running'
+
+  const handleExport = async () => {
+    if (!sourceTableName || !outputPath.trim()) return
+    setStatus({ kind: 'running' })
+    try {
+      const result = await exportToPath(projectId, sourceTableName, outputPath.trim(), format)
+      setStatus({ kind: 'done', message: `Wrote ${result.row_count} rows to ${result.output_path}` })
+    } catch (err) {
+      setStatus({ kind: 'error', message: err instanceof Error ? err.message : 'Export failed' })
+    }
   }
 
   return (
-    <div className="overflow-auto rounded-lg border border-gray-200 bg-white">
-      <table className="min-w-full border-collapse text-xs">
-        <tbody>
-          {sheet.rows.length === 0 ? (
-            <tr>
-              <td className="px-3 py-3 text-gray-400">This sheet is empty.</td>
-            </tr>
-          ) : sheet.rows.map((row, rowIndex) => (
-            <tr key={rowIndex}>
-              <th className="sticky left-0 border-b border-r border-gray-100 bg-gray-50 px-2 py-1 text-right font-normal text-gray-400">
-                {rowIndex + 1}
-              </th>
-              {row.map((cell, cellIndex) => (
-                <td key={`${rowIndex}-${cellIndex}`} className="max-w-36 truncate border-b border-r border-gray-100 px-2 py-1 text-gray-700">
-                  {cell || <span className="text-gray-300">""</span>}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {(sheet.truncated_rows || sheet.truncated_columns) && (
-        <div className="border-t border-gray-100 bg-gray-50 px-3 py-2 text-xs text-gray-400">
-          Preview limited to the first 10 rows and 12 columns.
+    <div className="space-y-4">
+      <div>
+        <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Source table</div>
+        <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
+          {sourceTableName ?? 'Connect a source to this node'}
         </div>
-      )}
+      </div>
+      <div>
+        <label htmlFor="export-format" className="mb-1 block text-xs text-gray-500">Format</label>
+        <select
+          id="export-format"
+          value={format}
+          onChange={(event) => onChange({ format: event.target.value })}
+          className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
+        >
+          <option value="csv">CSV</option>
+          <option value="parquet">Parquet</option>
+          <option value="xlsx">Excel (.xlsx)</option>
+        </select>
+      </div>
+      <div>
+        <label htmlFor="export-path" className="mb-1 block text-xs text-gray-500">Output path</label>
+        <input
+          id="export-path"
+          type="text"
+          value={outputPath}
+          onChange={(event) => onChange({ destination: 'local', output_path: event.target.value })}
+          placeholder="/path/to/output"
+          className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm font-mono"
+        />
+      </div>
+      <DescriptionField value={description} onChange={onDescriptionChange} />
+      <button
+        type="button"
+        onClick={() => { void handleExport() }}
+        disabled={!canExport}
+        className={`w-full rounded-lg px-4 py-2 text-sm font-medium transition ${
+          canExport ? 'bg-blue-500 text-white hover:bg-blue-600' : 'bg-gray-100 text-gray-400'
+        }`}
+      >
+        {status.kind === 'running' ? 'Exporting…' : 'Export'}
+      </button>
+      {status.kind === 'done' && <p className="text-xs text-emerald-600">{status.message}</p>}
+      {status.kind === 'error' && <p className="text-xs text-red-600">{status.message}</p>}
     </div>
   )
 }
@@ -186,12 +283,14 @@ function NodeConfigPanelShell({
 
 export default function NodeConfigPanel() {
   const selectedNodeId = usePipelineStore((s) => s.selectedNodeId)
+  const pipelineId = usePipelineStore((s) => s.pipelineId)
   const nodes = usePipelineStore((s) => s.nodes)
   const edges = usePipelineStore((s) => s.edges)
   const updateNodeData = usePipelineStore((s) => s.updateNodeData)
   const deleteNode = usePipelineStore((s) => s.deleteNode)
   const openEditNodeEditor = usePipelineStore((s) => s.openEditNodeEditor)
   const executeSingleNode = usePipelineStore((s) => s.executeSingleNode)
+  const runNodeWithLoadMode = usePipelineStore((s) => s.runNodeWithLoadMode)
   const abortDatabaseNodeExecution = usePipelineStore((s) => s.abortDatabaseNodeExecution)
   const runTransformPreview = usePipelineStore((s) => s.runTransformPreview)
   const globalDatabaseConnections = useSettingsStore((s) => s.globalDatabaseConnections)
@@ -218,40 +317,34 @@ export default function NodeConfigPanel() {
   const config = (data.config as Record<string, unknown> | undefined) ?? {}
   const tableName = (data.tableName as string | undefined) ?? ''
   const label = (data.label as string | undefined) ?? (node ? getNodeTitle(node.type) : '')
+  const nodeDescription = (data.description as string | undefined) ?? ''
   const nodeResult = nodeId ? nodeResults[nodeId] : undefined
   const isCsvNode = node?.type === 'csv_source'
   const isExcelNode = node?.type === 'excel_source'
   const csvConfig = (isCsvNode ? config : null) as CsvSourceConfig | null
   const excelConfig = (isExcelNode ? config : null) as ExcelSourceConfig | null
-  const excelMaterializedCsvConfig: CsvSourceConfig | null = excelConfig
-    ? {
-        file_path: excelConfig.materialized_csv_path,
-        original_filename: excelConfig.materialized_csv_filename || excelConfig.original_filename,
-        preprocessing: excelConfig.preprocessing,
-      }
-    : null
-  const sourceCsvConfig = csvConfig ?? excelMaterializedCsvConfig
-  const csvPreprocessing: CsvPreprocessingConfig = sourceCsvConfig?.preprocessing ?? {
-    enabled: false,
-    runtime: 'python',
-    script: '',
+  // Normalize so script_path is always a string, even for projects saved with
+  // the legacy preprocessing shape (runtime/script) before the .py-file contract.
+  const csvPreprocessing: CsvPreprocessingConfig = {
+    enabled: Boolean(csvConfig?.preprocessing?.enabled),
+    script_path: csvConfig?.preprocessing?.script_path ?? '',
   }
-  const preprocessFingerprint = getCsvPreprocessFingerprint(sourceCsvConfig)
+  const loadMode: NodeLoadMode = (config.load_mode as NodeLoadMode | undefined) ?? 'in_memory'
+  const preprocessFingerprint = getCsvPreprocessFingerprint(csvConfig)
   const hasReviewedPreprocess = Boolean(
     nodeId
     && preprocessFingerprint
     && csvPreprocessArtifacts[nodeId] === preprocessFingerprint
   )
-  const sourceCsvPath = sourceCsvConfig?.file_path ?? ''
+  const sourceCsvPath = csvConfig?.file_path ?? ''
   const canPreviewCsv = Boolean(sourceCsvPath) && nodeResult?.status !== 'running'
   const canRunPreprocess = Boolean(sourceCsvPath)
     && csvPreprocessing.enabled
-    && Boolean(csvPreprocessing.script.trim())
+    && Boolean(csvPreprocessing.script_path.trim())
     && nodeResult?.status !== 'running'
   const canLoadCsv = Boolean(sourceCsvPath)
     && nodeResult?.status !== 'running'
     && (!csvPreprocessing.enabled || hasReviewedPreprocess)
-  const selectedExcelSheetPreview = excelConfig?.sheets?.find((sheet) => sheet.name === excelConfig.selected_sheet) ?? null
 
   const availableUpstreamTables = useMemo(() => {
     if (!selectedNodeId || node?.type !== 'transform') return []
@@ -260,6 +353,14 @@ export default function NodeConfigPanel() {
       .filter((candidate) => upstreamIds.includes(candidate.id))
       .map((candidate) => ((candidate.data as Record<string, unknown>).tableName as string | undefined) ?? '')
       .filter(Boolean)
+  }, [edges, node?.type, nodes, selectedNodeId])
+
+  const exportSourceTableName = useMemo(() => {
+    if (!selectedNodeId || node?.type !== 'export') return null
+    const sourceEdge = edges.find((edge) => edge.target === selectedNodeId)
+    if (!sourceEdge) return null
+    const sourceNode = nodes.find((candidate) => candidate.id === sourceEdge.source)
+    return sourceNode ? (((sourceNode.data as Record<string, unknown>).tableName as string | undefined) ?? null) : null
   }, [edges, node?.type, nodes, selectedNodeId])
 
   useEffect(() => {
@@ -337,14 +438,18 @@ export default function NodeConfigPanel() {
 
   const updateExcelConfig = useCallback((patch: Partial<ExcelSourceConfig>) => {
     if (!nodeId || !excelConfig) return
-    updateNodeData(nodeId, {
-      config: {
-        ...excelConfig,
-        ...patch,
-        preprocessing: patch.preprocessing ?? csvPreprocessing,
-      },
-    })
-  }, [csvPreprocessing, excelConfig, nodeId, updateNodeData])
+    updateNodeData(nodeId, { config: { ...excelConfig, ...patch } })
+  }, [excelConfig, nodeId, updateNodeData])
+
+  const updateNodeDescription = useCallback((description: string) => {
+    if (!nodeId) return
+    updateNodeData(nodeId, { description })
+  }, [nodeId, updateNodeData])
+
+  const updateLoadMode = useCallback((mode: NodeLoadMode) => {
+    if (!nodeId) return
+    updateNodeData(nodeId, { config: { ...config, load_mode: mode } })
+  }, [config, nodeId, updateNodeData])
 
   const handleCsvUpload = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -369,40 +474,11 @@ export default function NodeConfigPanel() {
 
   const handleExcelUpload = createExcelUploadHandler({
     excelConfig,
-    csvPreprocessing,
     applyConfig: (nextConfig) => {
       if (!nodeId) return
       updateNodeData(nodeId, { config: nextConfig })
     },
   })
-
-  const handleExcelSheetSelect = async (sheetName: string) => {
-    if (!nodeId || !excelConfig?.file_path) return
-    if (!sheetName) {
-      updateExcelConfig({
-        selected_sheet: '',
-        materialized_csv_path: '',
-        materialized_csv_filename: '',
-      })
-      return
-    }
-
-    updateExcelConfig({
-      selected_sheet: sheetName,
-      materialized_csv_path: '',
-      materialized_csv_filename: '',
-    })
-    const result = await materializeExcelSheet(excelConfig.file_path, sheetName)
-    updateNodeData(nodeId, {
-      config: {
-        ...excelConfig,
-        selected_sheet: sheetName,
-        materialized_csv_path: result.file_path,
-        materialized_csv_filename: result.filename,
-        preprocessing: excelConfig.preprocessing ?? csvPreprocessing,
-      },
-    })
-  }
 
   const handleDeleteNode = () => {
     if (!node) return
@@ -671,6 +747,8 @@ export default function NodeConfigPanel() {
               </div>
             </div>
           )}
+          <LoadModeToggle value={loadMode} onChange={updateLoadMode} />
+          <DescriptionField value={nodeDescription} onChange={updateNodeDescription} />
         </>
       ),
       onExecute: () => { void executeSingleNode(node.id, { loadPreviewOnSuccess: true }) },
@@ -691,12 +769,16 @@ export default function NodeConfigPanel() {
       enabledButtonClassName: 'bg-purple-500 text-white hover:bg-purple-600',
       description: 'Execute this transform and open its preview. Missing upstream tables will prompt before running dependencies.',
       metadata: (
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Table</div>
-          <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
-            {tableName}
+        <>
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Table</div>
+            <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
+              {tableName}
+            </div>
           </div>
-        </div>
+          <LoadModeToggle value={loadMode} onChange={updateLoadMode} />
+          <DescriptionField value={nodeDescription} onChange={updateNodeDescription} />
+        </>
       ),
       extraEditorContent: availableUpstreamTables.length > 0 ? (
         <div className="mb-3">
@@ -859,49 +941,28 @@ export default function NodeConfigPanel() {
               {csvPreprocessing.enabled && (
                 <>
                   <p className="mb-3 text-xs text-gray-500">
-                    When enabled, the script receives the uploaded CSV path as the first argument and via <code>SHORI_INPUT_CSV</code>. It must emit a cleaned CSV to stdout.
+                    Point to a <code>.py</code> file that defines <code>preprocess(file)</code> and returns a pandas DataFrame. It runs in an isolated subprocess.
                   </p>
-                  <div className="space-y-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
-                    <div>
-                      <label htmlFor="csv-runtime" className="mb-1 block text-xs text-gray-500">Runtime</label>
-                      <select
-                        id="csv-runtime"
-                        value={csvPreprocessing.runtime}
-                        onChange={(event) => updateCsvConfig({
-                          preprocessing: {
-                            ...csvPreprocessing,
-                            runtime: event.target.value as CsvPreprocessingConfig['runtime'],
-                          },
-                        })}
-                        className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
-                      >
-                        <option value="python">Python</option>
-                        <option value="bash">Bash</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label htmlFor="csv-script" className="mb-1 block text-xs text-gray-500">Script</label>
-                      <textarea
-                        id="csv-script"
-                        value={csvPreprocessing.script}
-                        onChange={(event) => updateCsvConfig({
-                          preprocessing: {
-                            ...csvPreprocessing,
-                            script: event.target.value,
-                          },
-                        })}
-                        rows={8}
-                        spellCheck={false}
-                        className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm font-mono"
-                        placeholder={csvPreprocessing.runtime === 'bash'
-                          ? 'tail -n +3 \"$1\"'
-                          : 'import sys\nfrom pathlib import Path\nlines = Path(sys.argv[1]).read_text().splitlines()[2:]\nsys.stdout.write(\"\\n\".join(lines))'}
-                      />
-                    </div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <label htmlFor="csv-script-path" className="mb-1 block text-xs text-gray-500">Script path</label>
+                    <input
+                      id="csv-script-path"
+                      type="text"
+                      value={csvPreprocessing.script_path}
+                      onChange={(event) => updateCsvConfig({
+                        preprocessing: { ...csvPreprocessing, script_path: event.target.value },
+                      })}
+                      spellCheck={false}
+                      placeholder="/path/to/preprocess.py"
+                      className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm font-mono"
+                    />
                   </div>
                 </>
               )}
             </div>
+
+            <LoadModeToggle value={loadMode} onChange={updateLoadMode} />
+            <DescriptionField value={nodeDescription} onChange={updateNodeDescription} />
 
             <div>
               <div className="mb-2 flex items-center justify-between">
@@ -913,9 +974,9 @@ export default function NodeConfigPanel() {
                 )}
               </div>
               <p className="mb-3 text-xs text-gray-500">
-                Preview the uploaded CSV before materializing it, then load it into DuckDB once the preprocessing is ready.
+                Preview the CSV, then load it into memory (RAM) or materialize it to the project file.
               </p>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 gap-3">
                 <button
                   type="button"
                   onClick={() => csvConfig.file_path && void loadCsvPreview(node.id, csvConfig.file_path)}
@@ -942,24 +1003,32 @@ export default function NodeConfigPanel() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => void executeSingleNode(node.id, { loadPreviewOnSuccess: true })}
+                  onClick={() => void runNodeWithLoadMode(node.id, 'in_memory')}
                   disabled={!canLoadCsv}
                   className={`rounded px-3 py-2 text-sm font-medium transition ${
-                    canLoadCsv
-                      ? 'bg-blue-500 text-white hover:bg-blue-600'
-                      : 'bg-gray-100 text-gray-400'
+                    canLoadCsv ? 'bg-violet-500 text-white hover:bg-violet-600' : 'bg-gray-100 text-gray-400'
                   }`}
                 >
-                  {nodeResult?.status === 'running' ? 'Running...' : 'Load data'}
+                  Load to memory
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void runNodeWithLoadMode(node.id, 'materialized')}
+                  disabled={!canLoadCsv}
+                  className={`rounded px-3 py-2 text-sm font-medium transition ${
+                    canLoadCsv ? 'bg-blue-500 text-white hover:bg-blue-600' : 'bg-gray-100 text-gray-400'
+                  }`}
+                >
+                  {nodeResult?.status === 'running' ? 'Running...' : 'Materialize'}
                 </button>
               </div>
 
-              {csvPreprocessing.enabled && !csvPreprocessing.script.trim() && (
+              {csvPreprocessing.enabled && !csvPreprocessing.script_path.trim() && (
                 <p className="mt-2 text-xs text-amber-600">
-                  Add a preprocessing script before running Preprocess.
+                  Set the preprocessing script path before running Preprocess.
                 </p>
               )}
-              {csvPreprocessing.enabled && csvPreprocessing.script.trim() && !hasReviewedPreprocess && (
+              {csvPreprocessing.enabled && csvPreprocessing.script_path.trim() && !hasReviewedPreprocess && (
                 <p className="mt-2 text-xs text-amber-600">
                   Run Preprocess and review the output before loading data.
                 </p>
@@ -980,7 +1049,7 @@ export default function NodeConfigPanel() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".xls,.xlsx,.xlsm,.xlsb,.ods"
+                accept=".xlsx,.xlsm"
                 onChange={handleExcelUpload}
                 className="hidden"
               />
@@ -989,7 +1058,7 @@ export default function NodeConfigPanel() {
                 onClick={() => fileInputRef.current?.click()}
                 className="w-full rounded-lg border-2 border-dashed border-gray-300 p-4 text-sm text-gray-500 transition hover:border-emerald-400 hover:text-emerald-600"
               >
-                {excelConfig.original_filename || 'Click to upload Excel workbook'}
+                {excelConfig.original_filename || 'Click to upload .xlsx / .xlsm'}
               </button>
             </div>
 
@@ -999,7 +1068,7 @@ export default function NodeConfigPanel() {
                 <select
                   id="excel-sheet-select"
                   value={excelConfig.selected_sheet}
-                  onChange={(event) => { void handleExcelSheetSelect(event.target.value) }}
+                  onChange={(event) => updateExcelConfig({ selected_sheet: event.target.value })}
                   className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
                 >
                   <option value="">Select a sheet</option>
@@ -1007,169 +1076,94 @@ export default function NodeConfigPanel() {
                     <option key={sheetName} value={sheetName}>{sheetName}</option>
                   ))}
                 </select>
-                <div className="mt-3">
-                  <ExcelSheetPreviewGrid sheet={selectedExcelSheetPreview} />
-                </div>
               </div>
             )}
 
-            <div>
-              <div className="mb-2 flex items-center justify-between">
-                <label className="block text-xs text-gray-500">Preprocessing</label>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={csvPreprocessing.enabled}
-                  aria-label="Enable preprocessing"
-                  onClick={() => updateExcelConfig({
-                    preprocessing: {
-                      ...csvPreprocessing,
-                      enabled: !csvPreprocessing.enabled,
-                    },
-                  })}
-                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full px-0.5 transition ${
-                    csvPreprocessing.enabled ? 'bg-emerald-500' : 'bg-gray-300'
-                  }`}
-                >
-                  <span
-                    className={`h-5 w-5 rounded-full bg-white shadow-sm transition ${
-                      csvPreprocessing.enabled ? 'translate-x-5' : 'translate-x-0'
-                    }`}
-                  />
-                </button>
+            <div className="space-y-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+              <div>
+                <label htmlFor="excel-range" className="mb-1 block text-xs text-gray-500">Range (optional)</label>
+                <input
+                  id="excel-range"
+                  type="text"
+                  value={excelConfig.cell_range ?? ''}
+                  onChange={(event) => updateExcelConfig({ cell_range: event.target.value })}
+                  placeholder="e.g. A1:F500"
+                  className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm font-mono"
+                />
               </div>
-
-              {csvPreprocessing.enabled && (
-                <>
-                  <p className="mb-3 text-xs text-gray-500">
-                    The selected sheet is converted to CSV first. The script receives that CSV path as the first argument and via <code>SHORI_INPUT_CSV</code>.
-                  </p>
-                  <div className="space-y-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
-                    <div>
-                      <label htmlFor="excel-runtime" className="mb-1 block text-xs text-gray-500">Runtime</label>
-                      <select
-                        id="excel-runtime"
-                        value={csvPreprocessing.runtime}
-                        onChange={(event) => updateExcelConfig({
-                          preprocessing: {
-                            ...csvPreprocessing,
-                            runtime: event.target.value as CsvPreprocessingConfig['runtime'],
-                          },
-                        })}
-                        className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
-                      >
-                        <option value="python">Python</option>
-                        <option value="bash">Bash</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label htmlFor="excel-script" className="mb-1 block text-xs text-gray-500">Script</label>
-                      <textarea
-                        id="excel-script"
-                        value={csvPreprocessing.script}
-                        onChange={(event) => updateExcelConfig({
-                          preprocessing: {
-                            ...csvPreprocessing,
-                            script: event.target.value,
-                          },
-                        })}
-                        rows={8}
-                        spellCheck={false}
-                        className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm font-mono"
-                      />
-                    </div>
-                  </div>
-                </>
-              )}
+              <label className="flex items-center gap-2 text-sm text-gray-600">
+                <input
+                  type="checkbox"
+                  checked={excelConfig.header ?? true}
+                  onChange={(event) => updateExcelConfig({ header: event.target.checked })}
+                />
+                First row is the header
+              </label>
+              <label className="flex items-center gap-2 text-sm text-gray-600">
+                <input
+                  type="checkbox"
+                  checked={excelConfig.all_varchar ?? false}
+                  onChange={(event) => updateExcelConfig({ all_varchar: event.target.checked })}
+                />
+                Read every column as text (all_varchar)
+              </label>
             </div>
+
+            <LoadModeToggle value={loadMode} onChange={updateLoadMode} />
+            <DescriptionField value={nodeDescription} onChange={updateNodeDescription} />
 
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <label className="block text-xs text-gray-500">Run Node</label>
                 {nodeResult && (
-                  <span className="text-xs text-gray-400">
-                    {nodeStatusLabel}
-                  </span>
+                  <span className="text-xs text-gray-400">{nodeStatusLabel}</span>
                 )}
               </div>
               <p className="mb-3 text-xs text-gray-500">
-                Select a sheet to generate a CSV artifact, then preview or load it like any CSV source.
+                Load the selected sheet into memory (RAM) or materialize it to the project file via DuckDB read_xlsx.
               </p>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 gap-3">
                 <button
                   type="button"
-                  onClick={() => sourceCsvPath && void loadCsvPreview(node.id, sourceCsvPath)}
-                  disabled={!canPreviewCsv}
+                  onClick={() => void runNodeWithLoadMode(node.id, 'in_memory')}
+                  disabled={!excelConfig.selected_sheet || nodeResult?.status === 'running'}
                   className={`rounded px-3 py-2 text-sm font-medium transition ${
-                    canPreviewCsv
-                      ? 'border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                    excelConfig.selected_sheet && nodeResult?.status !== 'running'
+                      ? 'bg-violet-500 text-white hover:bg-violet-600'
                       : 'bg-gray-100 text-gray-400'
                   }`}
                 >
-                  Preview data
+                  Load to memory
                 </button>
                 <button
                   type="button"
-                  onClick={() => sourceCsvPath && void loadPreprocessedCsvPreview(node.id, sourceCsvPath, csvPreprocessing)}
-                  disabled={!canRunPreprocess}
+                  onClick={() => void runNodeWithLoadMode(node.id, 'materialized')}
+                  disabled={!excelConfig.selected_sheet || nodeResult?.status === 'running'}
                   className={`rounded px-3 py-2 text-sm font-medium transition ${
-                    canRunPreprocess
-                      ? 'border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                      : 'bg-gray-100 text-gray-400'
-                  }`}
-                >
-                  Preprocess
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void executeSingleNode(node.id, { loadPreviewOnSuccess: true })}
-                  disabled={!canLoadCsv}
-                  className={`rounded px-3 py-2 text-sm font-medium transition ${
-                    canLoadCsv
+                    excelConfig.selected_sheet && nodeResult?.status !== 'running'
                       ? 'bg-emerald-500 text-white hover:bg-emerald-600'
                       : 'bg-gray-100 text-gray-400'
                   }`}
                 >
-                  {nodeResult?.status === 'running' ? 'Running...' : 'Load data'}
+                  {nodeResult?.status === 'running' ? 'Running...' : 'Materialize'}
                 </button>
               </div>
-
-              {!excelConfig.materialized_csv_path && excelConfig.selected_sheet && (
-                <p className="mt-2 text-xs text-amber-600">
-                  Materializing selected sheet.
-                </p>
-              )}
-              {csvPreprocessing.enabled && !csvPreprocessing.script.trim() && (
-                <p className="mt-2 text-xs text-amber-600">
-                  Add a preprocessing script before running Preprocess.
-                </p>
-              )}
-              {csvPreprocessing.enabled && csvPreprocessing.script.trim() && !hasReviewedPreprocess && (
-                <p className="mt-2 text-xs text-amber-600">
-                  Run Preprocess and review the output before loading data.
-                </p>
-              )}
-              {csvPreprocessing.enabled && hasReviewedPreprocess && (
-                <p className="mt-2 text-xs text-emerald-600">
-                  Reviewed preprocess output is ready to load into DuckDB.
-                </p>
+              {!excelConfig.selected_sheet && (
+                <p className="mt-2 text-xs text-amber-600">Select a sheet to load.</p>
               )}
             </div>
           </div>
         )}
 
         {node.type === 'export' && (
-          <div className="space-y-3">
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Format</div>
-              <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-                {(config.format as string | undefined) ?? 'csv'}
-              </div>
-            </div>
-            <div className="text-sm text-gray-500">
-              Connect this node to a source to export its data as CSV.
-            </div>
-          </div>
+          <ExportNodeConfig
+            config={config as unknown as ExportConfig}
+            sourceTableName={exportSourceTableName}
+            projectId={pipelineId}
+            onChange={(patch) => { if (nodeId) updateNodeData(nodeId, { config: { ...config, ...patch } }) }}
+            description={nodeDescription}
+            onDescriptionChange={updateNodeDescription}
+          />
         )}
         </div>
       </div>

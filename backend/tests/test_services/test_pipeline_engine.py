@@ -34,6 +34,20 @@ def _make_pipeline(nodes, edges=None):
     return PipelineDefinition(id="p1", name="Test", nodes=nodes, edges=edge_objs)
 
 
+# Preprocess script that drops the two office365 metadata lines.
+SKIP_TWO_LINES_SCRIPT = (
+    "import pandas as pd\n"
+    "def preprocess(file):\n"
+    "    return pd.read_csv(file, skiprows=2)\n"
+)
+
+
+def _write_preprocess_script(tmp_path, body=SKIP_TWO_LINES_SCRIPT) -> str:
+    path = tmp_path / "preprocess.py"
+    path.write_text(body, encoding="utf-8")
+    return str(path)
+
+
 @pytest.fixture
 def engine(duckdb_mgr, csv_artifact_store):
     return PipelineEngine(duckdb_mgr, csv_artifact_store)
@@ -93,15 +107,11 @@ async def test_execute_csv_source(engine, sample_csv_file):
 
 
 @pytest.mark.asyncio
-async def test_execute_csv_source_with_python_preprocessing_requires_review(engine, office365_csv_file):
+async def test_execute_csv_source_with_python_preprocessing_requires_review(engine, office365_csv_file, tmp_path):
     node = _make_node("n1", NodeType.CSV_SOURCE, "csv_pre_py", {
         "file_path": office365_csv_file,
         "original_filename": "office365.csv",
-        "preprocessing": {
-            "enabled": True,
-            "runtime": "python",
-            "script": "import sys; from pathlib import Path; lines = Path(sys.argv[1]).read_text().splitlines()[2:]; sys.stdout.write('\\n'.join(lines))",
-        },
+        "preprocessing": {"enabled": True, "script_path": _write_preprocess_script(tmp_path)},
     })
     result = await engine.execute_single_node(node)
     assert result.status == NodeStatus.ERROR
@@ -109,15 +119,11 @@ async def test_execute_csv_source_with_python_preprocessing_requires_review(engi
 
 
 @pytest.mark.asyncio
-async def test_execute_csv_source_with_reviewed_python_preprocessing(engine, office365_csv_file):
+async def test_execute_csv_source_with_reviewed_python_preprocessing(engine, office365_csv_file, tmp_path):
     node = _make_node("n1", NodeType.CSV_SOURCE, "csv_pre_sh", {
         "file_path": office365_csv_file,
         "original_filename": "office365.csv",
-        "preprocessing": {
-            "enabled": True,
-            "runtime": "python",
-            "script": "import sys; from pathlib import Path; lines = Path(sys.argv[1]).read_text().splitlines()[2:]; sys.stdout.write('\\n'.join(lines))",
-        },
+        "preprocessing": {"enabled": True, "script_path": _write_preprocess_script(tmp_path)},
     })
     from app.services.csv_service import preview_preprocessed_csv_text
     preview_preprocessed_csv_text(
@@ -134,16 +140,12 @@ async def test_execute_csv_source_with_reviewed_python_preprocessing(engine, off
 
 @pytest.mark.asyncio
 async def test_execute_excel_source(engine, sample_excel_file):
-    from app.services.excel_service import materialize_excel_sheet
-
-    materialized = materialize_excel_sheet(sample_excel_file, "Orders")
     node = _make_node("n1", NodeType.EXCEL_SOURCE, "excel_t", {
         "file_path": sample_excel_file,
         "original_filename": "sample.xlsx",
         "sheet_names": ["Orders", "Summary"],
         "selected_sheet": "Orders",
-        "materialized_csv_path": materialized["file_path"],
-        "materialized_csv_filename": materialized["filename"],
+        "header": True,
     })
 
     result = await engine.execute_single_node(node)
@@ -154,49 +156,18 @@ async def test_execute_excel_source(engine, sample_excel_file):
 
 
 @pytest.mark.asyncio
-async def test_execute_excel_source_with_preprocessing_requires_review(engine, sample_excel_file):
-    from app.services.excel_service import materialize_excel_sheet
-
-    materialized = materialize_excel_sheet(sample_excel_file, "Orders")
-    node = _make_node("n1", NodeType.EXCEL_SOURCE, "excel_pre", {
+async def test_execute_excel_source_all_varchar(engine, sample_excel_file):
+    node = _make_node("n1", NodeType.EXCEL_SOURCE, "excel_txt", {
         "file_path": sample_excel_file,
         "original_filename": "sample.xlsx",
         "sheet_names": ["Orders", "Summary"],
         "selected_sheet": "Orders",
-        "materialized_csv_path": materialized["file_path"],
-        "materialized_csv_filename": materialized["filename"],
-        "preprocessing": {
-            "enabled": True,
-            "runtime": "python",
-            "script": "import sys; from pathlib import Path; lines = Path(sys.argv[1]).read_text().splitlines()[1:]; sys.stdout.write('\\n'.join(lines))",
-        },
+        "header": True,
+        "all_varchar": True,
     })
 
     result = await engine.execute_single_node(node)
 
-    assert result.status == NodeStatus.ERROR
-    assert "Click Preprocess" in (result.error or "")
-
-
-@pytest.mark.asyncio
-async def test_execute_csv_source_with_reviewed_bash_preprocessing(engine, office365_csv_file):
-    node = _make_node("n1", NodeType.CSV_SOURCE, "csv_pre_sh", {
-        "file_path": office365_csv_file,
-        "original_filename": "office365.csv",
-        "preprocessing": {
-            "enabled": True,
-            "runtime": "bash",
-            "script": "tail -n +3 \"$1\"",
-        },
-    })
-    from app.services.csv_service import preview_preprocessed_csv_text
-    preview_preprocessed_csv_text(
-        engine.csv_artifact_store,
-        "n1",
-        office365_csv_file,
-        node.config["preprocessing"],
-    )
-    result = await engine.execute_single_node(node)
     assert result.status == NodeStatus.SUCCESS
     assert result.row_count == 2
     assert result.column_count == 3
@@ -219,15 +190,11 @@ async def test_execute_transform(engine, sample_csv_file):
 
 
 @pytest.mark.asyncio
-async def test_execute_pipeline_requires_reviewed_preprocess_for_csv_sources(engine, office365_csv_file):
+async def test_execute_pipeline_requires_reviewed_preprocess_for_csv_sources(engine, office365_csv_file, tmp_path):
     source = _make_node("src", NodeType.CSV_SOURCE, "src_preprocessed", {
         "file_path": office365_csv_file,
         "original_filename": "office365.csv",
-        "preprocessing": {
-            "enabled": True,
-            "runtime": "python",
-            "script": "import sys; from pathlib import Path; lines = Path(sys.argv[1]).read_text().splitlines()[2:]; sys.stdout.write('\\n'.join(lines))",
-        },
+        "preprocessing": {"enabled": True, "script_path": _write_preprocess_script(tmp_path)},
     })
     transform = _make_node("tx", NodeType.TRANSFORM, "tx_preprocessed", {
         "sql": "SELECT * FROM src_preprocessed WHERE id = 1"
@@ -240,17 +207,13 @@ async def test_execute_pipeline_requires_reviewed_preprocess_for_csv_sources(eng
 
 
 @pytest.mark.asyncio
-async def test_execute_pipeline_uses_reviewed_preprocess_for_csv_sources(engine, office365_csv_file):
+async def test_execute_pipeline_uses_reviewed_preprocess_for_csv_sources(engine, office365_csv_file, tmp_path):
     from app.services.csv_service import preview_preprocessed_csv_text
 
     source = _make_node("src", NodeType.CSV_SOURCE, "src_preprocessed", {
         "file_path": office365_csv_file,
         "original_filename": "office365.csv",
-        "preprocessing": {
-            "enabled": True,
-            "runtime": "python",
-            "script": "import sys; from pathlib import Path; lines = Path(sys.argv[1]).read_text().splitlines()[2:]; sys.stdout.write('\\n'.join(lines))",
-        },
+        "preprocessing": {"enabled": True, "script_path": _write_preprocess_script(tmp_path)},
     })
     preview_preprocessed_csv_text(
         engine.csv_artifact_store,
@@ -321,6 +284,7 @@ async def test_execute_db_source_oracle_fetchall_uses_fetch_config(engine):
         {"mode": "fetchall", "arraysize": 500, "prefetchrows": 10},
         node_id="oracle",
         cache_key=None,
+        into_memory=True,
     )
 
 
@@ -359,6 +323,7 @@ async def test_execute_db_source_oracle_fetchmany_loads_directly_into_duckdb(eng
         {"mode": "fetchmany", "arraysize": 1000, "prefetchrows": 2},
         node_id="oracle",
         cache_key=None,
+        into_memory=True,
     )
     fetch_query.assert_not_called()
 
@@ -392,6 +357,7 @@ async def test_execute_db_source_oracle_without_fetch_config_defaults_to_fetchal
         None,
         node_id="oracle",
         cache_key=None,
+        into_memory=True,
     )
     fetch_query.assert_not_called()
 

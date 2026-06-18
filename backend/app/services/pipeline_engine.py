@@ -113,6 +113,15 @@ class PipelineEngine:
                 )
             seen[node.table_name] = node.id
 
+    @staticmethod
+    def node_into_memory(node: NodeDefinition) -> bool:
+        """True when the node should load into the RAM-only scratch catalog.
+
+        Default is in-memory (the exploratory/draft mode); a node only persists
+        to the project file when its config explicitly sets load_mode=materialized.
+        """
+        return node.config.get("load_mode", "in_memory") != "materialized"
+
     def cached_result(self, node: NodeDefinition, cache_key: str | None) -> NodeExecutionResult | None:
         """Return the persisted result if the node's table is current, else None."""
         if node.type == NodeType.EXPORT or cache_key is None:
@@ -120,13 +129,18 @@ class PipelineEngine:
         meta = self.duckdb.get_node_meta(node.id)
         if meta is None or meta["status"] != "complete" or meta["cache_key"] != cache_key:
             return None
+        requested_location = "in_memory" if self.node_into_memory(node) else "materialized"
+        # A load-mode switch invalidates the cache: the table the user now wants
+        # lives in a different catalog (and an in-memory table is gone after a restart).
+        if meta.get("location") != requested_location:
+            return None
         if meta["table_name"] != node.table_name:
             # User renamed the output table; the data itself is still valid.
             try:
                 self.duckdb.rename_node_table(node.id, node.table_name)
             except Exception:
                 return None
-        if not self.duckdb.table_exists(node.table_name):
+        if not self.duckdb.table_exists(node.table_name, location=requested_location):
             return None
         return NodeExecutionResult(
             node_id=node.id,
@@ -266,6 +280,7 @@ class PipelineEngine:
         connection,
         cache_key: str | None,
         execution_controller: ExecutionController | None,
+        into_memory: bool = False,
     ) -> dict:
         if self.use_postgres_attach:
             def register_interrupt(interrupt):
@@ -280,6 +295,7 @@ class PipelineEngine:
                     self.duckdb,
                     node_id=node.id,
                     cache_key=cache_key,
+                    into_memory=into_memory,
                     register_interrupt=register_interrupt,
                 )
             except PostgresAttachUnavailable:
@@ -311,6 +327,7 @@ class PipelineEngine:
             df,
             node_id=node.id,
             cache_key=cache_key,
+            into_memory=into_memory,
         )
 
     async def _execute_node(
@@ -325,6 +342,7 @@ class PipelineEngine:
         start = time.time()
         effective_started_at = started_at or utc_now_iso()
         current_started_at = effective_started_at
+        into_memory = self.node_into_memory(node)
         try:
             if execution_controller is not None:
                 execution_controller.raise_if_cancelled()
@@ -337,28 +355,27 @@ class PipelineEngine:
                     node.config,
                     self.csv_artifact_store,
                     cache_key,
+                    into_memory,
                 )
             elif node.type == NodeType.EXCEL_SOURCE:
-                materialized_csv_path = str(node.config.get("materialized_csv_path", "")).strip()
                 selected_sheet = str(node.config.get("selected_sheet", "")).strip()
+                file_path = str(node.config.get("file_path", "")).strip()
                 if not selected_sheet:
                     raise ValueError("Excel source is missing a selected_sheet")
-                if not materialized_csv_path:
-                    raise ValueError("Excel source is missing a materialized_csv_path")
-                csv_config = {
-                    **node.config,
-                    "file_path": materialized_csv_path,
-                    "original_filename": node.config.get("materialized_csv_filename")
-                    or f"{selected_sheet}.csv",
-                }
+                if not file_path:
+                    raise ValueError("Excel source is missing a file_path")
+                cell_range = str(node.config.get("cell_range", "")).strip() or None
                 stats = await asyncio.to_thread(
-                    register_csv_source,
-                    self.duckdb,
-                    node.id,
+                    self.duckdb.register_excel,
                     node.table_name,
-                    csv_config,
-                    self.csv_artifact_store,
-                    cache_key,
+                    file_path,
+                    sheet=selected_sheet,
+                    cell_range=cell_range,
+                    header=bool(node.config.get("header", True)),
+                    all_varchar=bool(node.config.get("all_varchar", False)),
+                    node_id=node.id,
+                    cache_key=cache_key,
+                    into_memory=into_memory,
                 )
             elif node.type == NodeType.DB_SOURCE:
                 db_type = node.config.get("db_type", "postgres")
@@ -393,10 +410,11 @@ class PipelineEngine:
                             node.config.get("fetch_config"),
                             node_id=node.id,
                             cache_key=cache_key,
+                            into_memory=into_memory,
                         )
                     else:
                         stats = await self._load_postgres_node(
-                            node, connection, cache_key, execution_controller
+                            node, connection, cache_key, execution_controller, into_memory
                         )
                 finally:
                     if execution_controller is not None:
@@ -420,6 +438,7 @@ class PipelineEngine:
                         node.config["sql"],
                         node_id=node.id,
                         cache_key=cache_key,
+                        into_memory=into_memory,
                         register_interrupt=register_interrupt,
                     )
                 finally:
