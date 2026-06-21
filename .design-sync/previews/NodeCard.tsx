@@ -10,7 +10,11 @@ export function CsvSource() {
         tableName="sales_data"
         subtitle="sales_2024.csv"
         result={{ status: 'success', executionTimeMs: 320, rowCount: 15420, columnCount: 7 }}
-        actions={[{ label: 'Preview data' }]}
+        actions={[
+          { label: 'Preview data' },
+          { label: 'Load to memory' },
+          { label: 'Materialize', tone: 'muted' },
+        ]}
       />
     </div>
   )
@@ -46,7 +50,8 @@ export function Database() {
         result={{ status: 'success', cached: true, rowCount: 891230, columnCount: 12 }}
         actions={[
           { label: 'Preview' },
-          { label: 'Materialize' },
+          { label: 'Load to memory' },
+          { label: 'Materialize', tone: 'muted' },
           { label: 'View table', tone: 'muted' },
         ]}
       />
@@ -82,7 +87,10 @@ export function ExcelAndExport() {
           tableName="revenue"
           subtitle="Q4-report.xlsx · Sheet: Revenue"
           result={{ status: 'idle' }}
-          actions={[]}
+          actions={[
+            { label: 'Load to memory' },
+            { label: 'Materialize', tone: 'muted' },
+          ]}
         />
       </div>
       <div style={{ width: 240 }}>
