@@ -505,8 +505,11 @@ function hasDbSourceInputsChanged(
 ): boolean {
   if (node.type !== 'db_source' || !nextConfig) return false
 
-  const currentConfig = getNodeConfig(node)
-  const mergedConfig = { ...currentConfig, ...nextConfig }
+  // load_mode picks where the result lands (RAM vs disk), not what the query
+  // returns, so changing it must not invalidate the node's cache/result.
+  const stripLoadMode = ({ load_mode: _ignored, ...rest }: Record<string, unknown>) => rest
+  const currentConfig = stripLoadMode(getNodeConfig(node))
+  const mergedConfig = stripLoadMode({ ...getNodeConfig(node), ...nextConfig })
 
   return JSON.stringify(currentConfig) !== JSON.stringify(mergedConfig)
 }
@@ -1227,6 +1230,13 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     if (node) {
       const config = { ...((node.data as Record<string, unknown>).config as Record<string, unknown>), load_mode: loadMode }
       get().updateNodeData(nodeId, { config })
+    }
+    // If a live preview session is already open (DB sources), drain its existing
+    // cursor/buffer into the chosen catalog instead of re-running the query.
+    const live = get().livePreviewsByNodeId[nodeId]
+    if (live?.sessionId && !live.materializing) {
+      await get().materializeLivePreview(nodeId, loadMode === 'in_memory')
+      return
     }
     await get().executeSingleNode(nodeId, { loadPreviewOnSuccess: true, ...options })
   },

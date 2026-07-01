@@ -33,15 +33,26 @@ First upload (prior session) was blocked because it used `CLAUDE_CODE_OAUTH_TOKE
 
 ## Re-sync checklist
 
-1. `cp -r <skill-base>/package-build.mjs <skill-base>/package-validate.mjs <skill-base>/package-capture.mjs <skill-base>/lib <skill-base>/storybook .ds-sync/` (re-stage — takes seconds)
+**Config now lives at `.design-sync/config.json`** (moved 2026-06-21 from the legacy root `design-sync.config.json`). Pass it with `--config .design-sync/config.json`.
+
+1. `cp -r <skill-base>/package-build.mjs <skill-base>/package-validate.mjs <skill-base>/package-capture.mjs <skill-base>/resync.mjs <skill-base>/lib <skill-base>/storybook .ds-sync/` (re-stage — takes seconds)
 2. `cd .ds-sync && npm i esbuild ts-morph @types/react` (only if `.ds-sync/node_modules` missing)
-3. Install playwright if `~/.cache/ms-playwright/` missing: `cd .ds-sync && npm i playwright && node node_modules/.bin/playwright install chromium`
+3. Install playwright if chromium cache missing — **check `~/Library/Caches/ms-playwright/` on macOS, not `~/.cache/`** (chromium-1228 already cached as of this run): `cd .ds-sync && npm i playwright && node node_modules/.bin/playwright install chromium`
 4. Rebuild DS: `cd packages/design-system && npm run build`
-5. Run converter: `node .ds-sync/package-build.mjs --config design-sync.config.json --node-modules ./packages/design-system/node_modules --entry ./packages/design-system/dist/index.js --out ./ds-bundle`
-6. Fetch remote anchor: `DesignSync(get_file, path:"_ds_sync.json")` → save to `.design-sync/.cache/remote-sync.json`
-7. Run diff: `node .ds-sync/lib/remote-diff.mjs --local ./ds-bundle --remote .design-sync/.cache/remote-sync.json`
-8. Validate + capture only the `changed`/`added` partition
-9. Upload per §5 (full writes, `deletePaths` from diff)
+5. Fetch remote anchor: `DesignSync(get_file, path:"_ds_sync.json")` → save to `.design-sync/.cache/remote-sync.json`
+6. Run the driver (build → diff → validate → capture, one verdict JSON). Set `PLAYWRIGHT_BROWSERS_PATH="$HOME/Library/Caches/ms-playwright"` so it finds chromium:
+   `PLAYWRIGHT_BROWSERS_PATH="$HOME/Library/Caches/ms-playwright" node .ds-sync/resync.mjs --config .design-sync/config.json --node-modules ./packages/design-system/node_modules --entry ./packages/design-system/dist/index.js --out ./ds-bundle --remote .design-sync/.cache/remote-sync.json`
+7. Grade the verdict's `pendingGrade` cells from `ds-bundle/_screenshots/review/<group>__<Name>.png` → `.design-sync/.cache/review/<Name>.grade.json`.
+8. Validate the existing `conventions.md` against the fresh build (don't rewrite). Upload only if `upload.any` is true.
+9. Upload per §5 — **atomic path** (project is pinned + non-empty). Full writes; `deletes` verbatim from the verdict's `upload.deletePaths`. `finalize_plan` needs an **absolute** `localDir` (`/Users/.../shori/ds-bundle`) — a relative `./ds-bundle` gets double-resolved and ENOENTs.
+
+## Project has live design content — never blind-delete
+
+The Claude Design project (`1d1d05ce-...`) contains user/agent design work alongside the synced DS: `app/*.jsx`, `Shori Editor.html`, `uploads/*.png`, `screenshots/*.png`, `_adherence.oxlintrc.json`, `_ds_manifest.json`, `.thumbnail`. These are NOT produced by the converter. The anchored re-sync diff handles this correctly (`deletePaths` only lists removed/regrouped DS files), but **never hand-derive deletes from `list_files`** — that would wipe the design content.
+
+## Last re-sync (2026-06-21)
+
+NodeCard split-button + caret dropdown actions landed (commit 2550c12); NodeCard preview updated (24fd8f0) to pass multiple actions. Driver flagged only NodeCard changed (10 carried forward); all 5 cells re-graded `good`; render check clean (bad/thin/variantsIdentical all 0); `deletePaths` empty. Uploaded bundle + styling + NodeCard. conventions.md validated against the fresh build — no drift.
 
 ## Grid-overflow card modes (applied 2026-06-16)
 

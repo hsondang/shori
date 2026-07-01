@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { StatusBadge } from '../StatusBadge/StatusBadge'
 import type { NodeResultLike } from '../StatusBadge/status'
 
@@ -39,6 +40,109 @@ const KIND_LABEL: Record<NodeKind, string> = {
   db: 'Database Source',
   transform: 'Transform',
   export: 'Export',
+}
+
+/**
+ * A GitHub-style split button for a node's actions: the first action is the
+ * default primary button; the rest live behind a caret dropdown. The menu is
+ * portaled to <body> so it escapes the card's `overflow: hidden` and React
+ * Flow's transformed viewport, and closes on any outside interaction.
+ */
+function NodeActions({ actions }: { actions: NodeAction[] }) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState<{ top: number; left: number; minWidth: number } | null>(null)
+  const groupRef = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (groupRef.current?.contains(target) || menuRef.current?.contains(target)) return
+      setOpen(false)
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  if (actions.length === 0) return null
+
+  const [primary, ...rest] = actions
+
+  const runPrimary = (event: { stopPropagation: () => void }) => {
+    event.stopPropagation()
+    primary.onClick?.()
+  }
+
+  const toggleMenu = (event: { stopPropagation: () => void }) => {
+    event.stopPropagation()
+    if (!open && groupRef.current) {
+      const rect = groupRef.current.getBoundingClientRect()
+      // Clamp into the viewport so a card near an edge doesn't push the menu off-screen.
+      const menuWidth = Math.max(rect.width, 160)
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8))
+      setPos({ top: rect.bottom + 4, left, minWidth: rect.width })
+    }
+    setOpen((value) => !value)
+  }
+
+  return (
+    <div className="ds-node-card__actions">
+      <div className="ds-node-card__split" ref={groupRef}>
+        <button type="button" className="ds-node-card__btn ds-node-card__btn--primary" onClick={runPrimary}>
+          {primary.label}
+        </button>
+        {rest.length > 0 && (
+          <button
+            type="button"
+            className="ds-node-card__caret"
+            aria-haspopup="menu"
+            aria-expanded={open}
+            aria-label="More actions"
+            onClick={toggleMenu}
+          >
+            <span aria-hidden="true">▾</span>
+          </button>
+        )}
+      </div>
+
+      {open && pos && rest.length > 0 && createPortal(
+        <div
+          ref={menuRef}
+          role="menu"
+          className="ds-node-card__menu"
+          style={{ position: 'fixed', top: pos.top, left: pos.left, minWidth: pos.minWidth }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {rest.map((action, index) => (
+            <button
+              key={`${action.label}-${index}`}
+              type="button"
+              role="menuitem"
+              className={['ds-node-card__menu-item', action.tone === 'muted' ? 'is-muted' : '']
+                .filter(Boolean)
+                .join(' ')}
+              onClick={(event) => {
+                event.stopPropagation()
+                setOpen(false)
+                action.onClick?.()
+              }}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
+    </div>
+  )
 }
 
 /**
@@ -112,25 +216,7 @@ export function NodeCard({
           </button>
         )}
 
-        {actions.length > 0 && (
-          <div className="ds-node-card__actions">
-            {actions.map((action, index) => (
-              <button
-                key={`${action.label}-${index}`}
-                type="button"
-                className={['ds-node-card__action', action.tone === 'muted' ? 'is-muted' : '']
-                  .filter(Boolean)
-                  .join(' ')}
-                onClick={(event) => {
-                  event.stopPropagation()
-                  action.onClick?.()
-                }}
-              >
-                {action.label}
-              </button>
-            ))}
-          </div>
-        )}
+        <NodeActions actions={actions} />
       </div>
     </div>
   )
