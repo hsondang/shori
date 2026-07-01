@@ -2,7 +2,7 @@ import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { NodeCard } from '@shori/design-system'
 import { usePipelineStore } from '../../../store/pipelineStore'
 import NodeCacheChip from '../NodeCacheChip'
-import { toResultLike } from '../../../lib/dsStatus'
+import { deriveRunMode, toResultLike } from '../../../lib/dsStatus'
 import { getResultElapsedLabel } from '../../../lib/executionTiming'
 import type { CsvSourceConfig } from '../../../types/pipeline'
 
@@ -18,6 +18,7 @@ export default function CsvSourceNode({ id, data }: NodeProps) {
   const config = d.config as CsvSourceConfig
   const tableName = d.tableName as string
   const elapsed = result ? getResultElapsedLabel(result, executionClockNow) : null
+  const mode = deriveRunMode({ isLivePreviewOpening: false, loadMode: config.load_mode })
   const preprocessingPending = Boolean(config.preprocessing?.enabled)
   const actions = config.file_path
     ? [
@@ -39,7 +40,7 @@ export default function CsvSourceNode({ id, data }: NodeProps) {
         title={(d.label as string) || 'CSV Source'}
         tableName={tableName}
         subtitle={config.original_filename || undefined}
-        result={result ? toResultLike(result, elapsed) : undefined}
+        result={result ? toResultLike(result, elapsed, mode) : undefined}
         onSelect={() => setSelectedNodeId(id)}
         onViewError={result?.status === 'error' ? () => openNodeError(id) : undefined}
         actions={actions}

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link, useLocation } from 'react-router-dom'
 import { usePipelineStore } from '../../store/pipelineStore'
 import { getRunElapsedLabel } from '../../lib/executionTiming'
 import type { NodeType } from '../../types/pipeline'
@@ -14,6 +15,7 @@ const nodeTypeOptions: { type: NodeType; label: string; color: string }[] = [
 ]
 
 export default function Toolbar() {
+  const pipelineId = usePipelineStore((s) => s.pipelineId)
   const pipelineName = usePipelineStore((s) => s.pipelineName)
   const hasUnsavedChanges = usePipelineStore((s) => s.hasUnsavedChanges)
   const setPipelineName = usePipelineStore((s) => s.setPipelineName)
@@ -24,6 +26,8 @@ export default function Toolbar() {
   const savePipeline = usePipelineStore((s) => s.savePipeline)
   const [saving, setSaving] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const location = useLocation()
+  const onNodeStateRoute = location.pathname.endsWith('/node-state')
   const activePipelineExecution = activePipelineExecutionId
     ? activeExecutions[activePipelineExecutionId] ?? null
     : null
@@ -75,6 +79,12 @@ export default function Toolbar() {
       <DatabaseSourcePicker />
 
       <div className="h-6 w-px bg-gray-300" />
+      <Link
+        to={onNodeStateRoute ? `/projects/${pipelineId}` : `/projects/${pipelineId}/node-state`}
+        className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-50"
+      >
+        {onNodeStateRoute ? 'Canvas' : 'Node state'}
+      </Link>
       <button onClick={handleSave} disabled={saving} className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50">
         {saving ? 'Saving...' : 'Save'}
       </button>

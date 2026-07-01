@@ -5,6 +5,9 @@ import {
   Switch,
   StatusBadge,
   NodeCard,
+  DataStateDots,
+  NodeStateTable,
+  LoadDestinationDialog,
   DockPanel,
   Modal,
   Toolbar,
@@ -16,6 +19,9 @@ import {
   type ButtonSize,
   type NodeResultLike,
   type ToolbarChipAccent,
+  type NodeStateRow,
+  type LoadDestinationCandidate,
+  type LoadDestination,
 } from '../src'
 import '../src/styles.css'
 
@@ -168,6 +174,63 @@ function ModalDemo() {
   )
 }
 
+const NODE_STATE_ROWS: NodeStateRow[] = [
+  {
+    id: 'n1', kind: 'csv', name: 'Sales Export', result: RESULTS.success,
+    python: undefined, memory: 'empty', disk: 'fresh',
+    schema: 'main', table: 'sales_data', rowCount: 15420,
+    createdAtLabel: 'Oct 2, 2024', updatedAtLabel: '3d ago', lastRunLabel: '3d',
+  },
+  {
+    id: 'n2', kind: 'excel', name: 'Regional Targets', result: RESULTS.idle,
+    python: undefined, memory: 'empty', disk: 'empty',
+    schema: null, table: 'targets', rowCount: null,
+    createdAtLabel: 'Oct 7, 2024', updatedAtLabel: '—', lastRunLabel: 'Never',
+  },
+  {
+    id: 'n3', kind: 'db', name: 'Production DB', result: RESULTS.cached,
+    python: 'live', memory: 'empty', disk: 'empty',
+    schema: null, table: 'orders', rowCount: 10000,
+    createdAtLabel: 'Sep 18, 2024', updatedAtLabel: '12m ago', lastRunLabel: '12m',
+  },
+  {
+    id: 'n4', kind: 'transform', name: 'Revenue by Region', result: RESULTS.success,
+    python: 'live', memory: 'stale', disk: 'empty',
+    schema: 'memory', table: 'revenue_by_region', rowCount: 5,
+    createdAtLabel: 'Oct 5, 2024', updatedAtLabel: '2m ago', lastRunLabel: '18m',
+  },
+  {
+    id: 'n5', kind: 'export', name: 'Quarterly Report', result: RESULTS.success,
+    python: undefined, memory: 'empty', disk: 'empty',
+    schema: null, table: null, rowCount: 5,
+    createdAtLabel: 'Oct 8, 2024', updatedAtLabel: '1h ago', lastRunLabel: '1h',
+  },
+]
+
+function LoadDestinationDialogDemo() {
+  const [open, setOpen] = useState(false)
+  const candidates: LoadDestinationCandidate[] = [
+    { nodeId: 'a', label: 'Customers (Postgres)', tableName: 'node_pg_customers' },
+    { nodeId: 'b', label: 'Orders (CSV)', tableName: 'node_csv_orders' },
+  ]
+  const [choices, setChoices] = useState<Record<string, LoadDestination>>({ a: 'in_memory', b: 'in_memory' })
+
+  return (
+    <div className="row">
+      <Button onClick={() => setOpen(true)}>Open load-destination prompt</Button>
+      <LoadDestinationDialog
+        open={open}
+        candidates={candidates}
+        choices={choices}
+        onChoiceChange={(nodeId, mode) => setChoices((c) => ({ ...c, [nodeId]: mode }))}
+        onApplyToAll={(mode) => setChoices(Object.fromEntries(candidates.map((c) => [c.nodeId, mode])))}
+        onConfirm={() => setOpen(false)}
+        onCancel={() => setOpen(false)}
+      />
+    </div>
+  )
+}
+
 const CHIP_ACCENTS: { accent: ToolbarChipAccent; label: string }[] = [
   { accent: 'csv', label: 'CSV Source' },
   { accent: 'excel', label: 'Excel Source' },
@@ -267,6 +330,46 @@ function Gallery() {
               </Swatch>
             ))}
           </div>
+        </div>
+      </Section>
+
+      <Section title="StatusBadge — run modes (Loading / Materializing / Live preview)">
+        <div className="panel">
+          <div className="row">
+            <Swatch label="load"><StatusBadge result={{ status: 'running', mode: 'load', elapsedLabel: '2s' }} /></Swatch>
+            <Swatch label="materialize"><StatusBadge result={{ status: 'running', mode: 'materialize', elapsedLabel: '2s' }} /></Swatch>
+            <Swatch label="preview"><StatusBadge result={{ status: 'running', mode: 'preview' }} /></Swatch>
+            <Swatch label="running (no mode)"><StatusBadge result={{ status: 'running', elapsedLabel: '2s' }} /></Swatch>
+          </div>
+        </div>
+      </Section>
+
+      <Section title="DataStateDots — live · in-memory · materialized (spec §7)">
+        <div className="panel">
+          <div className="row">
+            <Swatch label="new (DB, all empty)"><DataStateDots python="empty" memory="empty" disk="empty" /></Swatch>
+            <Swatch label="live preview"><DataStateDots python="live" memory="empty" disk="empty" /></Swatch>
+            <Swatch label="in memory"><DataStateDots python="empty" memory="fresh" disk="empty" /></Swatch>
+            <Swatch label="materialized"><DataStateDots python="empty" memory="empty" disk="fresh" /></Swatch>
+            <Swatch label="both fresh + live"><DataStateDots python="live" memory="fresh" disk="fresh" /></Swatch>
+            <Swatch label="mem stale, disk fresh"><DataStateDots python="empty" memory="stale" disk="fresh" /></Swatch>
+            <Swatch label="both stale"><DataStateDots python="empty" memory="stale" disk="stale" /></Swatch>
+            <Swatch label="loading → mem"><DataStateDots python="empty" memory="loading" disk="empty" /></Swatch>
+            <Swatch label="no preview (CSV/Excel)"><DataStateDots memory="fresh" disk="empty" /></Swatch>
+          </div>
+          <div className="row" style={{ marginTop: 12 }}>
+            <DataStateDots python="live" memory="fresh" disk="stale" showLabels />
+          </div>
+        </div>
+      </Section>
+
+      <Section title="NodeStateTable — node-state overview (docs/node-state-model.md)">
+        <NodeStateTable rows={NODE_STATE_ROWS} />
+      </Section>
+
+      <Section title="LoadDestinationDialog — batched load/materialize prompt (spec §6)">
+        <div className="panel">
+          <LoadDestinationDialogDemo />
         </div>
       </Section>
 

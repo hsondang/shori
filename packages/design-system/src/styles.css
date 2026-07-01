@@ -33,6 +33,12 @@
   --ds-status-error-bg: #fee2e2;     --ds-status-error-fg: #b91c1c;
   --ds-status-cancelled-bg: #e7e5e4; --ds-status-cancelled-fg: #44403c;
 
+  /* ---- Data-state dots (per storage location; docs/node-state-model.md §7) ---- */
+  --ds-data-python: #22c55e;   /* green-500  — live preview (Python memory) */
+  --ds-data-memory: #eab308;   /* yellow-500 — DuckDB in-memory */
+  --ds-data-disk:   #f97316;   /* orange-500 — DuckDB materialized (on disk) */
+  --ds-data-empty:  #d6d3d1;   /* stone-300  — no data */
+
   /* ---- Node accents (header fill + action-link text) ---- */
   --ds-accent-oracle: #fb923c;       --ds-accent-oracle-text: #ea580c;
   --ds-accent-postgres: #2dd4bf;     --ds-accent-postgres-text: #0d9488;
@@ -194,6 +200,37 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
 }
+
+/* =========================================================================
+   DataStateDots — three per-location dots (live · in-memory · materialized)
+   ========================================================================= */
+
+.ds-datadots { display: inline-flex; align-items: center; gap: 10px; font-family: var(--ds-font-sans); }
+.ds-datadots__slot { display: inline-flex; align-items: center; gap: 5px; }
+
+.ds-datadots__dot {
+  width: 9px; height: 9px; box-sizing: border-box;
+  border-radius: var(--ds-radius-pill);
+  background: var(--ds-data-empty);
+  display: inline-block;
+}
+.ds-datadots__dot.is-empty { background: var(--ds-data-empty); }
+
+/* Present: solid location hue. */
+.ds-datadots__dot--python.is-live   { background: var(--ds-data-python); box-shadow: 0 0 0 2px color-mix(in srgb, var(--ds-data-python) 28%, transparent); }
+.ds-datadots__dot--memory.is-fresh  { background: var(--ds-data-memory); }
+.ds-datadots__dot--disk.is-fresh    { background: var(--ds-data-disk); }
+
+/* Loading: hue + pulse. */
+.ds-datadots__dot--memory.is-loading { background: var(--ds-data-memory); animation: ds-pulse 1.1s ease-in-out infinite; }
+.ds-datadots__dot--disk.is-loading   { background: var(--ds-data-disk);   animation: ds-pulse 1.1s ease-in-out infinite; }
+
+/* Stale: hollow with a dashed ring in the location hue — never opacity (a11y). */
+.ds-datadots__dot--memory.is-stale { background: transparent; border: 2px dashed var(--ds-data-memory); }
+.ds-datadots__dot--disk.is-stale   { background: transparent; border: 2px dashed var(--ds-data-disk); }
+
+.ds-datadots__na { width: 9px; text-align: center; color: var(--ds-color-text-subtle); font-size: 11px; line-height: 1; }
+.ds-datadots__label { font-size: 10px; color: var(--ds-color-text-muted); }
 
 /* =========================================================================
    NodeCard
@@ -615,3 +652,151 @@
   background: var(--ds-color-surface);
   font-family: var(--ds-font-mono);
 }
+
+/* =========================================================================
+   NodeStateTable
+   ========================================================================= */
+
+.ds-node-state {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  font-family: var(--ds-font-sans);
+  background: var(--ds-color-surface);
+  border: 1px solid var(--ds-color-border);
+  border-radius: var(--ds-radius-lg);
+  overflow: hidden;
+}
+
+.ds-node-state__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-space-3);
+  padding: var(--ds-space-3) var(--ds-space-4);
+  border-bottom: 1px solid var(--ds-color-border);
+  background: var(--ds-color-surface-muted);
+  font-size: var(--ds-text-sm);
+  color: var(--ds-color-text-muted);
+}
+
+.ds-node-state__summary-item { display: inline-flex; align-items: center; gap: 6px; }
+.ds-node-state__summary-item--strong { font-weight: 600; color: var(--ds-color-text); }
+.ds-node-state__summary-item--stale { color: var(--ds-status-running-fg); font-weight: 500; }
+.ds-node-state__summary-dot { width: 3px; height: 3px; border-radius: 999px; background: var(--ds-color-border-strong); }
+
+.ds-node-state__scroll { flex: 1; min-height: 0; overflow: auto; }
+
+.ds-node-state__table { width: 100%; border-collapse: collapse; font-size: var(--ds-text-xs); }
+
+.ds-node-state__table thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--ds-color-surface-muted);
+}
+
+.ds-node-state__table th {
+  padding: 6px var(--ds-space-3);
+  border-bottom: 1px solid var(--ds-color-border);
+  text-align: left;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ds-color-text-subtle);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ds-node-state__table td {
+  padding: 6px var(--ds-space-3);
+  border-bottom: 1px solid var(--ds-color-border);
+  color: var(--ds-color-text);
+  white-space: nowrap;
+}
+
+.ds-node-state__table tr.is-clickable { cursor: pointer; }
+.ds-node-state__table tbody tr:hover { background: #f8fafc; }
+
+.ds-node-state__type { font-size: 15px; }
+.ds-node-state__name { font-weight: 500; }
+.ds-node-state__mono { font-family: var(--ds-font-mono); color: var(--ds-color-text-muted); font-size: 11px; }
+.ds-node-state__num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.ds-node-state__empty {
+  padding: var(--ds-space-5) var(--ds-space-3);
+  text-align: center;
+  color: var(--ds-color-text-subtle);
+}
+
+.ds-node-state__footnote {
+  padding: var(--ds-space-2) var(--ds-space-4);
+  border-top: 1px solid var(--ds-color-border);
+  font-size: 11px;
+  color: var(--ds-color-text-subtle);
+}
+
+/* =========================================================================
+   LoadDestinationDialog
+   ========================================================================= */
+
+.ds-load-dest__all {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-space-2);
+  margin-bottom: var(--ds-space-4);
+  font-size: var(--ds-text-xs);
+}
+
+.ds-load-dest__all-label { color: var(--ds-color-text-subtle); margin-right: 2px; }
+
+.ds-load-dest__all-btn {
+  border: 1px solid var(--ds-color-border-strong);
+  background: var(--ds-color-surface);
+  border-radius: var(--ds-radius-sm);
+  padding: 3px 10px;
+  font-size: var(--ds-text-xs);
+  color: var(--ds-color-text-muted);
+  cursor: pointer;
+}
+.ds-load-dest__all-btn:hover { background: var(--ds-color-surface-muted); color: var(--ds-color-text); }
+
+.ds-load-dest__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ds-space-2); }
+
+.ds-load-dest__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-space-4);
+  padding: var(--ds-space-3);
+  border: 1px solid var(--ds-color-border);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-color-surface-muted);
+}
+
+.ds-load-dest__row-info { min-width: 0; }
+.ds-load-dest__row-label { font-size: var(--ds-text-sm); font-weight: 500; color: var(--ds-color-text); }
+.ds-load-dest__row-table { font-family: var(--ds-font-mono); font-size: 11px; color: var(--ds-color-text-subtle); }
+
+.ds-load-dest__segment {
+  display: inline-flex;
+  border: 1px solid var(--ds-color-border-strong);
+  border-radius: var(--ds-radius-sm);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.ds-load-dest__seg-btn {
+  border: none;
+  background: var(--ds-color-surface);
+  padding: 5px 12px;
+  font-size: var(--ds-text-xs);
+  font-weight: 500;
+  color: var(--ds-color-text-muted);
+  cursor: pointer;
+}
+.ds-load-dest__seg-btn + .ds-load-dest__seg-btn { border-left: 1px solid var(--ds-color-border-strong); }
+.ds-load-dest__seg-btn:hover { background: var(--ds-color-surface-muted); }
+.ds-load-dest__seg-btn.is-active { background: var(--ds-color-primary); color: var(--ds-color-on-primary); }

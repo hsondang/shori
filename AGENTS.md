@@ -6,6 +6,8 @@ Guide for AI coding agents working in this repository. For human-oriented setup 
 
 Shori is a visual data pipeline builder for data wrangling. Users construct pipelines as node graphs in the browser — CSV / PostgreSQL / Oracle sources feed SQL transforms feed exports. The backend executes the graph in an in-memory DuckDB instance and streams per-node status back to the UI.
 
+> **Authority on node state:** a node's *run status*, *script state*, and *data state* (in-memory / materialized / live preview, plus freshness) are defined canonically in [docs/node-state-model.md](docs/node-state-model.md). Read it before touching node status, cache status, load modes, the node-state view, or the data-preview panel — it exists specifically to stop these concepts from drifting.
+
 ## Tech Stack
 
 - **Backend** — Python 3.11+, FastAPI, DuckDB (in-memory), `asyncpg` (Postgres), `oracledb` Thick mode, pandas
@@ -66,7 +68,7 @@ shori/
   - `data.py` — Table preview, CSV-source preview (raw and preprocessed), CSV export
   - `settings.py` — Global database connections CRUD
   - `upload.py` — CSV upload, Postgres/Oracle connection-test endpoints
-- **Models** ([backend/app/models/pipeline.py](backend/app/models/pipeline.py)): `NodeType` (CSV_SOURCE, DB_SOURCE, TRANSFORM, EXPORT), `NodeStatus`, `NodeDefinition`, `PipelineDefinition`, `NodeExecutionResult`, `ExecutionRunStatus`, plus `SavedPostgresConnection` / `SavedOracleConnection` (discriminated by `db_type`).
+- **Models** ([backend/app/models/pipeline.py](backend/app/models/pipeline.py)): `NodeType` (CSV_SOURCE, DB_SOURCE, TRANSFORM, EXPORT), `NodeStatus`, `NodeDefinition`, `PipelineDefinition`, `NodeExecutionResult`, `ExecutionRunStatus`, plus `SavedPostgresConnection` / `SavedOracleConnection` (discriminated by `db_type`). The state enums here (`NodeStatus`, `NodeLoadMode`, `NodeLifecycle`) are governed by [docs/node-state-model.md](docs/node-state-model.md) — that doc is the source of truth for their meaning and transitions.
 
 ## Frontend Architecture
 
@@ -98,6 +100,7 @@ shori/
 
 ## Where to Look Next
 
+- **Node run status / data state / location semantics (canonical) → [docs/node-state-model.md](docs/node-state-model.md)**
 - Setup commands and usage walkthrough → [README.md](README.md)
 - Test database design (Docker setup, schema, seed data) → [docs/setup-test-db-design.md](docs/setup-test-db-design.md)
 - Pipeline data shapes → [backend/app/models/pipeline.py](backend/app/models/pipeline.py)

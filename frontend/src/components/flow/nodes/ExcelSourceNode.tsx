@@ -2,7 +2,7 @@ import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { NodeCard } from '@shori/design-system'
 import { usePipelineStore } from '../../../store/pipelineStore'
 import NodeCacheChip from '../NodeCacheChip'
-import { toResultLike } from '../../../lib/dsStatus'
+import { deriveRunMode, toResultLike } from '../../../lib/dsStatus'
 import { getResultElapsedLabel } from '../../../lib/executionTiming'
 import type { ExcelSourceConfig } from '../../../types/pipeline'
 
@@ -18,6 +18,7 @@ export default function ExcelSourceNode({ id, data }: NodeProps) {
   const config = d.config as ExcelSourceConfig
   const tableName = d.tableName as string
   const elapsed = result ? getResultElapsedLabel(result, executionClockNow) : null
+  const mode = deriveRunMode({ isLivePreviewOpening: false, loadMode: config.load_mode })
   const subtitle = [
     config.original_filename,
     config.selected_sheet ? `Sheet: ${config.selected_sheet}` : null,
@@ -44,7 +45,7 @@ export default function ExcelSourceNode({ id, data }: NodeProps) {
         title={(d.label as string) || 'Excel Source'}
         tableName={tableName}
         subtitle={subtitle}
-        result={result ? toResultLike(result, elapsed) : undefined}
+        result={result ? toResultLike(result, elapsed, mode) : undefined}
         onSelect={() => setSelectedNodeId(id)}
         onViewError={result?.status === 'error' ? () => openNodeError(id) : undefined}
         actions={actions}

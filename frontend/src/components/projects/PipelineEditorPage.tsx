@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent } from 'react'
 import { useParams } from 'react-router-dom'
+import { LoadDestinationDialog } from '@shori/design-system'
 import FlowCanvas from '../flow/FlowCanvas'
 import NodeErrorDialog from '../flow/NodeErrorDialog'
 import NodeConfigPanel from '../panels/NodeConfigPanel'
@@ -18,6 +19,11 @@ export default function PipelineEditorPage() {
   const { projectId } = useParams()
   const pipelineId = usePipelineStore((s) => s.pipelineId)
   const loadPipeline = usePipelineStore((s) => s.loadPipeline)
+  const loadDestinationPrompt = usePipelineStore((s) => s.loadDestinationPrompt)
+  const setLoadDestinationChoice = usePipelineStore((s) => s.setLoadDestinationChoice)
+  const applyLoadDestinationChoiceToAll = usePipelineStore((s) => s.applyLoadDestinationChoiceToAll)
+  const confirmLoadDestinationPrompt = usePipelineStore((s) => s.confirmLoadDestinationPrompt)
+  const cancelLoadDestinationPrompt = usePipelineStore((s) => s.cancelLoadDestinationPrompt)
   const [status, setStatus] = useState<'loading' | 'ready' | 'missing'>('loading')
   const [previewCollapsed, setPreviewCollapsed] = useState(false)
   const [previewHeightPx, setPreviewHeightPx] = useState(DEFAULT_PREVIEW_HEIGHT_PX)
@@ -218,6 +224,15 @@ export default function PipelineEditorPage() {
       </section>
       <NodeEditorModal />
       <NodeErrorDialog />
+      <LoadDestinationDialog
+        open={Boolean(loadDestinationPrompt)}
+        candidates={loadDestinationPrompt?.candidates ?? []}
+        choices={loadDestinationPrompt?.choices ?? {}}
+        onChoiceChange={setLoadDestinationChoice}
+        onApplyToAll={applyLoadDestinationChoiceToAll}
+        onConfirm={() => { void confirmLoadDestinationPrompt() }}
+        onCancel={cancelLoadDestinationPrompt}
+      />
     </div>
   )
 }

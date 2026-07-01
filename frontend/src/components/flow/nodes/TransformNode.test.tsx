@@ -52,6 +52,7 @@ beforeEach(() => {
   act(() => usePipelineStore.setState({
     nodeResults: {},
     runTransformPreview: vi.fn(),
+    startLivePreview: vi.fn(),
   }))
 })
 
@@ -83,19 +84,32 @@ describe('TransformNode', () => {
     expect(screen.getByText('tx_table')).toBeInTheDocument()
   })
 
-  it('renders Run and Preview for transform nodes', () => {
+  it('renders Preview as the primary action for transform nodes', () => {
     render(<TransformNode {...makeProps(SHORT_SQL)} />)
-    expect(screen.getByRole('button', { name: 'Run and Preview' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Preview' })).toBeInTheDocument()
   })
 
-  it('invokes the shared transform preview action', async () => {
+  it('invokes the live preview action from the primary button', async () => {
+    const user = userEvent.setup()
+    const startLivePreview = vi.fn()
+    act(() => usePipelineStore.setState({ startLivePreview }))
+
+    render(<TransformNode {...makeProps(SHORT_SQL)} />)
+
+    await user.click(screen.getByRole('button', { name: 'Preview' }))
+
+    expect(startLivePreview).toHaveBeenCalledWith('tx-1')
+  })
+
+  it('invokes the shared transform preview action from the dropdown', async () => {
     const user = userEvent.setup()
     const runTransformPreview = vi.fn()
     act(() => usePipelineStore.setState({ runTransformPreview }))
 
     render(<TransformNode {...makeProps(SHORT_SQL)} />)
 
-    await user.click(screen.getByRole('button', { name: 'Run and Preview' }))
+    await user.click(screen.getByRole('button', { name: 'More actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Run and Preview' }))
 
     expect(runTransformPreview).toHaveBeenCalledWith('tx-1')
   })
@@ -103,8 +117,8 @@ describe('TransformNode', () => {
   it('keeps Preview data gated on successful execution', async () => {
     const user = userEvent.setup()
     const { rerender } = render(<TransformNode {...makeProps(SHORT_SQL)} />)
-    // Before success there's only the primary action, so no dropdown caret.
-    expect(screen.queryByRole('button', { name: 'More actions' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'More actions' }))
     expect(screen.queryByRole('menuitem', { name: 'Preview data' })).not.toBeInTheDocument()
 
     act(() => usePipelineStore.setState({
@@ -116,7 +130,6 @@ describe('TransformNode', () => {
     rerender(<TransformNode {...makeProps(SHORT_SQL)} />)
 
     // On success "Preview data" appears in the split-button dropdown.
-    await user.click(screen.getByRole('button', { name: 'More actions' }))
     expect(screen.getByRole('menuitem', { name: 'Preview data' })).toBeInTheDocument()
   })
 })

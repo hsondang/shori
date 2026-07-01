@@ -54,7 +54,7 @@ async def test_execute_single_global_db_node_resolves_saved_connection(client, m
     connection = create_resp.json()
     captured = {}
 
-    async def fake_execute_single_node(self, node, cache_key=None, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
+    async def fake_execute_single_node(self, node, cache_key=None, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None, upstream_resolution=None):
         captured["node"] = node
         return NodeExecutionResult(node_id=node.id, status=NodeStatus.SUCCESS)
 
@@ -195,7 +195,7 @@ async def test_execute_cycle_returns_error(client, sample_csv_file):
 async def test_start_node_execution_returns_terminal_snapshot_when_run_finishes_before_response(client, pipeline_def, monkeypatch):
     node = pipeline_def["nodes"][0]
 
-    async def fake_execute_single_node(self, node, cache_key=None, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
+    async def fake_execute_single_node(self, node, cache_key=None, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None, upstream_resolution=None):
         started_at = "2026-04-08T10:00:00+00:00"
         if on_node_start is not None:
             on_node_start(node.id, started_at)
@@ -239,7 +239,7 @@ async def test_start_db_node_execution_shows_connecting_then_running(client, mon
         },
     }
 
-    async def fake_execute_single_node(self, node, cache_key=None, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
+    async def fake_execute_single_node(self, node, cache_key=None, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None, upstream_resolution=None):
         connect_started = "2026-04-08T10:00:00+00:00"
         query_started = "2026-04-08T10:00:02+00:00"
         if on_node_start is not None:
@@ -308,7 +308,7 @@ async def test_start_db_node_execution_reports_connect_failure(client, monkeypat
         },
     }
 
-    async def fake_execute_single_node(self, node, cache_key=None, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
+    async def fake_execute_single_node(self, node, cache_key=None, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None, upstream_resolution=None):
         connect_started = "2026-04-08T10:00:00+00:00"
         if on_node_start is not None:
             on_node_start(node.id, connect_started)
@@ -448,7 +448,7 @@ async def test_abort_db_node_execution_returns_cancelled_snapshot(client, monkey
     running = asyncio.Event()
     release = asyncio.Event()
 
-    async def fake_execute_single_node(self, node, cache_key=None, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None):
+    async def fake_execute_single_node(self, node, cache_key=None, force_refresh=False, on_node_start=None, on_node_finish=None, on_node_update=None, execution_controller=None, upstream_resolution=None):
         connect_started = "2026-04-08T10:00:00+00:00"
         query_started = "2026-04-08T10:00:02+00:00"
         if on_node_start is not None:
@@ -584,11 +584,16 @@ async def test_cache_status_lifecycle(client, pipeline_def):
     )
     assert run_resp.json()["status"] == "success"
 
-    # After a run with the same config: fresh.
+    # After a run with the same config: fresh (default load mode is in-memory).
     resp = await client.post("/api/execute/cache-status", json=pipeline_def)
     body = resp.json()["nodes"]["node-1"]
     assert body["state"] == "fresh"
     assert body["row_count"] == 5
+    # Per-location view: the in-memory copy is present and fresh.
+    assert body["locations"]["in_memory"]["state"] == "fresh"
+    assert body["locations"]["in_memory"]["present"] is True
+    assert "materialized" not in body["locations"]
+    assert body["lifecycle"] == "in_memory"
 
     # Changing the node's config makes it stale.
     changed = {

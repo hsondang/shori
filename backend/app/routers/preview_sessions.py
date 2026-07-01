@@ -13,7 +13,7 @@ from app.models.pipeline import (
 from app.services.cache_keys import compute_cache_keys
 from app.services.connection_resolution import resolve_pipeline_connections
 from app.services.execution_registry import ExecutionCancelled
-from app.services.preview_sessions import PreviewSessionNotFound
+from app.services.preview_sessions import PreviewSession, PreviewSessionNotFound
 from app.storage.pipeline_store import PipelineStore
 
 router = APIRouter()
@@ -32,6 +32,27 @@ def _get_sessions(request: Request):
     return request.app.state.preview_sessions
 
 
+def _transform_upstream_gate(pipeline, node_id, cache_keys, manager):
+    """Resolve each direct upstream of a transform to its consumable copy, and
+    collect any upstream with no present copy so the caller can tell the user to
+    load/materialize it first. Returns (resolution, missing_table_names)."""
+    node_map = {n.id: n for n in pipeline.nodes}
+    resolution: dict[str, str] = {}
+    missing: list[str] = []
+    for edge in pipeline.edges:
+        if edge.target != node_id:
+            continue
+        upstream = node_map.get(edge.source)
+        if upstream is None:
+            continue
+        location = manager.consumable_location(edge.source, cache_keys.get(edge.source))
+        if location is None:
+            missing.append(upstream.table_name)
+        else:
+            resolution[upstream.table_name] = location
+    return resolution, missing
+
+
 @router.post("/start")
 async def start_preview_session(payload: PreviewSessionStartRequest, request: Request):
     store = PipelineStore()
@@ -40,25 +61,63 @@ async def start_preview_session(payload: PreviewSessionStartRequest, request: Re
     node = node_map.get(payload.node_id)
     if node is None:
         raise HTTPException(status_code=404, detail="Node not found in pipeline")
-    if node.type != NodeType.DB_SOURCE:
-        raise HTTPException(status_code=400, detail="Live preview is only available for database source nodes")
 
-    cache_key = compute_cache_keys(pipeline).get(node.id)
+    cache_keys = compute_cache_keys(pipeline)
     settings = pipeline.settings
-    # Touch the project db so the project id is validated before we connect.
-    request.app.state.project_dbs.get(pipeline.id)
-    try:
-        return await _get_sessions(request).start(
-            project_id=pipeline.id,
-            node=node,
-            cache_key=cache_key,
-            chunk_rows=settings.preview_chunk_rows,
-            max_buffer_rows=settings.preview_max_buffer_rows,
-            ttl_seconds=settings.preview_session_ttl_seconds,
-            max_connections_per_database=settings.max_connections_per_database,
+    # Touch the project db so the project id is validated up front.
+    manager = request.app.state.project_dbs.get(pipeline.id)
+
+    if node.type == NodeType.DB_SOURCE:
+        try:
+            return await _get_sessions(request).start(
+                project_id=pipeline.id,
+                node=node,
+                cache_key=cache_keys.get(node.id),
+                chunk_rows=settings.preview_chunk_rows,
+                max_buffer_rows=settings.preview_max_buffer_rows,
+                ttl_seconds=settings.preview_session_ttl_seconds,
+                max_connections_per_database=settings.max_connections_per_database,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Unable to start preview: {exc}") from exc
+
+    if node.type == NodeType.TRANSFORM:
+        sql = (node.config or {}).get("sql")
+        if not sql or not str(sql).strip():
+            raise HTTPException(status_code=400, detail="Transform has no SQL to preview")
+        # Gate on upstream availability: the SQL reads upstream tables, so every
+        # upstream needs a consumable (in-memory or materialized) copy first.
+        resolution, missing = await asyncio.to_thread(
+            _transform_upstream_gate, pipeline, node.id, cache_keys, manager
         )
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Unable to start preview: {exc}") from exc
+        if missing:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "upstreams_unavailable",
+                    "message": "Some upstream tables are not loaded or materialized yet.",
+                    "missing_tables": missing,
+                },
+            )
+        try:
+            return await _get_sessions(request).start_transform(
+                project_id=pipeline.id,
+                node=node,
+                cache_key=cache_keys.get(node.id),
+                duckdb=manager,
+                sql=sql,
+                upstream_resolution=resolution,
+                chunk_rows=settings.preview_chunk_rows,
+                max_buffer_rows=settings.preview_max_buffer_rows,
+                ttl_seconds=settings.preview_session_ttl_seconds,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Unable to start preview: {exc}") from exc
+
+    raise HTTPException(
+        status_code=400,
+        detail="Live preview is only available for database source and transform nodes",
+    )
 
 
 @router.post("/{session_id}/fetch")
@@ -82,6 +141,15 @@ async def materialize_preview_session(session_id: str, request: Request, into_me
         session = await sessions.get_session(session_id)
     except PreviewSessionNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if not isinstance(session, PreviewSession):
+        # A transform's DuckDB preview is view-only (see DuckDBPreviewSession):
+        # promoting it re-runs the node through the normal load/materialize path
+        # instead of draining a buffer, so this endpoint doesn't apply to it.
+        raise HTTPException(
+            status_code=400,
+            detail="This preview session is view-only; load or materialize the node directly instead.",
+        )
 
     manager = request.app.state.project_dbs.get(session.project_id)
     registry = request.app.state.execution_registry

@@ -16,7 +16,12 @@ from uuid import uuid4
 import pandas as pd
 
 from app.models.pipeline import NodeDefinition
-from app.services.duckdb_manager import _json_safe_value
+from app.services.duckdb_manager import (
+    LOCATION_MEMORY,
+    _json_safe_value,
+    _qualified,
+    _quote_identifier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +182,115 @@ class PreviewSession:
         return [[_json_safe_value(value) for value in row] for row in rows]
 
 
+class DuckDBPreviewSession:
+    """DBeaver-style live preview for a transform node, backed by a held DuckDB
+    cursor over the node's SQL.
+
+    Upstream reads are pinned to the precedence-chosen copy via connection-local
+    ``CREATE TEMP VIEW``s (resolved before the search path, and isolated per
+    cursor — no shared-catalog DDL, so no lock contention with concurrent loads).
+    The session registers with the manager's op tracker for its whole life so a
+    ``compact()`` can't swap the project file mid-stream. View-only: promoting to
+    a real table re-runs the node through the normal path (local re-execution is
+    cheap), so there is no drain/materialize here."""
+
+    def __init__(
+        self,
+        *,
+        project_id: str,
+        node: NodeDefinition,
+        cache_key: str | None,
+        duckdb,
+        sql: str,
+        upstream_resolution: dict[str, str] | None,
+        chunk_rows: int,
+        max_buffer_rows: int,
+        ttl_seconds: int,
+    ):
+        self.session_id = uuid4().hex
+        self.project_id = project_id
+        self.node = node
+        self.cache_key = cache_key
+        self._db = duckdb
+        self._sql = sql
+        self._resolution = upstream_resolution or {}
+        self.chunk_rows = chunk_rows
+        self.max_buffer_rows = max_buffer_rows
+        self.ttl_seconds = ttl_seconds
+        self.columns: list[str] = []
+        self.column_types: list[str] = []
+        self.buffer: list[tuple] = []
+        self.exhausted = False
+        self.closed = False
+        self.last_used = time.monotonic()
+        self.lock = asyncio.Lock()
+        self._cur = None
+        self._track = None
+
+    @property
+    def buffer_capped(self) -> bool:
+        return len(self.buffer) >= self.max_buffer_rows
+
+    def touch(self):
+        self.last_used = time.monotonic()
+
+    def expired(self, now: float) -> bool:
+        return now - self.last_used > self.ttl_seconds
+
+    def open(self):
+        """Sync (run in a thread): hold an op slot, install temp views for the
+        resolved upstreams, execute the SQL, and capture the result schema."""
+        self._track = self._db._track()
+        self._track.__enter__()
+        try:
+            cur = self._db.conn.cursor()
+            self._db._set_search_path(cur)
+            for table_name, location in self._resolution.items():
+                catalog = self._db._catalog_for(location == LOCATION_MEMORY)
+                cur.execute(
+                    f"CREATE TEMP VIEW {_quote_identifier(table_name)} AS "
+                    f"SELECT * FROM {_qualified(catalog, table_name)}"
+                )
+            cur.execute(f"SELECT * FROM ({self._sql})")
+            self.columns = [d[0] for d in cur.description]
+            self.column_types = [str(d[1]) for d in cur.description]
+            self._cur = cur
+        except BaseException:
+            self._close_sync()
+            raise
+
+    def _fetch_chunk_sync(self) -> list[tuple]:
+        if self.exhausted or self._cur is None:
+            return []
+        rows = [tuple(row) for row in self._cur.fetchmany(self.chunk_rows)]
+        if len(rows) < self.chunk_rows:
+            self.exhausted = True
+        self.buffer.extend(rows)
+        return rows
+
+    async def fetch_chunk(self) -> list[tuple]:
+        return await asyncio.to_thread(self._fetch_chunk_sync)
+
+    def json_rows(self, rows: list[tuple]) -> list[list]:
+        return [[_json_safe_value(value) for value in row] for row in rows]
+
+    def _close_sync(self):
+        try:
+            if self._cur is not None:
+                self._cur.close()  # temp views vanish with the cursor
+                self._cur = None
+        finally:
+            if self._track is not None:
+                self._track.__exit__(None, None, None)
+                self._track = None
+
+    async def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        await asyncio.to_thread(self._close_sync)
+
+
 class PreviewSessionManager:
     def __init__(self, connection_pools):
         self._pools = connection_pools
@@ -212,6 +326,53 @@ class PreviewSessionManager:
         )
         try:
             await session.open()
+            rows = await session.fetch_chunk()
+        except Exception:
+            await session.close()
+            raise
+        async with self._lock:
+            self._sessions[session.session_id] = session
+            self._ensure_reaper()
+        return {
+            "session_id": session.session_id,
+            "node_id": node.id,
+            "columns": session.columns,
+            "column_types": session.column_types,
+            "rows": session.json_rows(rows),
+            "buffered_rows": len(session.buffer),
+            "has_more": not session.exhausted,
+            "buffer_capped": session.buffer_capped,
+        }
+
+    async def start_transform(
+        self,
+        *,
+        project_id: str,
+        node: NodeDefinition,
+        cache_key: str | None,
+        duckdb,
+        sql: str,
+        upstream_resolution: dict[str, str] | None,
+        chunk_rows: int = DEFAULT_PREVIEW_CHUNK_ROWS,
+        max_buffer_rows: int = DEFAULT_MAX_BUFFER_ROWS,
+        ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS,
+    ) -> dict:
+        """Open a held DuckDB cursor over a transform's SQL and return the first
+        chunk. Shares the session store/reaper with DB preview sessions, so
+        fetch/close/expiry all work unchanged."""
+        session = DuckDBPreviewSession(
+            project_id=project_id,
+            node=node,
+            cache_key=cache_key,
+            duckdb=duckdb,
+            sql=sql,
+            upstream_resolution=upstream_resolution,
+            chunk_rows=chunk_rows,
+            max_buffer_rows=max_buffer_rows,
+            ttl_seconds=ttl_seconds,
+        )
+        try:
+            await asyncio.to_thread(session.open)
             rows = await session.fetch_chunk()
         except Exception:
             await session.close()

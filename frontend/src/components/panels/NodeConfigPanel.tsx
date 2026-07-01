@@ -293,6 +293,7 @@ export default function NodeConfigPanel() {
   const runNodeWithLoadMode = usePipelineStore((s) => s.runNodeWithLoadMode)
   const abortDatabaseNodeExecution = usePipelineStore((s) => s.abortDatabaseNodeExecution)
   const runTransformPreview = usePipelineStore((s) => s.runTransformPreview)
+  const startLivePreview = usePipelineStore((s) => s.startLivePreview)
   const globalDatabaseConnections = useSettingsStore((s) => s.globalDatabaseConnections)
   const loadCsvPreview = usePipelineStore((s) => s.loadCsvPreview)
   const loadPreprocessedCsvPreview = usePipelineStore((s) => s.loadPreprocessedCsvPreview)
@@ -776,6 +777,14 @@ export default function NodeConfigPanel() {
               {tableName}
             </div>
           </div>
+          <button
+            type="button"
+            onClick={() => { void startLivePreview(node.id) }}
+            disabled={!canExecuteTransform}
+            className="w-full rounded-lg border border-purple-200 bg-purple-50 px-3 py-2 text-sm font-medium text-purple-700 transition hover:bg-purple-100 disabled:opacity-40"
+          >
+            Preview (live, no table written)
+          </button>
           <LoadModeToggle value={loadMode} onChange={updateLoadMode} />
           <DescriptionField value={nodeDescription} onChange={updateNodeDescription} />
         </>
