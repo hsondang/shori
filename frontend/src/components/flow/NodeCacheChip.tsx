@@ -1,28 +1,42 @@
+import { DataStateDots } from '@shori/design-system'
 import { usePipelineStore } from '../../store/pipelineStore'
+import { computeNodeDataState } from '../../lib/nodeDataState'
+import type { CsvPreprocessingConfig, NodeType } from '../../types/pipeline'
 
 /**
- * Shows the persisted cache state for a table-producing node and a Refresh
- * action. Driven by the project DuckDB metadata (cacheStatusByNodeId), so it
- * survives reloads — unlike the per-run execution result. Hidden while the
- * node is actively running (the status badge covers that).
+ * Shows the node's three-location data state (docs/node-state-model.md §1.3) as
+ * compact dots, plus a Refresh action when any location is stale. Driven by the
+ * project DuckDB metadata (cacheStatusByNodeId) and live-preview session state,
+ * so it survives reloads — unlike the per-run execution result. Hidden while
+ * the node is actively running (the status badge covers that).
  */
 export default function NodeCacheChip({ nodeId }: { nodeId: string }) {
-  const status = usePipelineStore((s) => s.cacheStatusByNodeId[nodeId])
+  const node = usePipelineStore((s) => s.nodes.find((candidate) => candidate.id === nodeId))
+  const cacheStatus = usePipelineStore((s) => s.cacheStatusByNodeId[nodeId])
+  const livePreview = usePipelineStore((s) => s.livePreviewsByNodeId[nodeId])
   const result = usePipelineStore((s) => s.nodeResults[nodeId])
+  const artifactReady = usePipelineStore((s) => Boolean(s.csvPreprocessArtifacts[nodeId]))
   const executeSingleNode = usePipelineStore((s) => s.executeSingleNode)
 
   const isRunning = result?.status === 'running' || result?.status === 'connecting'
-  if (isRunning || !status) return null
+  if (isRunning || !node) return null
 
-  // While the live execution result is showing success/error, the badge is
-  // already informative; only surface the chip when it adds a "stale" or a
-  // standalone "cached" signal (e.g. after a page reload with no result yet).
-  if (status.state === 'stale') {
-    return (
-      <div className="flex items-center gap-1.5">
-        <span className="inline-block rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
-          Stale
-        </span>
+  const config = (node.data as Record<string, unknown>).config as Record<string, unknown>
+  const preprocessing = config.preprocessing as CsvPreprocessingConfig | undefined
+
+  const dataState = computeNodeDataState({
+    nodeType: node.type as NodeType,
+    cacheStatus,
+    livePreview,
+    csvPreprocessingEnabled: Boolean(preprocessing?.enabled),
+    csvPreprocessArtifactReady: artifactReady,
+  })
+  const isStale = dataState.memory === 'stale' || dataState.disk === 'stale'
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <DataStateDots python={dataState.python} memory={dataState.memory} disk={dataState.disk} />
+      {isStale && (
         <button
           type="button"
           className="text-[10px] font-semibold text-amber-700 hover:underline"
@@ -30,24 +44,7 @@ export default function NodeCacheChip({ nodeId }: { nodeId: string }) {
         >
           Refresh
         </button>
-      </div>
-    )
-  }
-
-  if (status.state === 'fresh' && !result) {
-    const inMemory = status.location === 'in_memory'
-    return (
-      <span
-        className={[
-          'inline-block rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
-          inMemory ? 'bg-violet-100 text-violet-700' : 'bg-sky-100 text-sky-700',
-        ].join(' ')}
-        title={inMemory ? 'Held in memory (RAM); cleared on restart' : 'Materialized to the project file'}
-      >
-        {inMemory ? 'In memory' : 'Loaded'}
-      </span>
-    )
-  }
-
-  return null
+      )}
+    </div>
+  )
 }

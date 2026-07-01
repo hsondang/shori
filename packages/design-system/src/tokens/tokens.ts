@@ -34,6 +34,12 @@ export const tokens = {
     export:    { bg: 'var(--ds-chip-export-bg)',    border: 'var(--ds-chip-export-border)',    text: 'var(--ds-chip-export-text)' },
     db:        { bg: 'var(--ds-chip-db-bg)',        border: 'var(--ds-chip-db-border)',        text: 'var(--ds-chip-db-text)' },
   },
+  data: {
+    python: 'var(--ds-data-python)',
+    memory: 'var(--ds-data-memory)',
+    disk: 'var(--ds-data-disk)',
+    empty: 'var(--ds-data-empty)',
+  },
   radius: {
     sm: 'var(--ds-radius-sm)',
     md: 'var(--ds-radius-md)',

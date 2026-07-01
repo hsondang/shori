@@ -18,6 +18,8 @@ import type {
   ExcelSourceConfig,
   ExecutionRunStatus,
   LivePreviewState,
+  LoadDestinationCandidate,
+  LoadDestinationPromptState,
   MaterializedPreviewTab,
   NodeCacheStatus,
   NodeEditorDraft,
@@ -97,6 +99,14 @@ interface PipelineState {
   loadMoreLivePreview: (nodeId: string) => Promise<void>
   materializeLivePreview: (nodeId: string, intoMemory?: boolean) => Promise<void>
   closeLivePreview: (nodeId: string) => Promise<void>
+
+  // Batched load/materialize prompt (node-state-model.md §6): shown when a run
+  // needs upstream data that has no copy in either DuckDB location yet.
+  loadDestinationPrompt: LoadDestinationPromptState | null
+  setLoadDestinationChoice: (nodeId: string, mode: NodeLoadMode) => void
+  applyLoadDestinationChoiceToAll: (mode: NodeLoadMode) => void
+  confirmLoadDestinationPrompt: () => Promise<void>
+  cancelLoadDestinationPrompt: () => void
 
   // Node editor
   nodeEditorMode: NodeEditorMode
@@ -371,6 +381,7 @@ function hydratePipelineState(pipeline: PipelineDefinition) {
     csvPreprocessArtifacts: {},
     cacheStatusByNodeId: {},
     livePreviewsByNodeId: {},
+    loadDestinationPrompt: null,
     nodeEditorMode: 'closed' as const,
     nodeEditorDraft: null,
     editingNodeId: null,
@@ -399,6 +410,21 @@ function getRequestErrorMessage(error: unknown, fallback: string): string {
   }
 
   return error instanceof Error ? error.message : fallback
+}
+
+// Defensive fallback for the transform live-preview gate: the client checks
+// cache status before starting a session, but if that check was stale, the
+// backend still rejects with 409 { detail: { missing_tables } }.
+function getMissingUpstreamTables(error: unknown): string[] | null {
+  if (typeof error !== 'object' || error === null || !('response' in error)) return null
+  const response = (error as { response?: unknown }).response
+  if (typeof response !== 'object' || response === null) return null
+  const { status, data } = response as { status?: number; data?: unknown }
+  if (status !== 409 || typeof data !== 'object' || data === null) return null
+  const detail = (data as { detail?: unknown }).detail
+  if (typeof detail !== 'object' || detail === null) return null
+  const missingTables = (detail as { missing_tables?: unknown }).missing_tables
+  return Array.isArray(missingTables) ? missingTables.filter((t): t is string => typeof t === 'string') : null
 }
 
 // Cache-status refreshes are cheap but fire from several actions in a row
@@ -556,6 +582,34 @@ function collectAncestorNodeIds(nodeId: string, edges: Edge[]): string[] {
   return [...visited]
 }
 
+// A node "needs a destination" only when it has no data in EITHER DuckDB
+// location — matching the backend's consumable_location gate (stale-but-present
+// copies are read as-is, no prompt; see node-state-model.md §6). Walks the full
+// ancestor chain (not just direct upstreams) because a run of `nodeId` may need
+// to build several missing links in the chain in one go.
+function nodesNeedingDestination(
+  nodeId: string,
+  nodes: Node[],
+  edges: Edge[],
+  cacheStatusByNodeId: Record<string, NodeCacheStatus>,
+): LoadDestinationCandidate[] {
+  const ancestorIds = collectAncestorNodeIds(nodeId, edges)
+  const nodeMap = new Map(nodes.map((candidate) => [candidate.id, candidate]))
+  return ancestorIds
+    .map((ancestorId) => nodeMap.get(ancestorId))
+    .filter((candidate): candidate is Node => Boolean(candidate))
+    .filter((candidate) => {
+      const locations = cacheStatusByNodeId[candidate.id]?.locations
+      const hasAnyData = Boolean(locations?.in_memory?.present || locations?.materialized?.present)
+      return !hasAnyData
+    })
+    .map((candidate) => ({
+      nodeId: candidate.id,
+      label: ((candidate.data as Record<string, unknown>).label as string) || getTableName(candidate),
+      tableName: getTableName(candidate),
+    }))
+}
+
 const EXECUTION_INITIAL_POLL_INTERVAL_MS = 100
 const EXECUTION_POLL_INTERVAL_MS = 500
 const EXECUTION_CLOCK_INTERVAL_MS = 1000
@@ -566,6 +620,10 @@ const executionPollAbortControllers = new Map<string, AbortController>()
 const executionPreviewTargets = new Map<string, { nodeId: string; tableName: string }>()
 const executionTrackedNodeIds = new Map<string, string[]>()
 const abortedExecutionIds = new Set<string>()
+// After a "load missing ancestors, then start a (view-only) live preview" run
+// finishes, resume by starting the live preview for this node — mirrors
+// executionPreviewTargets but for the live-preview flow instead of a table tab.
+const executionLivePreviewResumeIds = new Map<string, string>()
 let executionClockInterval: ReturnType<typeof setInterval> | null = null
 
 function isNotFoundError(error: unknown): boolean {
@@ -739,12 +797,22 @@ async function finalizeExecutionRun(
   clearExecutionPoll(run.execution_id)
   applyExecutionRunSnapshot(run, set, get)
 
+  const trackedNodeIds = executionTrackedNodeIds.get(run.execution_id) ?? []
   const previewTarget = executionPreviewTargets.get(run.execution_id)
+  const livePreviewResumeNodeId = executionLivePreviewResumeIds.get(run.execution_id)
   executionPreviewTargets.delete(run.execution_id)
   executionTrackedNodeIds.delete(run.execution_id)
+  executionLivePreviewResumeIds.delete(run.execution_id)
 
   if (previewTarget && run.node_results[previewTarget.nodeId]?.status === 'success') {
     await get().loadTablePreview(previewTarget.nodeId, previewTarget.tableName, 0, { forceReload: true })
+  }
+
+  // Resume a live preview that was waiting on missing upstreams, but only once
+  // every one of them actually finished (a partial failure leaves the chain
+  // still incomplete, so starting the preview would just hit the gate again).
+  if (livePreviewResumeNodeId && trackedNodeIds.length > 0 && trackedNodeIds.every((id) => run.node_results[id]?.status === 'success')) {
+    await get().startLivePreview(livePreviewResumeNodeId)
   }
 
   // A finished run changes which nodes are fresh/stale (descendants too).
@@ -812,6 +880,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   csvPreprocessArtifacts: {},
   cacheStatusByNodeId: {},
   livePreviewsByNodeId: {},
+  loadDestinationPrompt: null,
   nodeEditorMode: 'closed',
   nodeEditorDraft: null,
   editingNodeId: null,
@@ -1103,6 +1172,11 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     set({
       hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
     })
+    // A result-affecting edit changes this node's cache key (and every
+    // descendant's), so the data-state dots need a fresh fetch to show stale.
+    if (shouldInvalidateExecution) {
+      scheduleCacheStatusRefresh(get)
+    }
   },
 
   deleteNode: (nodeId) => {
@@ -1231,12 +1305,18 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       const config = { ...((node.data as Record<string, unknown>).config as Record<string, unknown>), load_mode: loadMode }
       get().updateNodeData(nodeId, { config })
     }
-    // If a live preview session is already open (DB sources), drain its existing
-    // cursor/buffer into the chosen catalog instead of re-running the query.
     const live = get().livePreviewsByNodeId[nodeId]
     if (live?.sessionId && !live.materializing) {
-      await get().materializeLivePreview(nodeId, loadMode === 'in_memory')
-      return
+      if (node?.type === 'db_source') {
+        // The DB preview holds a remote cursor; draining it promotes the buffered
+        // + remaining rows into the chosen catalog instead of re-querying the source.
+        await get().materializeLivePreview(nodeId, loadMode === 'in_memory')
+        return
+      }
+      // Any other (view-only) live preview, e.g. a transform's streaming preview:
+      // promoting re-runs the node through the normal path instead of draining —
+      // local re-execution is cheap, and the session has no drain support.
+      await get().closeLivePreview(nodeId)
     }
     await get().executeSingleNode(nodeId, { loadPreviewOnSuccess: true, ...options })
   },
@@ -1275,63 +1355,25 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   },
 
   runTransformPreview: async (nodeId) => {
-    const state = get()
-    const node = state.nodes.find((candidate) => candidate.id === nodeId)
+    const node = get().nodes.find((candidate) => candidate.id === nodeId)
     if (!node || node.type !== 'transform') return
 
     const sql = (getNodeConfig(node).sql as string | undefined) ?? ''
     if (!sql.trim()) return
 
     try {
-      const tableName = getTableName(node)
-      const ancestorIds = collectAncestorNodeIds(nodeId, state.edges)
-      const nodeMap = new Map(state.nodes.map((candidate) => [candidate.id, candidate]))
-      const ancestorNodes = ancestorIds
-        .map((ancestorId) => nodeMap.get(ancestorId))
-        .filter((candidate): candidate is Node => Boolean(candidate))
-
-      const materializationChecks = await Promise.all(
-        ancestorNodes.map(async (ancestorNode) => ({
-          node: ancestorNode,
-          materialized: (await api.getTableSchema(state.pipelineId, getTableName(ancestorNode))) !== null,
-        }))
-      )
-      const missingAncestorNodes = materializationChecks
-        .filter((entry) => !entry.materialized)
-        .map((entry) => entry.node)
-
-      if (missingAncestorNodes.length > 0) {
-        const missingNames = missingAncestorNodes.map((ancestorNode) => getTableName(ancestorNode)).join(', ')
-        const shouldRunUpstream = window.confirm(
-          `This transform depends on upstream tables that are not materialized yet: ${missingNames}. Run the missing upstream nodes first?`
-        )
-        if (!shouldRunUpstream) return
-
-        const executingIds = new Set([...missingAncestorNodes.map((ancestorNode) => ancestorNode.id), nodeId])
-        const subpipeline: PipelineDefinition = {
-          id: state.pipelineId,
-          name: state.pipelineName,
-          database_connections: state.databaseConnections,
-          settings: state.projectSettings,
-          nodes: state.nodes.filter((candidate) => executingIds.has(candidate.id)).map(serializeNode),
-          edges: state.edges
-            .filter((edge) => executingIds.has(edge.source) && executingIds.has(edge.target))
-            .map((edge) => ({ id: edge.id, source: edge.source, target: edge.target })),
-        }
-
-        const run = await api.startPipelineExecution(subpipeline, true)
-        executionTrackedNodeIds.set(run.execution_id, [...executingIds])
-        executionPreviewTargets.set(run.execution_id, { nodeId, tableName })
+      // Cache status drives the gate below; make sure it reflects the current graph.
+      await get().refreshCacheStatus()
+      const candidates = nodesNeedingDestination(nodeId, get().nodes, get().edges, get().cacheStatusByNodeId)
+      if (candidates.length > 0) {
         set({
-          activePipelineExecutionId: run.execution_id,
-          errorDialogNodeId: get().errorDialogNodeId === nodeId ? null : get().errorDialogNodeId,
+          loadDestinationPrompt: {
+            targetNodeId: nodeId,
+            resumeKind: 'materialize',
+            candidates,
+            choices: Object.fromEntries(candidates.map((c) => [c.nodeId, 'in_memory' as NodeLoadMode])),
+          },
         })
-        applyExecutionRunSnapshot(run, set, get)
-        if (run.status === 'running') {
-          scheduleExecutionPoll(run.execution_id, set, get)
-        } else {
-          await finalizeExecutionRun(run, set, get)
-        }
         return
       }
 
@@ -1595,7 +1637,24 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
 
   startLivePreview: async (nodeId) => {
     const node = get().nodes.find((candidate) => candidate.id === nodeId)
-    if (!node || node.type !== 'db_source') return
+    if (!node || (node.type !== 'db_source' && node.type !== 'transform')) return
+
+    if (node.type === 'transform') {
+      // Cache status drives the gate below; make sure it reflects the current graph.
+      await get().refreshCacheStatus()
+      const candidates = nodesNeedingDestination(nodeId, get().nodes, get().edges, get().cacheStatusByNodeId)
+      if (candidates.length > 0) {
+        set({
+          loadDestinationPrompt: {
+            targetNodeId: nodeId,
+            resumeKind: 'live-preview',
+            candidates,
+            choices: Object.fromEntries(candidates.map((c) => [c.nodeId, 'in_memory' as NodeLoadMode])),
+          },
+        })
+        return
+      }
+    }
 
     // Close any prior session for this node before starting a new one.
     const existing = get().livePreviewsByNodeId[nodeId]
@@ -1656,6 +1715,44 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         },
       }))
     } catch (err) {
+      const missingTables = node.type === 'transform' ? getMissingUpstreamTables(err) : null
+      const restorePrePreviewState = () => set((state) => {
+        const nodeResults = prevNodeResult
+          ? { ...state.nodeResults, [nodeId]: prevNodeResult }
+          : (() => { const r = { ...state.nodeResults }; delete r[nodeId]; return r })()
+        const livePreviewsByNodeId = { ...state.livePreviewsByNodeId }
+        delete livePreviewsByNodeId[nodeId]
+        return { nodeResults, livePreviewsByNodeId }
+      })
+
+      if (missingTables && missingTables.length > 0) {
+        // The cache-status pre-check was stale; the backend still says these
+        // upstreams have no data. Gate here too instead of surfacing an error.
+        restorePrePreviewState()
+        const ancestorIds = collectAncestorNodeIds(nodeId, get().edges)
+        const nodeMap = new Map(get().nodes.map((candidate) => [candidate.id, candidate]))
+        const candidates: LoadDestinationCandidate[] = ancestorIds
+          .map((id) => nodeMap.get(id))
+          .filter((candidate): candidate is Node => Boolean(candidate))
+          .filter((candidate) => missingTables.includes(getTableName(candidate)))
+          .map((candidate) => ({
+            nodeId: candidate.id,
+            label: ((candidate.data as Record<string, unknown>).label as string) || getTableName(candidate),
+            tableName: getTableName(candidate),
+          }))
+        if (candidates.length > 0) {
+          set({
+            loadDestinationPrompt: {
+              targetNodeId: nodeId,
+              resumeKind: 'live-preview',
+              candidates,
+              choices: Object.fromEntries(candidates.map((c) => [c.nodeId, 'in_memory' as NodeLoadMode])),
+            },
+          })
+          return
+        }
+      }
+
       set((state) => ({
         // Restore the pre-preview result on error too.
         nodeResults: prevNodeResult
@@ -1773,5 +1870,93 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         : state.activePreviewTarget
       return { livePreviewsByNodeId, activePreviewTarget }
     })
+  },
+
+  setLoadDestinationChoice: (nodeId, mode) => {
+    set((state) => {
+      if (!state.loadDestinationPrompt) return state
+      return {
+        loadDestinationPrompt: {
+          ...state.loadDestinationPrompt,
+          choices: { ...state.loadDestinationPrompt.choices, [nodeId]: mode },
+        },
+      }
+    })
+  },
+
+  applyLoadDestinationChoiceToAll: (mode) => {
+    set((state) => {
+      if (!state.loadDestinationPrompt) return state
+      const choices = Object.fromEntries(state.loadDestinationPrompt.candidates.map((c) => [c.nodeId, mode]))
+      return { loadDestinationPrompt: { ...state.loadDestinationPrompt, choices } }
+    })
+  },
+
+  cancelLoadDestinationPrompt: () => set({ loadDestinationPrompt: null }),
+
+  confirmLoadDestinationPrompt: async () => {
+    const prompt = get().loadDestinationPrompt
+    if (!prompt) return
+    set({ loadDestinationPrompt: null })
+
+    // Persist each candidate's chosen destination onto its node config; the
+    // engine reads load_mode from config when it runs that node.
+    prompt.candidates.forEach((candidate) => {
+      const candidateNode = get().nodes.find((n) => n.id === candidate.nodeId)
+      if (!candidateNode) return
+      const config = { ...getNodeConfig(candidateNode), load_mode: prompt.choices[candidate.nodeId] ?? 'in_memory' }
+      get().updateNodeData(candidate.nodeId, { config })
+    })
+
+    const state = get()
+    const candidateIds = new Set(prompt.candidates.map((c) => c.nodeId))
+    // 'materialize': run the missing ancestors + the target together (writes the
+    // target's table). 'live-preview': run only the ancestors — the target is a
+    // view-only preview and must not be written as a table.
+    const executingIds = prompt.resumeKind === 'materialize'
+      ? new Set([...candidateIds, prompt.targetNodeId])
+      : candidateIds
+
+    const subpipeline: PipelineDefinition = {
+      id: state.pipelineId,
+      name: state.pipelineName,
+      database_connections: state.databaseConnections,
+      settings: state.projectSettings,
+      nodes: state.nodes.filter((candidate) => executingIds.has(candidate.id)).map(serializeNode),
+      edges: state.edges
+        .filter((edge) => executingIds.has(edge.source) && executingIds.has(edge.target))
+        .map((edge) => ({ id: edge.id, source: edge.source, target: edge.target })),
+    }
+
+    try {
+      const run = await api.startPipelineExecution(subpipeline, true)
+      executionTrackedNodeIds.set(run.execution_id, [...executingIds])
+      if (prompt.resumeKind === 'materialize') {
+        const targetNode = state.nodes.find((n) => n.id === prompt.targetNodeId)
+        if (targetNode) {
+          executionPreviewTargets.set(run.execution_id, { nodeId: prompt.targetNodeId, tableName: getTableName(targetNode) })
+        }
+      } else {
+        executionLivePreviewResumeIds.set(run.execution_id, prompt.targetNodeId)
+      }
+      set({
+        activePipelineExecutionId: run.execution_id,
+        errorDialogNodeId: get().errorDialogNodeId === prompt.targetNodeId ? null : get().errorDialogNodeId,
+      })
+      applyExecutionRunSnapshot(run, set, get)
+      if (run.status === 'running') {
+        scheduleExecutionPoll(run.execution_id, set, get)
+      } else {
+        await finalizeExecutionRun(run, set, get)
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unknown error'
+      set({
+        nodeResults: {
+          ...get().nodeResults,
+          [prompt.targetNodeId]: { node_id: prompt.targetNodeId, status: 'error', error: message },
+        },
+      })
+    }
   },
 }))

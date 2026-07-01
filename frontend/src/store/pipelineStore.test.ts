@@ -1449,9 +1449,22 @@ describe('pipelineStore', () => {
   })
 
   describe('runTransformPreview', () => {
-    beforeEach(() => {
-      vi.spyOn(window, 'confirm').mockReturnValue(true)
-    })
+    // Presence-only cache status: a location entry with `present: true` means
+    // this node already has a consumable copy there (node-state-model.md §6).
+    function materializedLocationStatus() {
+      return {
+        locations: {
+          materialized: {
+            present: true, state: 'fresh' as const, row_count: 5, column_count: 1,
+            finished_at: '2026-04-08T09:00:00Z', error: null,
+          },
+        },
+        lifecycle: 'materialized' as const,
+        state: 'fresh' as const,
+        location: 'materialized' as const,
+        row_count: 5, column_count: 1, finished_at: '2026-04-08T09:00:00Z', error: null,
+      }
+    }
 
     it('runs only the selected transform when upstream tables are already materialized', async () => {
       act(() => {
@@ -1482,12 +1495,8 @@ describe('pipelineStore', () => {
         })
       })
 
-      mockGetTableSchema.mockResolvedValueOnce({
-        table_name: 'orders_table',
-        columns: ['id'],
-        column_types: ['INTEGER'],
-        total_rows: 5,
-      })
+      // Upstream already has a copy in DuckDB, so the gate finds no candidates.
+      mockGetCacheStatus.mockResolvedValueOnce({ nodes: { 'src-node': materializedLocationStatus() } })
       mockStartNodeExecution.mockResolvedValueOnce(makeExecutionRun({
         execution_id: 'exec-transform',
         status: 'success',
@@ -1517,7 +1526,7 @@ describe('pipelineStore', () => {
         await usePipelineStore.getState().runTransformPreview('tx-node')
       })
 
-      expect(mockGetTableSchema).toHaveBeenCalledWith(expect.any(String), 'orders_table')
+      expect(usePipelineStore.getState().loadDestinationPrompt).toBeNull()
       expect(mockStartNodeExecution).toHaveBeenCalledWith(
         expect.objectContaining({
           nodes: expect.arrayContaining([
@@ -1534,7 +1543,7 @@ describe('pipelineStore', () => {
       }))
     })
 
-    it('runs the minimal missing upstream chain after confirmation and preserves unrelated node results', async () => {
+    it('prompts for a destination, then runs the minimal missing upstream chain after confirmation and preserves unrelated node results', async () => {
       act(() => {
         usePipelineStore.setState({
           nodes: [
@@ -1579,20 +1588,22 @@ describe('pipelineStore', () => {
         })
       })
 
-      mockGetTableSchema.mockImplementation(async (_projectId: string, tableName: string) => {
-        if (tableName === 'orders_table') {
-          return {
-            table_name: 'orders_table',
-            columns: ['id'],
-            column_types: ['INTEGER'],
-            total_rows: 5,
-          }
-        }
-        if (tableName === 'orders_mid') {
-          return null
-        }
-        return null
+      // src-node already has a copy; mid-node has none anywhere → it's the only candidate.
+      mockGetCacheStatus.mockResolvedValueOnce({ nodes: { 'src-node': materializedLocationStatus() } })
+
+      await act(async () => {
+        await usePipelineStore.getState().runTransformPreview('tx-node')
       })
+
+      const prompt = usePipelineStore.getState().loadDestinationPrompt
+      expect(prompt).toEqual(expect.objectContaining({
+        targetNodeId: 'tx-node',
+        resumeKind: 'materialize',
+        candidates: [expect.objectContaining({ nodeId: 'mid-node', tableName: 'orders_mid' })],
+      }))
+      expect(mockStartPipelineExecution).not.toHaveBeenCalled()
+      expect(mockStartNodeExecution).not.toHaveBeenCalled()
+
       mockStartPipelineExecution.mockResolvedValueOnce(makeExecutionRun({
         execution_id: 'exec-pipeline',
         kind: 'pipeline',
@@ -1629,10 +1640,9 @@ describe('pipelineStore', () => {
       })
 
       await act(async () => {
-        await usePipelineStore.getState().runTransformPreview('tx-node')
+        await usePipelineStore.getState().confirmLoadDestinationPrompt()
       })
 
-      expect(window.confirm).toHaveBeenCalled()
       expect(mockStartPipelineExecution).toHaveBeenCalledWith(expect.objectContaining({
         nodes: [
           expect.objectContaining({ id: 'mid-node' }),
@@ -1644,6 +1654,7 @@ describe('pipelineStore', () => {
       }), true)
       expect(mockStartNodeExecution).not.toHaveBeenCalled()
       expect(mockPreviewData).toHaveBeenCalledWith(expect.any(String), 'orders_final', 0)
+      expect(usePipelineStore.getState().loadDestinationPrompt).toBeNull()
       expect(usePipelineStore.getState().nodeResults.other).toEqual(
         expect.objectContaining({ node_id: 'other', status: 'success' })
       )
@@ -1652,9 +1663,7 @@ describe('pipelineStore', () => {
       }))
     })
 
-    it('does not execute or load preview when the user cancels missing upstream execution', async () => {
-      vi.mocked(window.confirm).mockReturnValueOnce(false)
-
+    it('does not execute or load preview when the user cancels the load-destination prompt', async () => {
       act(() => {
         usePipelineStore.setState({
           nodes: [
@@ -1683,12 +1692,21 @@ describe('pipelineStore', () => {
         })
       })
 
-      mockGetTableSchema.mockResolvedValueOnce(null)
-
+      // Default mockGetCacheStatus resolves { nodes: {} } → src-node has no copy anywhere.
       await act(async () => {
         await usePipelineStore.getState().runTransformPreview('tx-node')
       })
 
+      expect(usePipelineStore.getState().loadDestinationPrompt).not.toBeNull()
+      expect(mockStartPipelineExecution).not.toHaveBeenCalled()
+      expect(mockStartNodeExecution).not.toHaveBeenCalled()
+      expect(mockPreviewData).not.toHaveBeenCalled()
+
+      act(() => {
+        usePipelineStore.getState().cancelLoadDestinationPrompt()
+      })
+
+      expect(usePipelineStore.getState().loadDestinationPrompt).toBeNull()
       expect(mockStartPipelineExecution).not.toHaveBeenCalled()
       expect(mockStartNodeExecution).not.toHaveBeenCalled()
       expect(mockPreviewData).not.toHaveBeenCalled()

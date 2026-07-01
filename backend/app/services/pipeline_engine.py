@@ -55,6 +55,29 @@ def make_upstream_failed_result(node_id: str, started_at: str) -> NodeExecutionR
     )
 
 
+def compute_upstream_resolution(
+    pipeline: PipelineDefinition,
+    node_id: str,
+    cache_keys: dict[str, str],
+    duckdb: DuckDBManager,
+) -> dict[str, str]:
+    """Map each direct upstream's table_name → the location a downstream read
+    should resolve to (spec §6 precedence). Only upstreams that have a present
+    consumable copy are included; the empty case means 'search-path default'."""
+    node_map = {node.id: node for node in pipeline.nodes}
+    resolution: dict[str, str] = {}
+    for edge in pipeline.edges:
+        if edge.target != node_id:
+            continue
+        upstream = node_map.get(edge.source)
+        if upstream is None:
+            continue
+        location = duckdb.consumable_location(edge.source, cache_keys.get(edge.source))
+        if location is not None:
+            resolution[upstream.table_name] = location
+    return resolution
+
+
 class PipelineEngine:
     def __init__(
         self,
@@ -126,13 +149,11 @@ class PipelineEngine:
         """Return the persisted result if the node's table is current, else None."""
         if node.type == NodeType.EXPORT or cache_key is None:
             return None
-        meta = self.duckdb.get_node_meta(node.id)
-        if meta is None or meta["status"] != "complete" or meta["cache_key"] != cache_key:
-            return None
         requested_location = "in_memory" if self.node_into_memory(node) else "materialized"
-        # A load-mode switch invalidates the cache: the table the user now wants
-        # lives in a different catalog (and an in-memory table is gone after a restart).
-        if meta.get("location") != requested_location:
+        # Look up the copy in the node's configured load-mode location specifically:
+        # a node may also hold a copy in the other location, but a run targets this one.
+        meta = self.duckdb.get_node_meta(node.id, requested_location)
+        if meta is None or meta["status"] != "complete" or meta["cache_key"] != cache_key:
             return None
         if meta["table_name"] != node.table_name:
             # User renamed the output table; the data itself is still valid.
@@ -217,12 +238,18 @@ class PipelineEngine:
                         on_node_start(node.id, started_at)
                     if node.type == NodeType.DB_SOURCE and on_node_update is not None:
                         on_node_update(make_connecting_result(node.id, started_at))
+                    upstream_resolution = None
+                    if node.type == NodeType.TRANSFORM:
+                        upstream_resolution = await asyncio.to_thread(
+                            compute_upstream_resolution, pipeline, node_id, cache_keys, self.duckdb
+                        )
                     result = await self._execute_node(
                         node,
                         cache_key=cache_keys.get(node_id),
                         started_at=started_at,
                         on_node_update=on_node_update,
                         execution_controller=execution_controller,
+                        upstream_resolution=upstream_resolution,
                     )
                     results[node_id] = result
                     if on_node_finish is not None:
@@ -249,6 +276,7 @@ class PipelineEngine:
         on_node_finish: Callable[[NodeExecutionResult], None] | None = None,
         on_node_update: Callable[[NodeExecutionResult], None] | None = None,
         execution_controller: ExecutionController | None = None,
+        upstream_resolution: dict[str, str] | None = None,
     ) -> NodeExecutionResult:
         if execution_controller is not None:
             execution_controller.raise_if_cancelled()
@@ -269,6 +297,7 @@ class PipelineEngine:
             started_at=started_at,
             on_node_update=on_node_update,
             execution_controller=execution_controller,
+            upstream_resolution=upstream_resolution,
         )
         if on_node_finish is not None:
             on_node_finish(result)
@@ -338,6 +367,7 @@ class PipelineEngine:
         started_at: str | None = None,
         on_node_update: Callable[[NodeExecutionResult], None] | None = None,
         execution_controller: ExecutionController | None = None,
+        upstream_resolution: dict[str, str] | None = None,
     ) -> NodeExecutionResult:
         start = time.time()
         effective_started_at = started_at or utc_now_iso()
@@ -440,6 +470,7 @@ class PipelineEngine:
                         cache_key=cache_key,
                         into_memory=into_memory,
                         register_interrupt=register_interrupt,
+                        upstream_resolution=upstream_resolution,
                     )
                 finally:
                     if execution_controller is not None:

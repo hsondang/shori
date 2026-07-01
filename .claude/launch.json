@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "/Users/sondang/projects/shori/backend/.venv/bin/uvicorn",
+      "runtimeArgs": ["app.main:app", "--port", "8000", "--app-dir", "/Users/sondang/projects/shori/backend"],
+      "port": 8000
+    },
+    {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "frontend", "run", "dev"],
+      "port": 5173
+    },
+    {
+      "name": "design-gallery",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "packages/design-system", "run", "gallery"],
+      "port": 5180
+    }
+  ]
+}

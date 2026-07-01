@@ -529,7 +529,7 @@ async def test_execute_pipeline_stops_before_downstream_node_after_cancellation(
         "sql": "SELECT * FROM src_t",
     })
 
-    async def execute_node(node, *, cache_key=None, started_at=None, on_node_update=None, execution_controller=None):
+    async def execute_node(node, *, cache_key=None, started_at=None, on_node_update=None, execution_controller=None, upstream_resolution=None):
         if node.id == "src":
             registry.abort_run(run.execution_id)
             return NodeExecutionResult(
@@ -650,7 +650,7 @@ async def test_execute_pipeline_runs_independent_nodes_concurrently(engine):
     in_flight = 0
     max_in_flight = 0
 
-    async def fake_execute_node(node, *, cache_key=None, started_at=None, on_node_update=None, execution_controller=None):
+    async def fake_execute_node(node, *, cache_key=None, started_at=None, on_node_update=None, execution_controller=None, upstream_resolution=None):
         nonlocal in_flight, max_in_flight
         in_flight += 1
         max_in_flight = max(max_in_flight, in_flight)
@@ -682,7 +682,7 @@ async def test_execute_pipeline_respects_max_concurrent_nodes(duckdb_mgr, csv_ar
     in_flight = 0
     max_in_flight = 0
 
-    async def fake_execute_node(node, *, cache_key=None, started_at=None, on_node_update=None, execution_controller=None):
+    async def fake_execute_node(node, *, cache_key=None, started_at=None, on_node_update=None, execution_controller=None, upstream_resolution=None):
         nonlocal in_flight, max_in_flight
         in_flight += 1
         max_in_flight = max(max_in_flight, in_flight)
@@ -703,7 +703,7 @@ async def test_execute_pipeline_respects_max_concurrent_nodes(duckdb_mgr, csv_ar
 async def test_execute_pipeline_dependent_node_waits_for_upstream(engine):
     finished_order = []
 
-    async def fake_execute_node(node, *, cache_key=None, started_at=None, on_node_update=None, execution_controller=None):
+    async def fake_execute_node(node, *, cache_key=None, started_at=None, on_node_update=None, execution_controller=None, upstream_resolution=None):
         await asyncio.sleep(0.03 if node.id == "src" else 0.0)
         finished_order.append(node.id)
         return NodeExecutionResult(node_id=node.id, status=NodeStatus.SUCCESS, row_count=1, column_count=1, columns=["id"])
@@ -727,7 +727,7 @@ async def test_execute_pipeline_dependent_node_waits_for_upstream(engine):
 
 @pytest.mark.asyncio
 async def test_execute_pipeline_failure_cancels_descendants_but_not_independent_branches(engine):
-    async def fake_execute_node(node, *, cache_key=None, started_at=None, on_node_update=None, execution_controller=None):
+    async def fake_execute_node(node, *, cache_key=None, started_at=None, on_node_update=None, execution_controller=None, upstream_resolution=None):
         if node.id == "bad":
             return NodeExecutionResult(node_id=node.id, status=NodeStatus.ERROR, error="boom")
         return NodeExecutionResult(node_id=node.id, status=NodeStatus.SUCCESS, row_count=1, column_count=1, columns=["id"])

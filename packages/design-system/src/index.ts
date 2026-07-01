@@ -22,6 +22,19 @@ export type {
 export { NodeCard } from './components/NodeCard'
 export type { NodeCardProps, NodeKind, DbAccent, NodeAction } from './components/NodeCard'
 
+export { DataStateDots } from './components/DataStateDots'
+export type { DataStateDotsProps, LocationDot, PythonDot } from './components/DataStateDots'
+
+export { NodeStateTable } from './components/NodeStateTable'
+export type { NodeStateTableProps, NodeStateRow, NodeStateKind } from './components/NodeStateTable'
+
+export { LoadDestinationDialog } from './components/LoadDestinationDialog'
+export type {
+  LoadDestinationDialogProps,
+  LoadDestinationCandidate,
+  LoadDestination,
+} from './components/LoadDestinationDialog'
+
 export { DockPanel } from './components/DockPanel'
 export type { DockPanelProps, DockSide } from './components/DockPanel'
 

@@ -8,6 +8,8 @@ export type NodeEditorMode = 'closed' | 'create' | 'edit'
 export type NodeLoadMode = 'in_memory' | 'materialized'
 /** Single derived card label combining activity + location + freshness. */
 export type NodeLifecycle = 'new' | 'idle' | 'in_memory' | 'materialized' | 'running' | 'error'
+/** What a run is producing — drives the StatusBadge verb (Loading/Materializing/Live preview). */
+export type RunMode = 'preview' | 'load' | 'materialize'
 
 export interface PostgresConnectionConfig {
   host: string
@@ -148,6 +150,8 @@ export interface NodeExecutionResult {
   finished_at?: string
   /** True when served from the project's persisted cache without re-running. */
   cached?: boolean
+  /** Frontend-only decoration (not sent by the backend): which verb a 'running' result is. */
+  mode?: RunMode
 }
 
 export interface ExecutionRunStatus {
@@ -202,12 +206,26 @@ export interface PipelineDefinition {
 
 export type NodeCacheState = 'fresh' | 'stale' | 'missing' | 'loading' | 'failed'
 
-export interface NodeCacheStatus {
+/** Presence + freshness of one (node, location) copy. Both `in_memory` and
+ * `materialized` copies can exist independently — a node is not limited to one. */
+export interface NodeLocationStatus {
+  present: boolean
   state: NodeCacheState
-  /** Where the cached table lives, or null when nothing is cached. */
-  location: NodeLoadMode | null
-  /** Single derived card label (activity + location + freshness). */
+  row_count: number | null
+  column_count: number | null
+  finished_at: string | null
+  error: string | null
+}
+
+export interface NodeCacheStatus {
+  /** Every persisted copy this node currently has, keyed by location. */
+  locations: Partial<Record<NodeLoadMode, NodeLocationStatus>>
+  /** Single derived card label (activity + location + freshness), projected over `locations`. */
   lifecycle: NodeLifecycle
+  // Back-compat single-copy fields (precedence-preferred present copy: in_memory over materialized).
+  state: NodeCacheState
+  /** Where the preferred cached table lives, or null when nothing is cached. */
+  location: NodeLoadMode | null
   row_count: number | null
   column_count: number | null
   finished_at: string | null
@@ -299,3 +317,20 @@ export type ActivePreviewTarget =
   | { kind: 'tab'; nodeId: string }
   | { kind: 'transient'; nodeId: string }
   | { kind: 'live'; nodeId: string }
+
+/** A node with no data in either DuckDB location — needs a destination pick
+ * before a dependent run can proceed (node-state-model.md §6). */
+export interface LoadDestinationCandidate {
+  nodeId: string
+  label: string
+  tableName: string
+}
+
+export interface LoadDestinationPromptState {
+  targetNodeId: string
+  /** 'materialize': run candidates + target together (writes the target's table).
+   * 'live-preview': run only the candidates, then retry the target's (view-only) live preview. */
+  resumeKind: 'materialize' | 'live-preview'
+  candidates: LoadDestinationCandidate[]
+  choices: Record<string, NodeLoadMode>
+}

@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import threading
+from uuid import uuid4
 
 import duckdb
 
@@ -25,21 +26,22 @@ SCRATCH_CATALOG = "scratch"
 LOCATION_MEMORY = "in_memory"
 LOCATION_MATERIALIZED = "materialized"
 
-META_SCHEMA = f"""
-CREATE TABLE IF NOT EXISTS {META_TABLE} (
-    node_id VARCHAR PRIMARY KEY,
+# One row per (node, location): a node can hold an in-memory copy AND a
+# materialized copy at once, each tracked (and invalidated) independently.
+_META_TABLE_DDL = """
+    node_id VARCHAR NOT NULL,
     table_name VARCHAR NOT NULL,
     cache_key VARCHAR,
     status VARCHAR NOT NULL,
-    location VARCHAR,
+    location VARCHAR NOT NULL,
     row_count BIGINT,
     column_count INTEGER,
     columns_json VARCHAR,
     error VARCHAR,
     started_at VARCHAR,
     finished_at VARCHAR,
-    duration_ms DOUBLE
-)
+    duration_ms DOUBLE,
+    PRIMARY KEY (node_id, location)
 """
 
 META_COLUMNS = [
@@ -121,9 +123,14 @@ class DuckDBManager:
         """Attach the RAM-only scratch catalog and pin the cross-catalog search path."""
         conn.execute(f"ATTACH IF NOT EXISTS ':memory:' AS {SCRATCH_CATALOG}")
         self._catalog = conn.execute("SELECT current_database()").fetchone()[0]
+        # The meta table always lives in the project catalog; reference it fully
+        # qualified so the scratch-first search_path never resolves it to scratch.
+        self._meta_ref = _qualified(self._catalog, META_TABLE)
         # Quoted, no space after the comma: DuckDB parses a leading space as part
-        # of the next schema name. Putting the project catalog first means
-        # unqualified CREATE/resolution prefers persisted tables.
+        # of the next schema name. The project catalog is first so it stays the
+        # `current_database()` (CHECKPOINT, compact, unqualified CREATE all target
+        # it). Per-node in_memory > materialized read precedence is resolved in the
+        # engine (consumable_location), not by search-path order.
         self._search_path = f'"{self._catalog}".main,{SCRATCH_CATALOG}.main'
         self._set_search_path(conn)
 
@@ -143,11 +150,36 @@ class DuckDBManager:
             self.conn.execute(f"SET temp_directory = '{self._temp_directory}'")
 
     def _ensure_meta_schema(self):
-        self.conn.execute(META_SCHEMA)
-        # Migrate older project files that predate the location column.
+        self.conn.execute(f"CREATE TABLE IF NOT EXISTS {self._meta_ref} ({_META_TABLE_DDL})")
+        self._migrate_meta_to_per_location()
+
+    def _migrate_meta_to_per_location(self):
+        """Rebuild a legacy meta table (keyed by node_id alone, one location per
+        node) with a composite (node_id, location) primary key so in-memory and
+        materialized copies are tracked independently."""
+        pk = self.conn.execute(
+            "SELECT constraint_column_names FROM duckdb_constraints() "
+            "WHERE table_name = ? AND constraint_type = 'PRIMARY KEY'",
+            [META_TABLE],
+        ).fetchone()
+        if pk is not None and set(pk[0]) == {"node_id", "location"}:
+            return
+        # Legacy single-column PK: backfill location (pre-in-memory rows were all
+        # on disk), then rebuild with the composite key.
+        self.conn.execute(f"ALTER TABLE {self._meta_ref} ADD COLUMN IF NOT EXISTS location VARCHAR")
         self.conn.execute(
-            f"ALTER TABLE {META_TABLE} ADD COLUMN IF NOT EXISTS location VARCHAR"
+            f"UPDATE {self._meta_ref} SET location = ? WHERE location IS NULL",
+            [LOCATION_MATERIALIZED],
         )
+        migrate_ref = _qualified(self._catalog, META_TABLE + "__migrate")
+        self.conn.execute(f"DROP TABLE IF EXISTS {migrate_ref}")
+        self.conn.execute(f"CREATE TABLE {migrate_ref} ({_META_TABLE_DDL})")
+        self.conn.execute(
+            f"INSERT INTO {migrate_ref} ({', '.join(META_COLUMNS)}) "
+            f"SELECT {', '.join(META_COLUMNS)} FROM {self._meta_ref}"
+        )
+        self.conn.execute(f"DROP TABLE {self._meta_ref}")
+        self.conn.execute(f"ALTER TABLE {migrate_ref} RENAME TO {_quote_identifier(META_TABLE)}")
 
     def _recover_interrupted_loads(self):
         """Drop leftover staging tables and fail metadata rows stuck in 'loading'."""
@@ -160,7 +192,7 @@ class DuckDBManager:
             logger.warning("Dropping leftover staging table %s from interrupted load", name)
             self.conn.execute(f"DROP TABLE IF EXISTS {_quote_identifier(name)}")
         self.conn.execute(
-            f"UPDATE {META_TABLE} SET status = 'failed', "
+            f"UPDATE {self._meta_ref} SET status = 'failed', "
             "error = 'Load was interrupted (backend stopped mid-load)', "
             "finished_at = ? WHERE status = 'loading'",
             [utc_now_iso()],
@@ -315,6 +347,7 @@ class DuckDBManager:
         cache_key: str | None = None,
         into_memory: bool = False,
         register_interrupt=None,
+        upstream_resolution: dict[str, str] | None = None,
     ) -> dict:
         load = self.begin_load(node_id or table_name, table_name, cache_key, into_memory=into_memory)
         try:
@@ -322,11 +355,46 @@ class DuckDBManager:
                 load.mark_loading()
             if register_interrupt is not None:
                 register_interrupt(load.interrupt)
-            load.create_staging_as(f"({sql})")
+            run_schema = self._install_upstream_views(load, upstream_resolution)
+            try:
+                load.create_staging_as(f"({sql})")
+            finally:
+                if run_schema is not None:
+                    self._drop_run_schema(load, run_schema)
             return load.commit(record_meta=node_id is not None)
         except BaseException as exc:
             load.abort(str(exc), record_meta=node_id is not None)
             raise
+
+    def _install_upstream_views(self, load: "StagingLoad", resolution: dict[str, str] | None) -> str | None:
+        """Shadow each resolved upstream table with a run-scoped view over the
+        precedence-chosen copy, so the transform's unqualified reads resolve to
+        the right catalog regardless of the project(disk)-first search path.
+
+        The views live in a per-run schema in the RAM-only scratch catalog and
+        are dropped as soon as the staging table is built. Returns the schema
+        name, or None when there's nothing to override."""
+        if not resolution:
+            return None
+        schema = f"{RESERVED_TABLE_PREFIX}run_{uuid4().hex}"
+        cur = load._cur
+        cur.execute(f"CREATE SCHEMA {SCRATCH_CATALOG}.{schema}")
+        for table_name, location in resolution.items():
+            catalog = self._catalog_for(location == LOCATION_MEMORY)
+            cur.execute(
+                f"CREATE VIEW {SCRATCH_CATALOG}.{schema}.{_quote_identifier(table_name)} "
+                f"AS SELECT * FROM {_qualified(catalog, table_name)}"
+            )
+        # Run schema first so its views win over the same-named base tables.
+        cur.execute(f"SET search_path = '{SCRATCH_CATALOG}.{schema},{self._search_path}'")
+        return schema
+
+    def _drop_run_schema(self, load: "StagingLoad", schema: str) -> None:
+        try:
+            load._cur.execute(f"DROP SCHEMA IF EXISTS {SCRATCH_CATALOG}.{schema} CASCADE")
+            load._cur.execute(f"SET search_path = '{self._search_path}'")
+        except Exception:
+            logger.warning("Failed to drop run schema %s", schema, exc_info=True)
 
     def append_dataframe(self, table_name: str, df) -> dict:
         with self._cursor() as cur:
@@ -344,60 +412,119 @@ class DuckDBManager:
 
     def upsert_node_meta(self, **fields) -> None:
         with self._cursor() as cur:
-            _upsert_meta(cur, fields)
+            _upsert_meta(cur, fields, self._meta_ref)
 
-    def get_node_meta(self, node_id: str) -> dict | None:
-        with self._cursor() as cur:
-            row = cur.execute(
-                f"SELECT {', '.join(META_COLUMNS)} FROM {META_TABLE} WHERE node_id = ?",
-                [node_id],
-            ).fetchone()
-        return _meta_row_to_dict(row) if row else None
+    def get_node_meta(self, node_id: str, location: str | None = None) -> dict | None:
+        """One node's meta row. With `location`, that specific copy; without, the
+        precedence-preferred present copy (in_memory over materialized)."""
+        locations = self.get_node_locations(node_id)
+        if not locations:
+            return None
+        if location is not None:
+            return locations.get(location)
+        return locations.get(LOCATION_MEMORY) or locations.get(LOCATION_MATERIALIZED)
 
-    def all_node_meta(self) -> dict[str, dict]:
+    def get_node_locations(self, node_id: str) -> dict[str, dict]:
+        """Every persisted copy of a node, keyed by location."""
         with self._cursor() as cur:
             rows = cur.execute(
-                f"SELECT {', '.join(META_COLUMNS)} FROM {META_TABLE}"
+                f"SELECT {', '.join(META_COLUMNS)} FROM {self._meta_ref} WHERE node_id = ?",
+                [node_id],
             ).fetchall()
-        metas = (_meta_row_to_dict(row) for row in rows)
-        return {meta["node_id"]: meta for meta in metas}
+        return {meta["location"]: meta for meta in (_meta_row_to_dict(r) for r in rows)}
 
-    def drop_node(self, node_id: str) -> bool:
-        """Drop a node's table and metadata row. Returns True if anything existed."""
-        meta = self.get_node_meta(node_id)
-        existed = meta is not None
+    def consumable_location(self, node_id: str, cache_key: str | None) -> str | None:
+        """Which persisted copy a downstream node should read (spec §6 precedence):
+        fresh over stale, then in_memory over materialized, then most recently
+        built. Returns the location, or None if no present copy exists.
+
+        This is what lets a fresh in-memory copy win over a stale materialized one
+        even though the default search path is project(disk)-first."""
+        best_location: str | None = None
+        best_rank: tuple | None = None
+        for location, meta in self.get_node_locations(node_id).items():
+            if meta["status"] != "complete":
+                continue
+            if not self.table_exists(meta["table_name"], location=location):
+                continue
+            fresh = cache_key is not None and meta["cache_key"] == cache_key
+            rank = (
+                1 if fresh else 0,
+                1 if location == LOCATION_MEMORY else 0,
+                meta.get("finished_at") or "",
+            )
+            if best_rank is None or rank > best_rank:
+                best_rank, best_location = rank, location
+        return best_location
+
+    def all_node_meta(self) -> dict[str, dict]:
+        """One representative row per node (precedence-preferred present copy).
+        For callers that only need per-node identity (orphan cleanup, rename)."""
+        return {
+            node_id: (locs.get(LOCATION_MEMORY) or locs.get(LOCATION_MATERIALIZED))
+            for node_id, locs in self.all_node_locations().items()
+        }
+
+    def all_node_locations(self) -> dict[str, dict[str, dict]]:
+        """Every persisted copy, nested as {node_id: {location: meta}}."""
         with self._cursor() as cur:
-            if meta is not None:
+            rows = cur.execute(
+                f"SELECT {', '.join(META_COLUMNS)} FROM {self._meta_ref}"
+            ).fetchall()
+        nested: dict[str, dict[str, dict]] = {}
+        for row in rows:
+            meta = _meta_row_to_dict(row)
+            nested.setdefault(meta["node_id"], {})[meta["location"]] = meta
+        return nested
+
+    def drop_node(self, node_id: str, location: str | None = None) -> bool:
+        """Drop a node's table(s) and metadata. With `location`, only that copy;
+        without, every copy. Returns True if anything existed."""
+        locations = self.get_node_locations(node_id)
+        targets = [location] if location is not None else list(locations.keys())
+        dropped = False
+        with self._cursor() as cur:
+            for loc in targets:
+                meta = locations.get(loc)
+                if meta is None:
+                    continue
+                dropped = True
+                catalog = self._catalog_for(loc == LOCATION_MEMORY)
                 name = meta["table_name"]
-                # Drop from both catalogs: the row's location may be stale
-                # (legacy rows have none) and a mode switch can leave a copy behind.
-                for catalog in (self._catalog, SCRATCH_CATALOG):
-                    cur.execute(f"DROP TABLE IF EXISTS {_qualified(catalog, name)}")
-                    cur.execute(f"DROP TABLE IF EXISTS {_qualified(catalog, name + STAGING_SUFFIX)}")
-            cur.execute(f"DELETE FROM {META_TABLE} WHERE node_id = ?", [node_id])
-        return existed
+                cur.execute(f"DROP TABLE IF EXISTS {_qualified(catalog, name)}")
+                cur.execute(f"DROP TABLE IF EXISTS {_qualified(catalog, name + STAGING_SUFFIX)}")
+                cur.execute(
+                    f"DELETE FROM {self._meta_ref} WHERE node_id = ? AND location = ?",
+                    [node_id, loc],
+                )
+        return dropped
 
     def rename_node_table(self, node_id: str, new_table_name: str) -> bool:
-        """Rename a cached node table, preserving its data and cache validity."""
+        """Rename a node's table(s), preserving data and cache validity. A node
+        shares one table_name across its locations, so every copy is renamed."""
         validate_user_table_name(new_table_name)
-        meta = self.get_node_meta(node_id)
-        if meta is None or meta["table_name"] == new_table_name:
+        locations = self.get_node_locations(node_id)
+        if not locations:
             return False
-        catalog = self._catalog_for(meta.get("location") == LOCATION_MEMORY)
+        old_name = next(iter(locations.values()))["table_name"]
+        if old_name == new_table_name:
+            return False
         with self._cursor() as cur:
-            # An in-memory rename touches scratch (table) and project (meta) — two
-            # databases — so the table rename and meta update can't share a
-            # transaction. Rename first, then record it; both are idempotent on retry.
-            if _table_exists(cur, meta["table_name"], catalog):
-                cur.execute(f"DROP TABLE IF EXISTS {_qualified(catalog, new_table_name)}")
-                cur.execute(
-                    f"ALTER TABLE {_qualified(catalog, meta['table_name'])} "
-                    f"RENAME TO {_quote_identifier(new_table_name)}"
-                )
+            # Rename the physical table in every catalog that holds a copy. A
+            # scratch rename and the project meta update touch different databases,
+            # so they can't share a transaction; each is idempotent on retry.
+            for loc in locations:
+                catalog = self._catalog_for(loc == LOCATION_MEMORY)
+                if _table_exists(cur, old_name, catalog):
+                    cur.execute(f"DROP TABLE IF EXISTS {_qualified(catalog, new_table_name)}")
+                    cur.execute(
+                        f"ALTER TABLE {_qualified(catalog, old_name)} "
+                        f"RENAME TO {_quote_identifier(new_table_name)}"
+                    )
             cur.execute("BEGIN TRANSACTION")
             try:
                 cur.execute(
-                    f"UPDATE {META_TABLE} SET table_name = ? WHERE node_id = ?",
+                    f"UPDATE {self._meta_ref} SET table_name = ? WHERE node_id = ?",
                     [new_table_name, node_id],
                 )
                 cur.execute("COMMIT")
@@ -467,7 +594,7 @@ class DuckDBManager:
         with self._cursor() as cur:
             for catalog in (self._catalog, SCRATCH_CATALOG):
                 cur.execute(f"DROP TABLE IF EXISTS {_qualified(catalog, table_name)}")
-            cur.execute(f"DELETE FROM {META_TABLE} WHERE table_name = ?", [table_name])
+            cur.execute(f"DELETE FROM {self._meta_ref} WHERE table_name = ?", [table_name])
 
     def table_exists(self, table_name: str, *, location: str | None = None) -> bool:
         catalog = None if location is None else self._catalog_for(location == LOCATION_MEMORY)
@@ -512,10 +639,10 @@ class DuckDBManager:
             for leftover in (tmp_path, tmp_path + ".wal"):
                 if os.path.exists(leftover):
                     os.remove(leftover)
-            current_db = self.conn.execute("SELECT current_database()").fetchone()[0]
+            # Use the pinned project catalog (robust regardless of search_path).
             self.conn.execute(f"ATTACH '{tmp_path}' AS _shori_compact_target")
             self.conn.execute(
-                f"COPY FROM DATABASE {_quote_identifier(current_db)} TO _shori_compact_target"
+                f"COPY FROM DATABASE {_quote_identifier(self._catalog)} TO _shori_compact_target"
             )
             self.conn.execute("DETACH _shori_compact_target")
             self.conn.close()
@@ -636,10 +763,8 @@ class StagingLoad:
         # file. Staging + final tables are catalog-qualified so the swap stays
         # inside the chosen catalog regardless of search_path.
         self._catalog = manager._catalog_for(into_memory)
-        self._other_catalog = manager._catalog_for(not into_memory)
         self._staging_ref = _qualified(self._catalog, self.staging_name)
         self._table_ref = _qualified(self._catalog, self.table_name)
-        self._other_table_ref = _qualified(self._other_catalog, self.table_name)
         self._track = manager._track()
         self._track.__enter__()
         self._cur = manager.conn.cursor()
@@ -664,6 +789,7 @@ class StagingLoad:
                 "location": self.location,
                 "started_at": self.started_at,
             },
+            self._manager._meta_ref,
         )
 
     def append(self, data) -> None:
@@ -731,22 +857,23 @@ class StagingLoad:
                 if record_meta
                 else None
             )
-            # Table names are unique project-wide; if this node previously loaded
-            # into the other catalog (a load-mode switch), drop that stale copy.
-            self._cur.execute(f"DROP TABLE IF EXISTS {self._other_table_ref}")
+            # In-memory and materialized copies of a node coexist — each tracked by
+            # its own meta row — so a load into one location no longer drops the
+            # other. The scratch swap and the (project) meta write hit different
+            # databases, which DuckDB forbids in one transaction.
             if self.into_memory:
                 # The scratch swap and the (project) meta write hit different
                 # databases — DuckDB forbids that in one transaction — so the
                 # swap is atomic on its own and the meta row follows it.
                 self._run_swap_txn()
                 if meta is not None:
-                    _upsert_meta(self._cur, meta)
+                    _upsert_meta(self._cur, meta, self._manager._meta_ref)
             else:
                 self._cur.execute("BEGIN TRANSACTION")
                 try:
                     self._apply_swap()
                     if meta is not None:
-                        _upsert_meta(self._cur, meta)
+                        _upsert_meta(self._cur, meta, self._manager._meta_ref)
                     self._cur.execute("COMMIT")
                 except BaseException:
                     self._cur.execute("ROLLBACK")
@@ -790,6 +917,7 @@ class StagingLoad:
                         "started_at": self.started_at,
                         "finished_at": utc_now_iso(),
                     },
+                    self._manager._meta_ref,
                 )
         except Exception:
             logger.warning("Failed to clean up aborted load for %s", self.node_id, exc_info=True)
@@ -804,12 +932,12 @@ class StagingLoad:
         self._track.__exit__(None, None, None)
 
 
-def _upsert_meta(cur, fields: dict) -> None:
+def _upsert_meta(cur, fields: dict, meta_ref: str) -> None:
     row = {column: None for column in META_COLUMNS}
     row.update({key: value for key, value in fields.items() if key in row})
     placeholders = ", ".join("?" for _ in META_COLUMNS)
     cur.execute(
-        f"INSERT OR REPLACE INTO {META_TABLE} ({', '.join(META_COLUMNS)}) "
+        f"INSERT OR REPLACE INTO {meta_ref} ({', '.join(META_COLUMNS)}) "
         f"VALUES ({placeholders})",
         [row[column] for column in META_COLUMNS],
     )

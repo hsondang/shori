@@ -8,6 +8,9 @@
 
 export type NodeStatus = 'idle' | 'connecting' | 'running' | 'success' | 'error' | 'cancelled'
 
+/** What a run is producing — specialises the `running` verb (spec §1.1). */
+export type RunMode = 'preview' | 'load' | 'materialize'
+
 export interface NodeResultLike {
   status: NodeStatus
   /** A successful result served from cache rather than re-executed. */
@@ -17,6 +20,8 @@ export interface NodeResultLike {
   executionTimeMs?: number | null
   /** Human elapsed string for in-flight runs, e.g. "3s". */
   elapsedLabel?: string | null
+  /** Drives the running verb: "Loading…" (load) / "Materializing…" (materialize) / "Live preview" (preview). */
+  mode?: RunMode | null
 }
 
 /** `cached` is a presentational tone even though it is not a raw `NodeStatus`. */
@@ -39,13 +44,22 @@ export function statusPresentation(result?: NodeResultLike | null): StatusPresen
   switch (result.status) {
     case 'connecting':
       return { tone: 'connecting', label: 'Connecting', dotAnimated: true, isBusy: true }
-    case 'running':
+    case 'running': {
+      const verb =
+        result.mode === 'load'
+          ? 'Loading'
+          : result.mode === 'materialize'
+            ? 'Materializing'
+            : result.mode === 'preview'
+              ? 'Live preview'
+              : 'Running'
       return {
         tone: 'running',
-        label: result.elapsedLabel ? `Running · ${result.elapsedLabel}` : 'Running',
+        label: result.elapsedLabel ? `${verb} · ${result.elapsedLabel}` : verb,
         dotAnimated: true,
         isBusy: true,
       }
+    }
     case 'success':
       return result.cached
         ? { tone: 'cached', label: 'Cached', dotAnimated: false, isBusy: false }

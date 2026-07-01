@@ -43,6 +43,7 @@ export default function DataPreviewPanel() {
   const loadMoreTablePreview = usePipelineStore((s) => s.loadMoreTablePreview)
   const loadMoreLivePreview = usePipelineStore((s) => s.loadMoreLivePreview)
   const materializeLivePreview = usePipelineStore((s) => s.materializeLivePreview)
+  const runNodeWithLoadMode = usePipelineStore((s) => s.runNodeWithLoadMode)
   const closeLivePreview = usePipelineStore((s) => s.closeLivePreview)
   const selectPreviewTab = usePipelineStore((s) => s.selectPreviewTab)
   const setActiveLivePreview = usePipelineStore((s) => s.startLivePreview)
@@ -196,6 +197,11 @@ export default function DataPreviewPanel() {
   const renderLivePreview = () => {
     if (!activeLive) return renderEmptyState()
 
+    // DB sources hold a remote cursor: draining it (materializeLivePreview) avoids
+    // re-querying the source. Any other live preview (e.g. a transform) is
+    // view-only — promoting it re-runs the node through the normal path instead.
+    const isDbLive = getNodeById(activeLive.nodeId)?.type === 'db_source'
+
     return (
       <div className="flex h-full min-h-0 flex-col bg-white">
         <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50 px-4 py-2">
@@ -210,13 +216,32 @@ export default function DataPreviewPanel() {
             </span>
           </div>
           <div className="flex items-center gap-2 text-xs">
-            <button
-              disabled={activeLive.materializing || !activeLive.sessionId}
-              onClick={() => materializeLivePreview(activeLive.nodeId)}
-              className="rounded bg-emerald-600 px-2.5 py-1 font-medium text-white hover:bg-emerald-700 disabled:opacity-40"
-            >
-              {activeLive.materializing ? 'Materializing…' : 'Materialize'}
-            </button>
+            {isDbLive ? (
+              <button
+                disabled={activeLive.materializing || !activeLive.sessionId}
+                onClick={() => materializeLivePreview(activeLive.nodeId)}
+                className="rounded bg-emerald-600 px-2.5 py-1 font-medium text-white hover:bg-emerald-700 disabled:opacity-40"
+              >
+                {activeLive.materializing ? 'Materializing…' : 'Materialize'}
+              </button>
+            ) : (
+              <>
+                <button
+                  disabled={!activeLive.sessionId}
+                  onClick={() => { void runNodeWithLoadMode(activeLive.nodeId, 'in_memory') }}
+                  className="rounded bg-violet-600 px-2.5 py-1 font-medium text-white hover:bg-violet-700 disabled:opacity-40"
+                >
+                  Load to memory
+                </button>
+                <button
+                  disabled={!activeLive.sessionId}
+                  onClick={() => { void runNodeWithLoadMode(activeLive.nodeId, 'materialized') }}
+                  className="rounded bg-emerald-600 px-2.5 py-1 font-medium text-white hover:bg-emerald-700 disabled:opacity-40"
+                >
+                  Materialize
+                </button>
+              </>
+            )}
             <button
               onClick={() => closeLivePreview(activeLive.nodeId)}
               className="rounded border border-gray-300 px-2 py-1 hover:bg-gray-100"

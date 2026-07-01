@@ -4,6 +4,7 @@ import { Route, Routes, useLocation } from 'react-router-dom'
 import ProjectSidebar from './components/projects/ProjectSidebar'
 import ProjectHome from './components/projects/ProjectHome'
 import PipelineEditorPage from './components/projects/PipelineEditorPage'
+import NodeStatePage from './components/projects/NodeStatePage'
 import PlatformSettingsPage from './components/settings/PlatformSettingsPage'
 import Toolbar from './components/toolbar/Toolbar'
 import { useSettingsStore } from './store/settingsStore'
@@ -140,6 +141,7 @@ export default function App() {
                     </ReactFlowProvider>
                   )}
                 />
+                <Route path="/projects/:projectId/node-state" element={<NodeStatePage />} />
               </Routes>
             </main>
           </div>
@@ -157,6 +159,7 @@ export default function App() {
                 </ReactFlowProvider>
               )}
             />
+            <Route path="/projects/:projectId/node-state" element={<NodeStatePage />} />
           </Routes>
         </main>
       )}
