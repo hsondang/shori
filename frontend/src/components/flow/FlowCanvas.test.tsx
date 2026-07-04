@@ -11,6 +11,7 @@ import {
 } from '../../lib/dragData'
 import { usePipelineStore } from '../../store/pipelineStore'
 import { useSettingsStore } from '../../store/settingsStore'
+import { NODE_CARD_DISMISS_EVENT } from '@shori/design-system'
 
 vi.mock('@monaco-editor/react', () => ({
   default: ({
@@ -39,6 +40,7 @@ vi.mock('@xyflow/react', async () => {
       onPaneClick,
       onConnect,
       onEdgesChange,
+      onMove,
       children,
     }: {
       onInit?: (instance: { screenToFlowPosition: (position: { x: number; y: number }) => { x: number; y: number } }) => void
@@ -47,6 +49,7 @@ vi.mock('@xyflow/react', async () => {
       onPaneClick?: () => void
       onConnect?: (connection: { source?: string; target?: string }) => void
       onEdgesChange?: (changes: Array<{ id: string; type: string }>) => void
+      onMove?: () => void
       children?: React.ReactNode
     }) => {
       React.useEffect(() => {
@@ -77,6 +80,9 @@ vi.mock('@xyflow/react', async () => {
             onClick={() => onEdgesChange?.([{ id: 'edge-1', type: 'remove' }])}
           >
             Remove edge
+          </button>
+          <button type="button" data-testid="move-viewport" onClick={() => onMove?.()}>
+            Move viewport
           </button>
           {children}
         </div>
@@ -389,5 +395,20 @@ describe('FlowCanvas', () => {
     fireEvent.keyDown(window, { key: 'Backspace' })
 
     expect(usePipelineStore.getState().edges).toEqual([])
+  })
+
+  it('fires the node-card dismiss event on viewport move so open menus close', async () => {
+    const user = userEvent.setup()
+    const onDismiss = vi.fn()
+    window.addEventListener(NODE_CARD_DISMISS_EVENT, onDismiss)
+
+    try {
+      renderCanvas()
+      await user.click(screen.getByTestId('move-viewport'))
+
+      expect(onDismiss).toHaveBeenCalledTimes(1)
+    } finally {
+      window.removeEventListener(NODE_CARD_DISMISS_EVENT, onDismiss)
+    }
   })
 })

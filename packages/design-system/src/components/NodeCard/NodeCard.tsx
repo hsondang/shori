@@ -43,6 +43,15 @@ const KIND_LABEL: Record<NodeKind, string> = {
 }
 
 /**
+ * Dispatch on `window` when the surrounding canvas viewport pans or zooms. A
+ * node-card action menu is portaled to <body> at a fixed screen position
+ * captured when it opens (so it escapes the card's clipping and React Flow's
+ * transformed pane); a viewport change would otherwise leave it stranded away
+ * from its button. Listening for this lets an open menu dismiss instead.
+ */
+export const NODE_CARD_DISMISS_EVENT = 'shori:node-card-dismiss'
+
+/**
  * A GitHub-style split button for a node's actions: the first action is the
  * default primary button; the rest live behind a caret dropdown. The menu is
  * portaled to <body> so it escapes the card's `overflow: hidden` and React
@@ -64,11 +73,16 @@ function NodeActions({ actions }: { actions: NodeAction[] }) {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false)
     }
+    // The menu's screen position is captured on open; a canvas pan/zoom detaches
+    // it from its button, so dismiss rather than let it float (re-open re-anchors).
+    const onDismiss = () => setOpen(false)
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
+    window.addEventListener(NODE_CARD_DISMISS_EVENT, onDismiss)
     return () => {
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
+      window.removeEventListener(NODE_CARD_DISMISS_EVENT, onDismiss)
     }
   }, [open])
 
