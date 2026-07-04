@@ -19,7 +19,7 @@ export type {
   StatusPresentation,
 } from './components/StatusBadge'
 
-export { NodeCard } from './components/NodeCard'
+export { NodeCard, NODE_CARD_DISMISS_EVENT } from './components/NodeCard'
 export type { NodeCardProps, NodeKind, DbAccent, NodeAction } from './components/NodeCard'
 
 export { DataStateDots } from './components/DataStateDots'

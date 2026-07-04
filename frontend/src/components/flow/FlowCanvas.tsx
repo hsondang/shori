@@ -7,6 +7,7 @@ import {
   type ReactFlowInstance,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
+import { NODE_CARD_DISMISS_EVENT } from '@shori/design-system'
 import {
   buildDatabaseSourceDraftFromGlobalConnection,
   buildDatabaseSourceDraftFromConnection,
@@ -45,6 +46,13 @@ export default function FlowCanvas() {
   const openCreateNodeEditor = usePipelineStore((s) => s.openCreateNodeEditor)
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
   const rfInstance = useRef<ReactFlowInstance | null>(null)
+
+  // A node-card action menu is portaled to <body> at a screen position captured
+  // when it opens, so any pan/zoom detaches it from its button. Tell open menus
+  // to dismiss on viewport change; re-opening re-anchors to the new size/position.
+  const onMove = useCallback(() => {
+    window.dispatchEvent(new Event(NODE_CARD_DISMISS_EVENT))
+  }, [])
 
   const onDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -116,6 +124,7 @@ export default function FlowCanvas() {
       onEdgesChange={onEdgesChange}
       onConnect={onConnect}
       onInit={(instance) => { rfInstance.current = instance }}
+      onMove={onMove}
       onDragOver={onDragOver}
       onDrop={onDrop}
       onPaneClick={onPaneClick}
