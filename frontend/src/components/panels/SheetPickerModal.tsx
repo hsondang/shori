@@ -180,6 +180,11 @@ export default function SheetPickerModal() {
                   aria-label={`Import sheet ${sheet}`}
                 />
                 <span className="font-medium">{sheet}</span>
+                {hubConfig.sheet_dimensions?.[sheet] && (
+                  <span className="font-mono text-[11px] text-gray-400">
+                    {hubConfig.sheet_dimensions[sheet]!.rows.toLocaleString()} × {hubConfig.sheet_dimensions[sheet]!.cols}
+                  </span>
+                )}
                 {imported > 0 && (
                   <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-500">
                     imported ({imported})

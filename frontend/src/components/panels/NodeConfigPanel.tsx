@@ -22,7 +22,7 @@ import {
   getDatabaseSourceConnectionSourceId,
 } from '../../lib/databaseConnections'
 import { getCsvPreprocessFingerprint } from '../../lib/csvPreprocessing'
-import { createExcelUploadHandler } from '../../lib/excelUpload'
+import { createExcelUploadHandler, createWorkbookUploadHandler } from '../../lib/excelUpload'
 import { getResultElapsedLabel } from '../../lib/executionTiming'
 import { statusPresentation, toResultLike } from '../../lib/dsStatus'
 import SqlEditor from './SqlEditor'
@@ -295,6 +295,7 @@ export default function NodeConfigPanel() {
   const deleteNode = usePipelineStore((s) => s.deleteNode)
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
   const openSheetPicker = usePipelineStore((s) => s.openSheetPicker)
+  const replaceWorkbookFile = usePipelineStore((s) => s.replaceWorkbookFile)
   const openEditNodeEditor = usePipelineStore((s) => s.openEditNodeEditor)
   const executeSingleNode = usePipelineStore((s) => s.executeSingleNode)
   const runNodeWithLoadMode = usePipelineStore((s) => s.runNodeWithLoadMode)
@@ -495,6 +496,28 @@ export default function NodeConfigPanel() {
       updateNodeData(nodeId, { config: nextConfig })
     },
   })
+
+  const handleWorkbookReplace = createWorkbookUploadHandler({
+    applyConfig: (nextConfig) => {
+      if (!nodeId) return
+      replaceWorkbookFile(nodeId, nextConfig)
+    },
+  })
+
+  // Children whose selected sheet no longer exists in the (possibly replaced)
+  // workbook — surfaced proactively instead of waiting for a failed load (§5).
+  const missingSheetChildren = useMemo(() => {
+    if (!isWorkbookNode || !workbookConfig) return []
+    const available = new Set(workbookConfig.sheet_names)
+    return workbookChildIds.flatMap((childId) => {
+      const child = nodes.find((candidate) => candidate.id === childId)
+      if (!child || child.type !== 'excel_source') return []
+      const childData = child.data as Record<string, unknown>
+      const sheet = (childData.config as ExcelSourceConfig | undefined)?.selected_sheet ?? ''
+      if (!sheet || available.has(sheet)) return []
+      return [{ childId, label: (childData.label as string) || childId, sheet }]
+    })
+  }, [isWorkbookNode, nodes, workbookChildIds, workbookConfig])
 
   const handleDeleteNode = () => {
     if (!node) return
@@ -1192,15 +1215,52 @@ export default function NodeConfigPanel() {
           <div className="space-y-6">
             <div>
               <label className="mb-2 block text-xs text-gray-500">Excel Workbook</label>
-              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
-                {workbookConfig.original_filename || 'No workbook uploaded'}
-                {workbookConfig.sheet_names.length > 0 && (
-                  <span className="ml-2 text-xs text-gray-400">
-                    {workbookConfig.sheet_names.length} {workbookConfig.sheet_names.length === 1 ? 'sheet' : 'sheets'}
-                  </span>
-                )}
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                <span className="min-w-0 truncate">
+                  {workbookConfig.original_filename || 'No workbook uploaded'}
+                  {workbookConfig.sheet_names.length > 0 && (
+                    <span className="ml-2 text-xs text-gray-400">
+                      {workbookConfig.sheet_names.length} {workbookConfig.sheet_names.length === 1 ? 'sheet' : 'sheets'}
+                    </span>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="shrink-0 text-xs font-medium text-emerald-700 hover:text-emerald-800"
+                >
+                  {workbookConfig.original_filename ? 'Replace' : 'Upload'}
+                </button>
               </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".xlsx,.xlsm"
+                onChange={handleWorkbookReplace}
+                className="hidden"
+              />
             </div>
+
+            {missingSheetChildren.length > 0 && (
+              <div className="rounded-lg border border-amber-300 bg-amber-50 p-3">
+                <p className="text-xs font-medium text-amber-800">
+                  {missingSheetChildren.length} sheet {missingSheetChildren.length === 1 ? 'node references a sheet' : 'nodes reference sheets'} not in this file:
+                </p>
+                <ul className="mt-1 space-y-0.5">
+                  {missingSheetChildren.map(({ childId, label: childLabel, sheet }) => (
+                    <li key={childId}>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedNodeId(childId)}
+                        className="text-xs text-amber-700 underline hover:text-amber-900"
+                      >
+                        {childLabel} — "{sheet}"
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             {workbookConfig.sheet_names.length > 0 && (
               <button

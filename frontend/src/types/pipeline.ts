@@ -65,6 +65,9 @@ export interface ExcelWorkbookConfig {
   file_path: string
   original_filename: string
   sheet_names: string[]
+  /** Best-effort per-sheet extent read from the zip's <dimension ref> at
+   * upload time; null/absent when the writer omitted it. Display-only. */
+  sheet_dimensions?: Record<string, { rows: number; cols: number } | null>
 }
 
 export interface CsvPreprocessingConfig {

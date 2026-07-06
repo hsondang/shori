@@ -196,7 +196,8 @@ truth.)
 | Sheet-node creation + auto-layout + batch load | ✅ Implemented | `addWorkbookSheets` store action: column right of hub, reopen stacks below existing children, sequential batch load survives per-sheet failures. Toolbar chip now creates hubs; create-modal auto-opens the picker. |
 | Rollup status on hub card | ✅ Implemented | `lib/workbookRollup.ts` (pure projection), rendered by `ExcelWorkbookNode` + hub config panel. |
 | Orphan-with-confirm deletion | ✅ Implemented | Hub-specific danger Modal in `NodeConfigPanel`; copy states children keep working. Structural edges not user-deletable (store + canvas guards). |
-| Replace-workbook diff in hub panel | ❌ Target | §5. |
+| Replace-workbook diff in hub panel | ✅ Implemented | Replace button on the hub panel → `replaceWorkbookFile` re-points structural children (orphans untouched); missing-sheet children listed proactively with click-to-select. |
+| Best-effort sheet dimensions in picker | ✅ Implemented | `read_sheet_dimensions` (zip-stream `<dimension ref>` read, stops at `sheetData`, never a full parse); shown as "rows × cols" in picker rows when present. |
 | Migration of existing `excel_source` nodes | ✅ N/A by construction | Sheet node type id *is* `excel_source`; existing nodes are already valid parentless Sheet nodes. |
 | Code type ids for the two node types | ✅ Decided | Hub = `excel_workbook`; sheet keeps `excel_source` (keeps the engine branch, cache-key branch, and `selected_sheet` config key untouched; makes migration a no-op). |
 

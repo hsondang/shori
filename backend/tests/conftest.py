@@ -155,7 +155,13 @@ def sample_excel_file(tmp_path) -> str:
     return str(path)
 
 
-def _write_xlsx(path: pathlib.Path, sheets: dict[str, list[list[object]]]) -> None:
+def _write_xlsx(
+    path: pathlib.Path,
+    sheets: dict[str, list[list[object]]],
+    dimensions: dict[str, str] | None = None,
+) -> None:
+    """`dimensions` optionally maps sheet name → `<dimension ref>` (e.g. "A1:C3").
+    Real-world writers sometimes omit the element, so it stays opt-in here."""
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as workbook:
         workbook.writestr(
             "[Content_Types].xml",
@@ -197,14 +203,16 @@ def _write_xlsx(path: pathlib.Path, sheets: dict[str, list[list[object]]]) -> No
                 for index in range(1, len(sheets) + 1)
             ) + "\n</Relationships>",
         )
-        for index, rows in enumerate(sheets.values(), start=1):
-            workbook.writestr(f"xl/worksheets/sheet{index}.xml", _worksheet_xml(rows))
+        for index, (name, rows) in enumerate(sheets.items(), start=1):
+            dimension = (dimensions or {}).get(name)
+            workbook.writestr(f"xl/worksheets/sheet{index}.xml", _worksheet_xml(rows, dimension))
 
 
-def _worksheet_xml(rows: list[list[object]]) -> str:
+def _worksheet_xml(rows: list[list[object]], dimension: str | None = None) -> str:
+    dimension_xml = f'  <dimension ref="{dimension}"/>\n' if dimension else ""
     return """<?xml version="1.0" encoding="UTF-8"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <sheetData>
+""" + dimension_xml + """  <sheetData>
 """ + "\n".join(
         f'    <row r="{row_index}">' + "".join(
             _cell_xml(_column_name(column_index) + str(row_index), value)

@@ -56,6 +56,7 @@ export function createWorkbookUploadHandler({
         file_path: result.file_path,
         original_filename: result.filename,
         sheet_names: result.sheet_names,
+        sheet_dimensions: result.sheet_dimensions,
       })
     } finally {
       event.target.value = ''

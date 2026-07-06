@@ -28,6 +28,8 @@ export async function uploadExcel(file: File): Promise<{
   file_path: string
   filename: string
   sheet_names: string[]
+  /** Best-effort per-sheet extent from the zip; null when unavailable. */
+  sheet_dimensions: Record<string, { rows: number; cols: number } | null>
 }> {
   const form = new FormData()
   form.append('file', file)

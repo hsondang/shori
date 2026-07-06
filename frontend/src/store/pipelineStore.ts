@@ -16,6 +16,7 @@ import type {
   CsvTextPreviewData,
   DatabaseSourceConfig,
   ExcelSourceConfig,
+  ExcelWorkbookConfig,
   ExecutionRunStatus,
   LivePreviewState,
   LoadDestinationCandidate,
@@ -139,6 +140,9 @@ interface PipelineState {
     selections: WorkbookSheetSelection[],
     options?: { batchLoadMode?: NodeLoadMode | null },
   ) => Promise<string[]>
+  /** Replace the hub's workbook and re-point every structural child to the
+   * new upload; their cache keys go stale automatically (spec §5). */
+  replaceWorkbookFile: (hubId: string, upload: ExcelWorkbookConfig) => void
   executePipeline: (force?: boolean) => Promise<void>
   executeSingleNode: (nodeId: string, options?: { loadPreviewOnSuccess?: boolean; force?: boolean }) => Promise<void>
   runNodeWithLoadMode: (nodeId: string, loadMode: NodeLoadMode, options?: { loadPreviewOnSuccess?: boolean; force?: boolean }) => Promise<void>
@@ -1169,6 +1173,34 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
       }
     }
     return createdIds
+  },
+
+  replaceWorkbookFile: (hubId, upload) => {
+    const hub = get().nodes.find((candidate) => candidate.id === hubId)
+    if (!hub || hub.type !== 'excel_workbook') return
+
+    get().updateNodeData(hubId, { config: cloneValue(upload as unknown as Record<string, unknown>) })
+
+    // Re-point every structural child (spec §5): file identity changes, their
+    // own extraction settings stay. updateNodeData's result-affecting-change
+    // detection marks their cached tables stale; sheets missing from the new
+    // workbook fail at their next load, surfaced by the hub panel's diff.
+    const childIds = get().edges
+      .filter((edge) => edge.source === hubId)
+      .map((edge) => edge.target)
+    childIds.forEach((childId) => {
+      const child = get().nodes.find((candidate) => candidate.id === childId)
+      if (!child || child.type !== 'excel_source') return
+      const childConfig = (child.data as Record<string, unknown>).config as Record<string, unknown>
+      get().updateNodeData(childId, {
+        config: {
+          ...childConfig,
+          file_path: upload.file_path,
+          original_filename: upload.original_filename,
+          sheet_names: cloneValue(upload.sheet_names),
+        },
+      })
+    })
   },
 
   addDatabaseConnection: (connection) => {

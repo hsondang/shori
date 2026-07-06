@@ -2126,3 +2126,85 @@ describe('addWorkbookSheets', () => {
     expect(usePipelineStore.getState().edges).toHaveLength(0)
   })
 })
+
+describe('replaceWorkbookFile', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    act(() => {
+      usePipelineStore.getState().newPipeline()
+    })
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'hub-1',
+            type: 'excel_workbook',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Workbook',
+              tableName: '',
+              config: { file_path: '/tmp/old.xlsx', original_filename: 'old.xlsx', sheet_names: ['Orders', 'Legacy'] },
+            },
+          },
+          {
+            id: 'sheet-kept',
+            type: 'excel_source',
+            position: { x: 340, y: 0 },
+            data: {
+              label: 'Orders',
+              tableName: 'orders_t',
+              config: { file_path: '/tmp/old.xlsx', original_filename: 'old.xlsx', sheet_names: ['Orders', 'Legacy'], selected_sheet: 'Orders', cell_range: 'A1:F10' },
+            },
+          },
+          {
+            id: 'sheet-orphan',
+            type: 'excel_source',
+            position: { x: 340, y: 300 },
+            data: {
+              label: 'Standalone',
+              tableName: 'standalone_t',
+              config: { file_path: '/tmp/old.xlsx', original_filename: 'old.xlsx', sheet_names: ['Orders', 'Legacy'], selected_sheet: 'Legacy' },
+            },
+          },
+        ],
+        // Only sheet-kept is structurally joined; sheet-orphan has no edge.
+        edges: [{ id: 'e1', source: 'hub-1', target: 'sheet-kept' }],
+      })
+    })
+  })
+
+  it('re-points the hub and its structural children, preserving extraction settings', () => {
+    act(() => usePipelineStore.getState().replaceWorkbookFile('hub-1', {
+      file_path: '/tmp/new.xlsx',
+      original_filename: 'new.xlsx',
+      sheet_names: ['Orders', 'Fresh'],
+    }))
+
+    const state = usePipelineStore.getState()
+    const hubConfig = (state.nodes.find((n) => n.id === 'hub-1')!.data as Record<string, unknown>).config as Record<string, unknown>
+    expect(hubConfig.file_path).toBe('/tmp/new.xlsx')
+    expect(hubConfig.sheet_names).toEqual(['Orders', 'Fresh'])
+
+    const keptConfig = (state.nodes.find((n) => n.id === 'sheet-kept')!.data as Record<string, unknown>).config as Record<string, unknown>
+    expect(keptConfig.file_path).toBe('/tmp/new.xlsx')
+    expect(keptConfig.sheet_names).toEqual(['Orders', 'Fresh'])
+    // Extraction settings survive the re-point.
+    expect(keptConfig.selected_sheet).toBe('Orders')
+    expect(keptConfig.cell_range).toBe('A1:F10')
+
+    // Orphans (no structural edge) are never re-pointed.
+    const orphanConfig = (state.nodes.find((n) => n.id === 'sheet-orphan')!.data as Record<string, unknown>).config as Record<string, unknown>
+    expect(orphanConfig.file_path).toBe('/tmp/old.xlsx')
+  })
+
+  it('does nothing for a non-hub target', () => {
+    act(() => usePipelineStore.getState().replaceWorkbookFile('sheet-kept', {
+      file_path: '/tmp/new.xlsx',
+      original_filename: 'new.xlsx',
+      sheet_names: ['Orders'],
+    }))
+
+    const config = (usePipelineStore.getState().nodes.find((n) => n.id === 'sheet-kept')!.data as Record<string, unknown>).config as Record<string, unknown>
+    expect(config.file_path).toBe('/tmp/old.xlsx')
+  })
+})
