@@ -1,4 +1,4 @@
-export type NodeType = 'csv_source' | 'excel_source' | 'db_source' | 'transform' | 'export'
+export type NodeType = 'csv_source' | 'excel_source' | 'excel_workbook' | 'db_source' | 'transform' | 'export'
 export type DbType = 'oracle' | 'postgres'
 export type ConnectionScope = 'local' | 'global'
 export type NodeStatus = 'idle' | 'connecting' | 'running' | 'success' | 'error' | 'cancelled'
@@ -56,6 +56,15 @@ export interface ExcelSourceConfig {
   header?: boolean
   /** Disable type inference; every column comes back VARCHAR. */
   all_varchar?: boolean
+}
+
+/** Workbook hub (docs/excel-node-model.md): owns the upload + sheet picker.
+ * No table, no data state, invisible to the execution DAG — extraction fields
+ * (selected_sheet, cell_range, …) belong to its sheet nodes (ExcelSourceConfig). */
+export interface ExcelWorkbookConfig {
+  file_path: string
+  original_filename: string
+  sheet_names: string[]
 }
 
 export interface CsvPreprocessingConfig {
@@ -188,7 +197,8 @@ export interface PipelineDefinition {
   nodes: Array<{
     id: string
     type: NodeType
-    table_name: string
+    /** Absent only for excel_workbook hubs (they produce no table). */
+    table_name?: string
     label: string
     description?: string
     auto_label?: string

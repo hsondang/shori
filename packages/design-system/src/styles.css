@@ -45,6 +45,8 @@
   --ds-accent-transform: #a855f7;    --ds-accent-transform-text: #9333ea;
   --ds-accent-csv: #3b82f6;          --ds-accent-csv-text: #2563eb;
   --ds-accent-excel: #10b981;        --ds-accent-excel-text: #059669;
+  /* Workbook hub: same family as excel but deeper, so parent and sheets read together. */
+  --ds-accent-workbook: #047857;     --ds-accent-workbook-text: #065f46;
   --ds-accent-export: #6b7280;       --ds-accent-export-text: #4b5563;
 
   /* ---- Toolbar chip surfaces (light pill per node type) ---- */
@@ -255,6 +257,7 @@
 .ds-node-card--transform { --card-accent: var(--ds-accent-transform); --card-accent-text: var(--ds-accent-transform-text); }
 .ds-node-card--csv       { --card-accent: var(--ds-accent-csv);       --card-accent-text: var(--ds-accent-csv-text); }
 .ds-node-card--excel     { --card-accent: var(--ds-accent-excel);     --card-accent-text: var(--ds-accent-excel-text); }
+.ds-node-card--workbook  { --card-accent: var(--ds-accent-workbook);  --card-accent-text: var(--ds-accent-workbook-text); }
 .ds-node-card--export    { --card-accent: var(--ds-accent-export);    --card-accent-text: var(--ds-accent-export-text); }
 
 .ds-node-card__header {

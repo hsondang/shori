@@ -10,6 +10,8 @@ import type { CsvPreprocessingConfig, NodeLoadMode, NodeType } from '../../types
 const KIND_BY_NODE_TYPE: Record<NodeType, NodeStateKind> = {
   csv_source: 'csv',
   excel_source: 'excel',
+  // Hubs are excluded from the rows below; the entry only satisfies the Record type.
+  excel_workbook: 'excel',
   db_source: 'db',
   transform: 'transform',
   export: 'export',
@@ -85,7 +87,9 @@ export default function NodeStatePage() {
   }
 
   const rows: NodeStateRow[] = nodes
-    .filter((node) => node.type !== 'export')
+    // Exports produce no table; workbook hubs have no data state at all
+    // (docs/excel-node-model.md §6) — neither belongs in this table.
+    .filter((node) => node.type !== 'export' && node.type !== 'excel_workbook')
     .map((node) => {
       const d = node.data as Record<string, unknown>
       const nodeType = node.type as NodeType

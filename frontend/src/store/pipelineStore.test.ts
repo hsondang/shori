@@ -1906,3 +1906,129 @@ describe('pipelineStore', () => {
     })
   })
 })
+
+describe('excel workbook hub', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    act(() => {
+      usePipelineStore.getState().newPipeline()
+    })
+  })
+
+  function seedWorkbookPipeline() {
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'hub-1',
+            type: 'excel_workbook',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Workbook',
+              tableName: '',
+              config: { file_path: '/tmp/wb.xlsx', original_filename: 'wb.xlsx', sheet_names: ['Orders', 'Summary'] },
+            },
+          },
+          {
+            id: 'sheet-1',
+            type: 'excel_source',
+            position: { x: 320, y: 0 },
+            data: {
+              label: 'Orders',
+              tableName: 'orders_t',
+              config: { file_path: '/tmp/wb.xlsx', original_filename: 'wb.xlsx', sheet_names: ['Orders', 'Summary'], selected_sheet: 'Orders' },
+            },
+          },
+          {
+            id: 'tx-1',
+            type: 'transform',
+            position: { x: 640, y: 0 },
+            data: { label: 'Transform', tableName: 'tx_t', config: { sql: 'SELECT * FROM orders_t' } },
+          },
+        ],
+        edges: [
+          { id: 'edge-structural', source: 'hub-1', target: 'sheet-1' },
+          { id: 'edge-data', source: 'sheet-1', target: 'tx-1' },
+        ],
+      })
+    })
+  }
+
+  it('addNode creates a hub with no table name and picker-less config', () => {
+    act(() => usePipelineStore.getState().addNode('excel_workbook', { x: 0, y: 0 }))
+    const node = usePipelineStore.getState().nodes[0]
+    const data = node.data as Record<string, unknown>
+    expect(data.tableName).toBe('')
+    expect(data.config).toEqual({ file_path: '', original_filename: '', sheet_names: [] })
+  })
+
+  it('savePipeline omits table_name for hubs but keeps it for sheet nodes', async () => {
+    seedWorkbookPipeline()
+    mockSavePipeline.mockResolvedValue({ ok: true })
+
+    await act(async () => {
+      await usePipelineStore.getState().savePipeline()
+    })
+
+    const saved = mockSavePipeline.mock.calls[0][0]
+    const hub = saved.nodes.find((n: any) => n.id === 'hub-1')
+    const sheet = saved.nodes.find((n: any) => n.id === 'sheet-1')
+    expect(hub.table_name).toBeUndefined()
+    expect(sheet.table_name).toBe('orders_t')
+  })
+
+  it('onConnect refuses edges that touch a hub', () => {
+    seedWorkbookPipeline()
+    act(() => {
+      usePipelineStore.getState().onConnect({ source: 'hub-1', target: 'tx-1', sourceHandle: null, targetHandle: null })
+      usePipelineStore.getState().onConnect({ source: 'tx-1', target: 'hub-1', sourceHandle: null, targetHandle: null })
+    })
+    expect(usePipelineStore.getState().edges).toHaveLength(2)
+  })
+
+  it('onEdgesChange refuses removal of structural edges but allows data edges', () => {
+    seedWorkbookPipeline()
+    act(() => {
+      usePipelineStore.getState().onEdgesChange([
+        { id: 'edge-structural', type: 'remove' },
+        { id: 'edge-data', type: 'remove' },
+      ])
+    })
+    const edges = usePipelineStore.getState().edges
+    expect(edges.map((e) => e.id)).toEqual(['edge-structural'])
+  })
+
+  it('deleting a sheet node removes its structural edge', () => {
+    seedWorkbookPipeline()
+    act(() => usePipelineStore.getState().deleteNode('sheet-1'))
+    expect(usePipelineStore.getState().edges).toHaveLength(0)
+    expect(usePipelineStore.getState().nodes.map((n) => n.id)).toEqual(['hub-1', 'tx-1'])
+  })
+
+  it('deleting the hub orphans its sheet nodes with their config intact', () => {
+    seedWorkbookPipeline()
+    act(() => usePipelineStore.getState().deleteNode('hub-1'))
+    const state = usePipelineStore.getState()
+    expect(state.nodes.map((n) => n.id)).toEqual(['sheet-1', 'tx-1'])
+    // Sheet keeps everything it needs to re-run on its own.
+    const sheetConfig = (state.nodes[0].data as Record<string, unknown>).config as Record<string, unknown>
+    expect(sheetConfig.file_path).toBe('/tmp/wb.xlsx')
+    expect(sheetConfig.selected_sheet).toBe('Orders')
+    // Structural edge died with the hub; the data edge survives.
+    expect(state.edges.map((e) => e.id)).toEqual(['edge-data'])
+  })
+
+  it('executePipeline error fan-out never marks the hub', async () => {
+    seedWorkbookPipeline()
+    mockStartPipelineExecution.mockRejectedValue(new Error('backend down'))
+
+    await act(async () => {
+      await usePipelineStore.getState().executePipeline()
+    })
+
+    const results = usePipelineStore.getState().nodeResults
+    expect(results['sheet-1']?.status).toBe('error')
+    expect(results['tx-1']?.status).toBe('error')
+    expect(results['hub-1']).toBeUndefined()
+  })
+})

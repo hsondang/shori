@@ -397,6 +397,33 @@ describe('FlowCanvas', () => {
     expect(usePipelineStore.getState().edges).toEqual([])
   })
 
+  it('never removes a selected structural workbook edge on Delete', () => {
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'hub-1',
+            type: 'excel_workbook',
+            position: { x: 0, y: 0 },
+            data: { label: 'Workbook', autoLabel: 'Excel Workbook', labelMode: 'auto', tableName: '', config: { file_path: '/tmp/wb.xlsx', original_filename: 'wb.xlsx', sheet_names: ['Orders'] } },
+          },
+          {
+            id: 'sheet-1',
+            type: 'excel_source',
+            position: { x: 100, y: 0 },
+            data: { label: 'Orders', autoLabel: 'Excel Source', labelMode: 'auto', tableName: 'orders_t', config: { file_path: '/tmp/wb.xlsx', original_filename: 'wb.xlsx', sheet_names: ['Orders'], selected_sheet: 'Orders' } },
+          },
+        ],
+        edges: [{ id: 'edge-structural', source: 'hub-1', target: 'sheet-1', selected: true }],
+      })
+    })
+
+    renderCanvas()
+    fireEvent.keyDown(window, { key: 'Delete' })
+
+    expect(usePipelineStore.getState().edges).toHaveLength(1)
+  })
+
   it('fires the node-card dismiss event on viewport move so open menus close', async () => {
     const user = userEvent.setup()
     const onDismiss = vi.fn()

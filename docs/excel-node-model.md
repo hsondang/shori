@@ -194,8 +194,8 @@ truth.)
 | Skip hub in execution scheduling | ✅ Implemented | No task/done-event/result in pipeline runs; excluded from execution-registry run tracking; single-node endpoints return 400; `/cache-status` omits hubs. |
 | Sheet picker UI (navigator modal) | ❌ Target | Prototype exists (Claude Design). Prefilled table names; best-effort dimensions. |
 | Sheet-node creation + auto-layout + batch load | ❌ Target | Frontend/store operation (§3.2). |
-| Rollup status on hub card | ❌ Target | Frontend-derived only. |
-| Orphan-with-confirm deletion | ❌ Target | §5. |
+| Rollup status on hub card | ✅ Implemented | `lib/workbookRollup.ts` (pure projection), rendered by `ExcelWorkbookNode` + hub config panel. |
+| Orphan-with-confirm deletion | ✅ Implemented | Hub-specific danger Modal in `NodeConfigPanel`; copy states children keep working. Structural edges not user-deletable (store + canvas guards). |
 | Replace-workbook diff in hub panel | ❌ Target | §5. |
 | Migration of existing `excel_source` nodes | ✅ N/A by construction | Sheet node type id *is* `excel_source`; existing nodes are already valid parentless Sheet nodes. |
 | Code type ids for the two node types | ✅ Decided | Hub = `excel_workbook`; sheet keeps `excel_source` (keeps the engine branch, cache-key branch, and `selected_sheet` config key untouched; makes migration a no-op). |

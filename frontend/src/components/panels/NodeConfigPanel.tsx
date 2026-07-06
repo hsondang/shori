@@ -11,8 +11,10 @@ import {
   type ReactNode,
   type SetStateAction,
 } from 'react'
+import { Button, Modal } from '@shori/design-system'
 import { usePipelineStore } from '../../store/pipelineStore'
 import { useSettingsStore } from '../../store/settingsStore'
+import { computeWorkbookRollup } from '../../lib/workbookRollup'
 import {
   findSavedConnectionById,
   getConnectionSummary,
@@ -30,6 +32,7 @@ import type {
   DatabaseConnectionConfig,
   DbType,
   ExcelSourceConfig,
+  ExcelWorkbookConfig,
   ExportConfig,
   NodeLoadMode,
 } from '../../types/pipeline'
@@ -45,6 +48,8 @@ function getNodeTitle(type?: string): string {
       return 'CSV Source'
     case 'excel_source':
       return 'Excel Source'
+    case 'excel_workbook':
+      return 'Excel Workbook'
     case 'db_source':
       return 'Database Source'
     case 'transform':
@@ -288,6 +293,7 @@ export default function NodeConfigPanel() {
   const edges = usePipelineStore((s) => s.edges)
   const updateNodeData = usePipelineStore((s) => s.updateNodeData)
   const deleteNode = usePipelineStore((s) => s.deleteNode)
+  const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
   const openEditNodeEditor = usePipelineStore((s) => s.openEditNodeEditor)
   const executeSingleNode = usePipelineStore((s) => s.executeSingleNode)
   const runNodeWithLoadMode = usePipelineStore((s) => s.runNodeWithLoadMode)
@@ -304,6 +310,7 @@ export default function NodeConfigPanel() {
   const menuRef = useRef<HTMLDivElement>(null)
   const resizeStateRef = useRef<{ expanded: boolean; startX: number; startWidthPx: number } | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [hubDeleteConfirmOpen, setHubDeleteConfirmOpen] = useState(false)
   const [isDbEditMode, setIsDbEditMode] = useState(false)
   const [isTransformEditMode, setIsTransformEditMode] = useState(false)
   const [panelHidden, setPanelHidden] = useState(false)
@@ -322,8 +329,15 @@ export default function NodeConfigPanel() {
   const nodeResult = nodeId ? nodeResults[nodeId] : undefined
   const isCsvNode = node?.type === 'csv_source'
   const isExcelNode = node?.type === 'excel_source'
+  const isWorkbookNode = node?.type === 'excel_workbook'
   const csvConfig = (isCsvNode ? config : null) as CsvSourceConfig | null
   const excelConfig = (isExcelNode ? config : null) as ExcelSourceConfig | null
+  const workbookConfig = (isWorkbookNode ? config : null) as ExcelWorkbookConfig | null
+  // Sheet nodes still joined to this hub by a structural edge.
+  const workbookChildIds = useMemo(
+    () => (isWorkbookNode && nodeId ? edges.filter((edge) => edge.source === nodeId).map((edge) => edge.target) : []),
+    [edges, isWorkbookNode, nodeId],
+  )
   // Normalize so script_path is always a string, even for projects saved with
   // the legacy preprocessing shape (runtime/script) before the .py-file contract.
   const csvPreprocessing: CsvPreprocessingConfig = {
@@ -484,6 +498,13 @@ export default function NodeConfigPanel() {
   const handleDeleteNode = () => {
     if (!node) return
     setMenuOpen(false)
+    // Deleting a hub orphans its sheet nodes (they keep working — their config
+    // carries the file + options), so it gets a dedicated dialog whose copy
+    // says exactly that instead of the generic destructive confirm (spec §5).
+    if (isWorkbookNode && workbookChildIds.length > 0) {
+      setHubDeleteConfirmOpen(true)
+      return
+    }
     const confirmed = window.confirm(`Delete "${label}"? This cannot be undone.`)
     if (!confirmed) return
     deleteNode(node.id)
@@ -825,12 +846,14 @@ export default function NodeConfigPanel() {
         </div>
 
         <div className="mt-4 space-y-3">
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Table</div>
-            <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
-              {tableName}
+          {node.type !== 'excel_workbook' && (
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Table</div>
+              <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
+                {tableName}
+              </div>
             </div>
-          </div>
+          )}
 
           {node.type === 'db_source' && dbConnection && (
             <div>
@@ -1164,6 +1187,62 @@ export default function NodeConfigPanel() {
           </div>
         )}
 
+        {node.type === 'excel_workbook' && workbookConfig && (
+          <div className="space-y-6">
+            <div>
+              <label className="mb-2 block text-xs text-gray-500">Excel Workbook</label>
+              <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700">
+                {workbookConfig.original_filename || 'No workbook uploaded'}
+                {workbookConfig.sheet_names.length > 0 && (
+                  <span className="ml-2 text-xs text-gray-400">
+                    {workbookConfig.sheet_names.length} {workbookConfig.sheet_names.length === 1 ? 'sheet' : 'sheets'}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Sheet nodes</div>
+              {workbookChildIds.length === 0 ? (
+                <p className="text-sm text-gray-500">No sheets imported yet.</p>
+              ) : (
+                <ul className="space-y-1">
+                  {workbookChildIds.map((childId) => {
+                    const child = nodes.find((candidate) => candidate.id === childId)
+                    if (!child) return null
+                    const childData = child.data as Record<string, unknown>
+                    const childConfig = childData.config as ExcelSourceConfig
+                    const childResult = nodeResults[childId]
+                    return (
+                      <li key={childId}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedNodeId(childId)}
+                          className="flex w-full items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2 text-left text-sm hover:border-emerald-400"
+                        >
+                          <span className="truncate font-mono text-gray-700">{(childData.tableName as string) || childId}</span>
+                          <span className="ml-2 shrink-0 text-xs text-gray-400">
+                            {childConfig?.selected_sheet || '—'}
+                            {childResult?.status === 'error' && <span className="ml-1 text-red-500">failed</span>}
+                          </span>
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+              {(() => {
+                const rollup = computeWorkbookRollup({ hubId: node.id, edges, nodeResults })
+                return rollup.label
+                  ? <p className="mt-2 text-xs text-gray-500">{rollup.label}</p>
+                  : null
+              })()}
+            </div>
+
+            <DescriptionField value={nodeDescription} onChange={updateNodeDescription} />
+          </div>
+        )}
+
         {node.type === 'export' && (
           <ExportNodeConfig
             config={config as unknown as ExportConfig}
@@ -1176,6 +1255,33 @@ export default function NodeConfigPanel() {
         )}
         </div>
       </div>
+
+      <Modal
+        open={hubDeleteConfirmOpen}
+        onClose={() => setHubDeleteConfirmOpen(false)}
+        title={`Delete "${label}"?`}
+        tone="danger"
+        size="sm"
+        description={
+          `Its ${workbookChildIds.length} sheet ${workbookChildIds.length === 1 ? 'node' : 'nodes'} will keep working — `
+          + 'each carries its own file and options and can still load or materialize. '
+          + 'They only lose the workbook grouping and the add-sheets / replace-workbook actions.'
+        }
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setHubDeleteConfirmOpen(false)}>Cancel</Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                setHubDeleteConfirmOpen(false)
+                if (node) deleteNode(node.id)
+              }}
+            >
+              Delete workbook node
+            </Button>
+          </>
+        }
+      />
     </NodeConfigPanelShell>
   )
 }

@@ -243,18 +243,20 @@ export default function NodeEditorModal() {
               />
             </div>
 
-            <div>
-              <label htmlFor="node-editor-table-name" className="mb-1 block text-xs text-gray-500">
-                Table Name
-              </label>
-              <input
-                id="node-editor-table-name"
-                type="text"
-                value={draft.tableName}
-                onChange={(event) => updateNodeEditorDraft({ tableName: event.target.value })}
-                className="w-full rounded border border-gray-300 px-2 py-1 text-sm font-mono"
-              />
-            </div>
+            {draft.type !== 'excel_workbook' && (
+              <div>
+                <label htmlFor="node-editor-table-name" className="mb-1 block text-xs text-gray-500">
+                  Table Name
+                </label>
+                <input
+                  id="node-editor-table-name"
+                  type="text"
+                  value={draft.tableName}
+                  onChange={(event) => updateNodeEditorDraft({ tableName: event.target.value })}
+                  className="w-full rounded border border-gray-300 px-2 py-1 text-sm font-mono"
+                />
+              </div>
+            )}
           </div>
 
           <div>

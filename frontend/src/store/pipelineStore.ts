@@ -47,6 +47,7 @@ import {
   createBlankPipelineDefinition,
   snapshotPipelineDefinition,
 } from '../lib/pipelineDefinitions'
+import { buildNodesById, dataEdges, isStructuralEdge } from '../lib/structuralEdges'
 
 interface PipelineState {
   // React Flow
@@ -166,6 +167,7 @@ function defaultLabel(type: NodeType): string {
   switch (type) {
     case 'csv_source': return 'CSV Source'
     case 'excel_source': return 'Excel Source'
+    case 'excel_workbook': return 'Excel Workbook'
     case 'db_source': return 'Database Source'
     case 'transform': return 'Transform'
     case 'export': return 'Export'
@@ -191,6 +193,11 @@ function defaultConfig(type: NodeType): Record<string, unknown> {
       load_mode: 'in_memory',
       header: true,
       all_varchar: false,
+    }
+    case 'excel_workbook': return {
+      file_path: '',
+      original_filename: '',
+      sheet_names: [],
     }
     case 'db_source': return defaultDatabaseSourceConfig('postgres') as unknown as Record<string, unknown>
     case 'transform': return { sql: '', load_mode: 'in_memory' }
@@ -218,7 +225,7 @@ export function buildNodeDraft(
     label,
     autoLabel,
     labelMode: overrides.labelMode ?? deriveLabelMode(label, autoLabel),
-    tableName: overrides.tableName ?? id,
+    tableName: overrides.tableName ?? (type === 'excel_workbook' ? '' : id),
     config: cloneValue(overrides.config ?? defaultConfig(type)),
   }
 }
@@ -307,7 +314,7 @@ function normalizeHydratedNode(nodeDef: PipelineDefinition['nodes'][number]): No
       description: nodeDef.description ?? '',
       autoLabel: nodeDef.auto_label ?? inferred.autoLabel,
       labelMode: nodeDef.label_mode ?? inferred.labelMode,
-      tableName: nodeDef.table_name,
+      tableName: nodeDef.table_name ?? '',
       config: nodeDef.config,
     },
   }
@@ -332,7 +339,10 @@ function serializeNode(node: Node): PipelineDefinition['nodes'][number] {
   return {
     id: node.id,
     type: node.type as NodeType,
-    table_name: (node.data as Record<string, unknown>).tableName as string,
+    // Hubs produce no table; omit rather than send an empty string.
+    table_name: node.type === 'excel_workbook'
+      ? undefined
+      : (node.data as Record<string, unknown>).tableName as string,
     label: (node.data as Record<string, unknown>).label as string,
     description: ((node.data as Record<string, unknown>).description as string | undefined) || undefined,
     auto_label: autoLabel,
@@ -561,9 +571,11 @@ function hasExecutionInputsChanged(
     || hasTransformInputsChanged(node, nextConfig)
 }
 
-function collectAncestorNodeIds(nodeId: string, edges: Edge[]): string[] {
+function collectAncestorNodeIds(nodeId: string, edges: Edge[], nodes: Node[]): string[] {
   const parentsByTarget = new Map<string, string[]>()
-  edges.forEach((edge) => {
+  // Structural workbook→sheet edges are not data dependencies: a hub has no
+  // data and must never be walked into (or flagged as needing a destination).
+  dataEdges(edges, nodes).forEach((edge) => {
     const parents = parentsByTarget.get(edge.target) ?? []
     parents.push(edge.source)
     parentsByTarget.set(edge.target, parents)
@@ -593,7 +605,7 @@ function nodesNeedingDestination(
   edges: Edge[],
   cacheStatusByNodeId: Record<string, NodeCacheStatus>,
 ): LoadDestinationCandidate[] {
-  const ancestorIds = collectAncestorNodeIds(nodeId, edges)
+  const ancestorIds = collectAncestorNodeIds(nodeId, edges, nodes)
   const nodeMap = new Map(nodes.map((candidate) => [candidate.id, candidate]))
   return ancestorIds
     .map((ancestorId) => nodeMap.get(ancestorId))
@@ -924,7 +936,17 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   },
 
   onEdgesChange: (changes) => {
-    set({ edges: applyEdgeChanges(changes, get().edges) })
+    // Structural workbook→sheet edges live and die with their sheet node —
+    // they are never removable on their own (docs/excel-node-model.md §5).
+    const nodesById = buildNodesById(get().nodes)
+    const edgesById = new Map(get().edges.map((edge) => [edge.id, edge]))
+    const allowed = changes.filter((change) => {
+      if (change.type !== 'remove') return true
+      const edge = edgesById.get(change.id)
+      return !edge || !isStructuralEdge(edge, nodesById)
+    })
+    if (allowed.length === 0) return
+    set({ edges: applyEdgeChanges(allowed, get().edges) })
     const state = get()
     set({
       hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
@@ -933,6 +955,13 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
 
   onConnect: (connection) => {
     if (!connection.source || !connection.target || connection.source === connection.target) {
+      return
+    }
+    // Hubs never take part in user-drawn connections: structural edges are
+    // created only by the sheet picker, and a hub has no data to consume.
+    const isHub = (id: string | null) =>
+      get().nodes.find((node) => node.id === id)?.type === 'excel_workbook'
+    if (isHub(connection.source) || isHub(connection.target)) {
       return
     }
     set({ edges: addEdge({ ...connection, id: `edge_${Date.now()}` }, get().edges) })
@@ -1242,7 +1271,9 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
 
     try {
       const run = await api.startPipelineExecution(pipeline, force)
-      executionTrackedNodeIds.set(run.execution_id, nodes.map((node) => node.id))
+      // Hubs never execute and never get a result — don't track or error them.
+      const executableNodes = nodes.filter((node) => node.type !== 'excel_workbook')
+      executionTrackedNodeIds.set(run.execution_id, executableNodes.map((node) => node.id))
       set({ activePipelineExecutionId: run.execution_id, errorDialogNodeId: null })
       applyExecutionRunSnapshot(run, set, get)
       if (run.status === 'running') {
@@ -1253,7 +1284,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unknown error'
       const errorResults: Record<string, NodeExecutionResult> = {}
-      nodes.forEach((n) => {
+      nodes.filter((n) => n.type !== 'excel_workbook').forEach((n) => {
         errorResults[n.id] = { node_id: n.id, status: 'error', error: message }
       })
       set({
@@ -1729,7 +1760,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
         // The cache-status pre-check was stale; the backend still says these
         // upstreams have no data. Gate here too instead of surfacing an error.
         restorePrePreviewState()
-        const ancestorIds = collectAncestorNodeIds(nodeId, get().edges)
+        const ancestorIds = collectAncestorNodeIds(nodeId, get().edges, get().nodes)
         const nodeMap = new Map(get().nodes.map((candidate) => [candidate.id, candidate]))
         const candidates: LoadDestinationCandidate[] = ancestorIds
           .map((id) => nodeMap.get(id))
