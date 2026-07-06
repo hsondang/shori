@@ -49,6 +49,8 @@ async def test_upload_excel_returns_sheet_names(client, sample_excel_file):
     assert body["sheet_names"] == ["Orders", "Summary"]
     assert "sheets" not in body
     assert body["file_path"].endswith("sample.xlsx")
+    # The fixture writes no <dimension> elements — best-effort means None, not an error.
+    assert body["sheet_dimensions"] == {"Orders": None, "Summary": None}
 
 
 @pytest.mark.asyncio

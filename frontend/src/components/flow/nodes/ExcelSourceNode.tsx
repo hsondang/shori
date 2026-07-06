@@ -8,6 +8,10 @@ import type { ExcelSourceConfig } from '../../../types/pipeline'
 
 export default function ExcelSourceNode({ id, data }: NodeProps) {
   const nodeResults = usePipelineStore((s) => s.nodeResults)
+  // Any incoming edge on a sheet node is its hub's structural edge (sheets
+  // consume no data). React Flow drops an edge whose target node lacks a
+  // target handle, so render one — non-interactive — whenever a hub is joined.
+  const hasWorkbookParent = usePipelineStore((s) => s.edges.some((edge) => edge.target === id))
   const executionClockNow = usePipelineStore((s) => s.executionClockNow)
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
   const openNodeError = usePipelineStore((s) => s.openNodeError)
@@ -39,6 +43,14 @@ export default function ExcelSourceNode({ id, data }: NodeProps) {
 
   return (
     <div>
+      {hasWorkbookParent && (
+        <Handle
+          type="target"
+          position={Position.Left}
+          isConnectable={false}
+          className="!bg-emerald-700 !w-2 !h-2 !border-0"
+        />
+      )}
       <NodeCard
         kind="excel"
         icon="▦"

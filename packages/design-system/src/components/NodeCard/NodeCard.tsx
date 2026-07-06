@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { StatusBadge } from '../StatusBadge/StatusBadge'
 import type { NodeResultLike } from '../StatusBadge/status'
 
-export type NodeKind = 'csv' | 'excel' | 'db' | 'transform' | 'export'
+export type NodeKind = 'csv' | 'excel' | 'workbook' | 'db' | 'transform' | 'export'
 export type DbAccent = 'oracle' | 'postgres'
 
 export interface NodeAction {
@@ -37,6 +37,7 @@ export interface NodeCardProps {
 const KIND_LABEL: Record<NodeKind, string> = {
   csv: 'CSV Source',
   excel: 'Excel Source',
+  workbook: 'Excel Workbook',
   db: 'Database Source',
   transform: 'Transform',
   export: 'Export',

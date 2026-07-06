@@ -1,6 +1,6 @@
 # Excel Node Model — Canonical Domain Spec
 
-> **Status: canonical / authoritative — target design, not yet implemented.** This is the
+> **Status: canonical / authoritative — implemented (see §7).** This is the
 > single source of truth for how Excel workbooks and their sheets are represented on the
 > canvas, how they execute, and how they relate to the pipeline DAG. When code, UI copy,
 > API fields, or conversation disagree about Excel semantics, **this document wins** —
@@ -192,11 +192,12 @@ truth.)
 | Excel node (hub) type | ✅ Implemented | `NodeType.EXCEL_WORKBOOK`; `table_name` optional (hub-only, enforced by validators); exemptions in engine + routers mirror the EXPORT precedent. |
 | Structural-edge type-filter in DAG build | ✅ Implemented | [pipeline_graph.py](../backend/app/services/pipeline_graph.py) `is_structural_edge`/`data_upstream_ids`, used by the engine, cache keys, upstream resolution, and the preview gate. `topological_sort` deliberately stays unfiltered (cycle-validation needs every node). |
 | Skip hub in execution scheduling | ✅ Implemented | No task/done-event/result in pipeline runs; excluded from execution-registry run tracking; single-node endpoints return 400; `/cache-status` omits hubs. |
-| Sheet picker UI (navigator modal) | ❌ Target | Prototype exists (Claude Design). Prefilled table names; best-effort dimensions. |
-| Sheet-node creation + auto-layout + batch load | ❌ Target | Frontend/store operation (§3.2). |
-| Rollup status on hub card | ❌ Target | Frontend-derived only. |
-| Orphan-with-confirm deletion | ❌ Target | §5. |
-| Replace-workbook diff in hub panel | ❌ Target | §5. |
+| Sheet picker UI (navigator modal) | ✅ Implemented | `SheetPickerModal` — checkbox rows, prefilled slugified/deduped table names (`lib/tableNames.ts`), inline validation, imported tags, batch-load choice. Dimensions still pending (§4 note). |
+| Sheet-node creation + auto-layout + batch load | ✅ Implemented | `addWorkbookSheets` store action: column right of hub, reopen stacks below existing children, sequential batch load survives per-sheet failures. Toolbar chip now creates hubs; create-modal auto-opens the picker. |
+| Rollup status on hub card | ✅ Implemented | `lib/workbookRollup.ts` (pure projection), rendered by `ExcelWorkbookNode` + hub config panel. |
+| Orphan-with-confirm deletion | ✅ Implemented | Hub-specific danger Modal in `NodeConfigPanel`; copy states children keep working. Structural edges not user-deletable (store + canvas guards). |
+| Replace-workbook diff in hub panel | ✅ Implemented | Replace button on the hub panel → `replaceWorkbookFile` re-points structural children (orphans untouched); missing-sheet children listed proactively with click-to-select. |
+| Best-effort sheet dimensions in picker | ✅ Implemented | `read_sheet_dimensions` (zip-stream `<dimension ref>` read, stops at `sheetData`, never a full parse); shown as "rows × cols" in picker rows when present. |
 | Migration of existing `excel_source` nodes | ✅ N/A by construction | Sheet node type id *is* `excel_source`; existing nodes are already valid parentless Sheet nodes. |
 | Code type ids for the two node types | ✅ Decided | Hub = `excel_workbook`; sheet keeps `excel_source` (keeps the engine branch, cache-key branch, and `selected_sheet` config key untouched; makes migration a no-op). |
 

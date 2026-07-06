@@ -7,6 +7,7 @@ import NodeErrorDialog from '../flow/NodeErrorDialog'
 import NodeConfigPanel from '../panels/NodeConfigPanel'
 import DataPreviewPanel from '../panels/DataPreviewPanel'
 import NodeEditorModal from '../panels/NodeEditorModal'
+import SheetPickerModal from '../panels/SheetPickerModal'
 import { usePipelineStore } from '../../store/pipelineStore'
 import {
   clampPreviewHeight,
@@ -223,6 +224,7 @@ export default function PipelineEditorPage() {
         </div>
       </section>
       <NodeEditorModal />
+      <SheetPickerModal />
       <NodeErrorDialog />
       <LoadDestinationDialog
         open={Boolean(loadDestinationPrompt)}

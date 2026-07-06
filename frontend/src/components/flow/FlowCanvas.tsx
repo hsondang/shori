@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import {
   ReactFlow,
   Background,
   Controls,
   MiniMap,
+  type IsValidConnection,
   type ReactFlowInstance,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
@@ -17,9 +18,11 @@ import {
 import { useSettingsStore } from '../../store/settingsStore'
 import CsvSourceNode from './nodes/CsvSourceNode'
 import ExcelSourceNode from './nodes/ExcelSourceNode'
+import ExcelWorkbookNode from './nodes/ExcelWorkbookNode'
 import DatabaseSourceNode from './nodes/DatabaseSourceNode'
 import TransformNode from './nodes/TransformNode'
 import ExportNode from './nodes/ExportNode'
+import { buildNodesById, isStructuralEdge } from '../../lib/structuralEdges'
 import type { NodeType, SavedDatabaseConnection } from '../../types/pipeline'
 import {
   DATABASE_CONNECTION_MIME,
@@ -30,6 +33,7 @@ import {
 const nodeTypes = {
   csv_source: CsvSourceNode,
   excel_source: ExcelSourceNode,
+  excel_workbook: ExcelWorkbookNode,
   db_source: DatabaseSourceNode,
   transform: TransformNode,
   export: ExportNode,
@@ -106,7 +110,12 @@ export default function FlowCanvas() {
         return
       }
 
-      const selectedEdges = edges.filter((edge) => edge.selected)
+      // Structural workbook→sheet edges live and die with their sheet node
+      // and are never removable on their own (docs/excel-node-model.md §5).
+      const nodesById = buildNodesById(nodes)
+      const selectedEdges = edges.filter(
+        (edge) => edge.selected && !isStructuralEdge(edge, nodesById),
+      )
       if (selectedEdges.length === 0) return
       event.preventDefault()
       onEdgesChange(selectedEdges.map((edge) => ({ id: edge.id, type: 'remove' })))
@@ -114,15 +123,43 @@ export default function FlowCanvas() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [edges, onEdgesChange])
+  }, [edges, nodes, onEdgesChange])
+
+  // Presentation only (never persisted): structural edges render dashed/muted
+  // and are not deletable via React Flow's built-in delete handling.
+  const displayEdges = useMemo(() => {
+    const nodesById = buildNodesById(nodes)
+    return edges.map((edge) =>
+      isStructuralEdge(edge, nodesById)
+        ? {
+            ...edge,
+            deletable: false,
+            style: { strokeDasharray: '6 4', opacity: 0.55, ...edge.style },
+          }
+        : edge,
+    )
+  }, [edges, nodes])
+
+  // Hubs never take part in user-drawn connections (structural edges are
+  // created only by the sheet picker) — refuse the drag before onConnect fires.
+  const isValidConnection = useCallback<IsValidConnection>(
+    (connection) => {
+      const nodesById = buildNodesById(nodes)
+      const isHub = (id: string | null | undefined) =>
+        id != null && nodesById.get(id)?.type === 'excel_workbook'
+      return !isHub(connection.source) && !isHub(connection.target)
+    },
+    [nodes],
+  )
 
   return (
     <ReactFlow
       nodes={nodes}
-      edges={edges}
+      edges={displayEdges}
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
       onConnect={onConnect}
+      isValidConnection={isValidConnection}
       onInit={(instance) => { rfInstance.current = instance }}
       onMove={onMove}
       onDragOver={onDragOver}
