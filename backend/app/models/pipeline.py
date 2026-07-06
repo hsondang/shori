@@ -7,6 +7,10 @@ from enum import Enum
 class NodeType(str, Enum):
     CSV_SOURCE = "csv_source"
     EXCEL_SOURCE = "excel_source"
+    # Workbook hub: represents an uploaded Excel file, owns the sheet picker.
+    # Has no table and no data state, and is invisible to the execution DAG —
+    # see docs/excel-node-model.md.
+    EXCEL_WORKBOOK = "excel_workbook"
     DB_SOURCE = "db_source"
     TRANSFORM = "transform"
     EXPORT = "export"
@@ -107,7 +111,9 @@ DatabaseConnectionInputDefinition = Annotated[
 class NodeDefinition(BaseModel):
     id: str
     type: NodeType
-    table_name: str
+    # None is valid only for EXCEL_WORKBOOK hubs (they produce no table);
+    # every other type is enforced non-empty by the table-name validators.
+    table_name: Optional[str] = None
     label: str
     description: Optional[str] = None
     auto_label: Optional[str] = None

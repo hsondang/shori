@@ -836,3 +836,88 @@ async def test_execute_pipeline_upstream_change_invalidates_downstream(engine, s
     # The transform's own config didn't change, but its upstream did — it must rerun.
     assert second["tx"].cached is False
     assert second["tx"].row_count == 1
+
+
+# --- Excel workbook hub (docs/excel-node-model.md) ---
+
+def _make_hub(node_id="hub", file_path="wb.xlsx", sheet_names=("Orders", "Summary")):
+    return _make_node(node_id, NodeType.EXCEL_WORKBOOK, None, {
+        "file_path": file_path,
+        "original_filename": "wb.xlsx",
+        "sheet_names": list(sheet_names),
+    })
+
+
+def _make_sheet(node_id, table_name, file_path, sheet):
+    return _make_node(node_id, NodeType.EXCEL_SOURCE, table_name, {
+        "file_path": file_path,
+        "original_filename": "wb.xlsx",
+        "sheet_names": ["Orders", "Summary"],
+        "selected_sheet": sheet,
+        "header": True,
+    })
+
+
+def test_topo_sort_includes_workbook_hub(engine, sample_excel_file):
+    hub = _make_hub(file_path=sample_excel_file)
+    s1 = _make_sheet("s1", "orders_t", sample_excel_file, "Orders")
+    s2 = _make_sheet("s2", "summary_t", sample_excel_file, "Summary")
+    pipeline = _make_pipeline([hub, s1, s2], [("hub", "s1"), ("hub", "s2")])
+    order = engine.topological_sort(pipeline)
+    assert set(order) == {"hub", "s1", "s2"}
+
+
+def test_validate_table_names_exempts_workbook_hub(engine, sample_excel_file):
+    hub = _make_hub(file_path=sample_excel_file)
+    s1 = _make_sheet("s1", "orders_t", sample_excel_file, "Orders")
+    engine._validate_table_names(_make_pipeline([hub, s1], [("hub", "s1")]))
+
+    dup = _make_sheet("s2", "orders_t", sample_excel_file, "Summary")
+    with pytest.raises(ValueError, match="unique"):
+        engine._validate_table_names(_make_pipeline([hub, s1, dup]))
+
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_skips_workbook_hub(engine, sample_excel_file):
+    hub = _make_hub(file_path=sample_excel_file)
+    s1 = _make_sheet("s1", "hub_orders_t", sample_excel_file, "Orders")
+    s2 = _make_sheet("s2", "hub_summary_t", sample_excel_file, "Summary")
+    transform = _make_node("tx", NodeType.TRANSFORM, "hub_tx_t", {
+        "sql": "SELECT * FROM hub_orders_t",
+    })
+    pipeline = _make_pipeline(
+        [hub, s1, s2, transform],
+        [("hub", "s1"), ("hub", "s2"), ("s1", "tx")],
+    )
+
+    results = await engine.execute_pipeline(pipeline)
+
+    # The hub gets no task and no result; sheets and downstream run normally.
+    assert set(results) == {"s1", "s2", "tx"}
+    assert results["s1"].status == NodeStatus.SUCCESS
+    assert results["s2"].status == NodeStatus.SUCCESS
+    assert results["tx"].status == NodeStatus.SUCCESS
+
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_workbook_sibling_isolation(engine, sample_excel_file):
+    hub = _make_hub(file_path=sample_excel_file)
+    good = _make_sheet("good", "iso_good_t", sample_excel_file, "Orders")
+    bad = _make_sheet("bad", "iso_bad_t", sample_excel_file, "NoSuchSheet")
+    pipeline = _make_pipeline(
+        [hub, good, bad], [("hub", "good"), ("hub", "bad")]
+    )
+
+    results = await engine.execute_pipeline(pipeline)
+
+    # One sheet failing never affects its siblings or surfaces on the hub.
+    assert results["bad"].status == NodeStatus.ERROR
+    assert results["good"].status == NodeStatus.SUCCESS
+    assert "hub" not in results
+
+
+@pytest.mark.asyncio
+async def test_execute_single_node_rejects_workbook_hub(engine, sample_excel_file):
+    hub = _make_hub(file_path=sample_excel_file)
+    with pytest.raises(ValueError, match="no executable output"):
+        await engine.execute_single_node(hub)

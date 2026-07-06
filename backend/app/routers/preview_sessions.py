@@ -13,6 +13,7 @@ from app.models.pipeline import (
 from app.services.cache_keys import compute_cache_keys
 from app.services.connection_resolution import resolve_pipeline_connections
 from app.services.execution_registry import ExecutionCancelled
+from app.services.pipeline_graph import is_structural_edge
 from app.services.preview_sessions import PreviewSession, PreviewSessionNotFound
 from app.storage.pipeline_store import PipelineStore
 
@@ -41,6 +42,8 @@ def _transform_upstream_gate(pipeline, node_id, cache_keys, manager):
     missing: list[str] = []
     for edge in pipeline.edges:
         if edge.target != node_id:
+            continue
+        if is_structural_edge(edge, node_map):
             continue
         upstream = node_map.get(edge.source)
         if upstream is None:

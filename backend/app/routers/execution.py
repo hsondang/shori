@@ -61,6 +61,11 @@ def _resolved_node_and_key(
     node = node_map.get(payload.node_id)
     if node is None:
         raise HTTPException(status_code=404, detail="Node not found in pipeline")
+    if node.type == NodeType.EXCEL_WORKBOOK:
+        raise HTTPException(
+            status_code=400,
+            detail="Excel workbook nodes have no executable output; run their sheet nodes instead.",
+        )
     cache_keys = compute_cache_keys(pipeline)
     return node, cache_keys.get(payload.node_id), pipeline, cache_keys
 
@@ -71,7 +76,13 @@ async def start_pipeline_execution(pipeline: PipelineDefinition, request: Reques
     pipeline = _resolve_pipeline_connections(pipeline, store)
     engine = _get_engine(request, pipeline)
     registry = _get_registry(request)
-    run = registry.create_run("pipeline", [node.id for node in pipeline.nodes])
+    # Workbook hubs never execute (no task, no result), so they must not be
+    # registered: an abort/failure would fan a phantom result onto them, and
+    # the registry's finalize check would wait on a result that never comes.
+    run = registry.create_run(
+        "pipeline",
+        [node.id for node in pipeline.nodes if node.type != NodeType.EXCEL_WORKBOOK],
+    )
     execution_controller = registry.create_controller(run.execution_id)
     started = asyncio.Event()
 
@@ -196,7 +207,8 @@ async def get_cache_status(pipeline: PipelineDefinition, request: Request):
 
     statuses: dict[str, dict] = {}
     for node in resolved.nodes:
-        if node.type == NodeType.EXPORT:
+        # Hubs have no data state; their status is a frontend-only rollup.
+        if node.type in (NodeType.EXPORT, NodeType.EXCEL_WORKBOOK):
             continue
         per_location = {
             location: _location_status(

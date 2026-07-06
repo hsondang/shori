@@ -629,3 +629,100 @@ async def test_cached_node_skips_rerun_via_start_endpoints(client, pipeline_def)
         json={"pipeline": pipeline_def, "node_id": "node-1", "force": True},
     )
     assert forced.json()["cached"] is False
+
+
+# --- Excel workbook hub (docs/excel-node-model.md §3.1) ---
+
+def _workbook_pipeline(sample_excel_file):
+    return {
+        "id": "test-pipeline-1",
+        "name": "Test Pipeline",
+        "database_connections": [],
+        "nodes": [
+            {
+                "id": "hub-1",
+                "type": "excel_workbook",
+                "table_name": None,
+                "label": "Workbook",
+                "position": {"x": 0, "y": 0},
+                "config": {
+                    "file_path": sample_excel_file,
+                    "original_filename": "wb.xlsx",
+                    "sheet_names": ["Orders", "Summary"],
+                },
+            },
+            {
+                "id": "sheet-1",
+                "type": "excel_source",
+                "table_name": "orders_t",
+                "label": "Orders",
+                "position": {"x": 300, "y": 0},
+                "config": {
+                    "file_path": sample_excel_file,
+                    "original_filename": "wb.xlsx",
+                    "sheet_names": ["Orders", "Summary"],
+                    "selected_sheet": "Orders",
+                    "header": True,
+                },
+            },
+        ],
+        "edges": [{"id": "e1", "source": "hub-1", "target": "sheet-1"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_execute_pipeline_omits_workbook_hub_from_results(client, sample_excel_file):
+    resp = await client.post("/api/execute/pipeline", json=_workbook_pipeline(sample_excel_file))
+    assert resp.status_code == 200
+    results = resp.json()
+    assert "sheet-1" in results
+    assert results["sheet-1"]["status"] == "success"
+    assert "hub-1" not in results
+
+
+@pytest.mark.asyncio
+async def test_start_pipeline_run_never_tracks_workbook_hub(client, sample_excel_file):
+    start_resp = await client.post(
+        "/api/execute/pipeline/start", json=_workbook_pipeline(sample_excel_file)
+    )
+    assert start_resp.status_code == 200
+    execution_id = start_resp.json()["execution_id"]
+
+    for _ in range(200):
+        run_resp = await client.get(f"/api/execute/runs/{execution_id}")
+        run = run_resp.json()
+        if run["status"] not in ("pending", "running"):
+            break
+        await asyncio.sleep(0.02)
+
+    assert run["status"] == "success"
+    assert "sheet-1" in run["node_results"]
+    assert "hub-1" not in run["node_results"]
+
+
+@pytest.mark.asyncio
+async def test_node_start_rejects_workbook_hub(client, sample_excel_file):
+    pipeline = _workbook_pipeline(sample_excel_file)
+    hub = pipeline["nodes"][0]
+    resp = await client.post(
+        "/api/execute/node/start", json=_node_request(hub, pipeline=pipeline)
+    )
+    assert resp.status_code == 400
+    assert "sheet nodes" in resp.json()["detail"]
+
+    resp = await client.post(
+        "/api/execute/node", json=_node_request(hub, pipeline=pipeline)
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_cache_status_omits_workbook_hub(client, sample_excel_file):
+    pipeline = _workbook_pipeline(sample_excel_file)
+    await client.post("/api/execute/pipeline", json=pipeline)
+
+    resp = await client.post("/api/execute/cache-status", json=pipeline)
+    assert resp.status_code == 200
+    statuses = resp.json()["nodes"]
+    assert "sheet-1" in statuses
+    assert "hub-1" not in statuses

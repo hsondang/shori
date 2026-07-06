@@ -251,3 +251,32 @@ async def test_settings_round_trip_with_defaults(client, pipeline_def):
     await client.put(f"/api/pipelines/{pipeline_def['id']}", json=tuned)
     reloaded = (await client.get(f"/api/pipelines/{pipeline_def['id']}")).json()
     assert reloaded["settings"]["max_concurrent_nodes"] == 8
+
+
+@pytest.mark.asyncio
+async def test_save_accepts_workbook_hub_without_table_name(client, pipeline_def, sample_excel_file):
+    def hub(node_id):
+        return {
+            "id": node_id,
+            "type": "excel_workbook",
+            "table_name": None,
+            "label": "Workbook",
+            "position": {"x": 0, "y": 0},
+            "config": {
+                "file_path": sample_excel_file,
+                "original_filename": "wb.xlsx",
+                "sheet_names": ["Orders", "Summary"],
+            },
+        }
+
+    with_hub = {**pipeline_def, "nodes": [pipeline_def["nodes"][0], hub("hub-1")]}
+    resp = await client.post("/api/pipelines", json=with_hub)
+    assert resp.status_code == 200
+
+    # table_name omitted entirely is also valid, and two table-less hubs don't
+    # trip the uniqueness check.
+    omitted = hub("hub-2")
+    del omitted["table_name"]
+    two_hubs = {**with_hub, "nodes": [*with_hub["nodes"], omitted]}
+    resp = await client.put(f"/api/pipelines/{pipeline_def['id']}", json=two_hubs)
+    assert resp.status_code == 200
