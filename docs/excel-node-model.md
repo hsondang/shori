@@ -1,6 +1,6 @@
 # Excel Node Model — Canonical Domain Spec
 
-> **Status: canonical / authoritative — target design, not yet implemented.** This is the
+> **Status: canonical / authoritative — implemented (see §7).** This is the
 > single source of truth for how Excel workbooks and their sheets are represented on the
 > canvas, how they execute, and how they relate to the pipeline DAG. When code, UI copy,
 > API fields, or conversation disagree about Excel semantics, **this document wins** —
