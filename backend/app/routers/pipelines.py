@@ -18,7 +18,7 @@ def get_store() -> PipelineStore:
 def _validate_pipeline_tables(pipeline: PipelineDefinition) -> None:
     seen: dict[str, str] = {}
     for node in pipeline.nodes:
-        if node.type == NodeType.EXPORT:
+        if node.type in (NodeType.EXPORT, NodeType.EXCEL_WORKBOOK):
             continue
         try:
             validate_user_table_name(node.table_name)
@@ -48,7 +48,10 @@ def _reconcile_project_storage(request: Request, pipeline: PipelineDefinition) -
         if node is None:
             manager.drop_node(node_id)
             continue
-        if node.type != NodeType.EXPORT and meta["table_name"] != node.table_name:
+        if (
+            node.type not in (NodeType.EXPORT, NodeType.EXCEL_WORKBOOK)
+            and meta["table_name"] != node.table_name
+        ):
             try:
                 manager.rename_node_table(node_id, node.table_name)
             except Exception:

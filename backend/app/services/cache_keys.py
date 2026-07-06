@@ -18,6 +18,7 @@ import json
 from app.models.pipeline import NodeType, PipelineDefinition
 
 from app.services.csv_service import _file_sha256, _normalize_preprocessing
+from app.services.pipeline_graph import data_upstream_ids
 
 
 def _connection_identity(config: dict) -> dict:
@@ -75,11 +76,13 @@ def _safe_preprocessing(preprocessing) -> dict | None:
 
 
 def compute_cache_keys(pipeline: PipelineDefinition) -> dict[str, str]:
-    """Cache key per node id, walking the DAG so upstream keys feed downstream."""
-    upstream_ids: dict[str, list[str]] = {node.id: [] for node in pipeline.nodes}
-    for edge in pipeline.edges:
-        if edge.target in upstream_ids:
-            upstream_ids[edge.target].append(edge.source)
+    """Cache key per node id, walking the DAG so upstream keys feed downstream.
+
+    Structural workbook→sheet edges are excluded: a workbook hub contributes
+    nothing to any sheet node's key, so editing the hub (or one sibling sheet)
+    never invalidates another sheet (docs/excel-node-model.md §6).
+    """
+    upstream_ids = data_upstream_ids(pipeline)
 
     keys: dict[str, str] = {}
     node_map = {node.id: node for node in pipeline.nodes}

@@ -17,6 +17,7 @@ from app.services.csv_service import CsvPreprocessArtifactStore, register_csv_so
 from app.services.duckdb_manager import DuckDBManager, validate_user_table_name
 from app.services.execution_registry import ExecutionCancelled, ExecutionController
 from app.services.oracle_service import OracleService, normalize_fetch_config
+from app.services.pipeline_graph import data_upstream_ids, is_structural_edge
 from app.services.postgres_service import PostgresAttachUnavailable, PostgresService
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,8 @@ def compute_upstream_resolution(
     for edge in pipeline.edges:
         if edge.target != node_id:
             continue
+        if is_structural_edge(edge, node_map):
+            continue
         upstream = node_map.get(edge.source)
         if upstream is None:
             continue
@@ -102,6 +105,10 @@ class PipelineEngine:
         self.use_postgres_attach = use_postgres_attach
 
     def topological_sort(self, pipeline: PipelineDefinition) -> list[str]:
+        # Cycle validation only — deliberately includes structural workbook→sheet
+        # edges: the `len(order) != len(pipeline.nodes)` check needs every node,
+        # and a hub is always an in-degree-0 source so it can't introduce cycles.
+        # Scheduling uses data_upstream_ids(), which does filter them.
         adj: dict[str, list[str]] = defaultdict(list)
         in_degree = {n.id: 0 for n in pipeline.nodes}
         for edge in pipeline.edges:
@@ -125,7 +132,7 @@ class PipelineEngine:
     def _validate_table_names(self, pipeline: PipelineDefinition) -> None:
         seen: dict[str, str] = {}
         for node in pipeline.nodes:
-            if node.type == NodeType.EXPORT:
+            if node.type in (NodeType.EXPORT, NodeType.EXCEL_WORKBOOK):
                 continue
             validate_user_table_name(node.table_name)
             other = seen.get(node.table_name)
@@ -147,7 +154,7 @@ class PipelineEngine:
 
     def cached_result(self, node: NodeDefinition, cache_key: str | None) -> NodeExecutionResult | None:
         """Return the persisted result if the node's table is current, else None."""
-        if node.type == NodeType.EXPORT or cache_key is None:
+        if node.type in (NodeType.EXPORT, NodeType.EXCEL_WORKBOOK) or cache_key is None:
             return None
         requested_location = "in_memory" if self.node_into_memory(node) else "materialized"
         # Look up the copy in the node's configured load-mode location specifically:
@@ -194,11 +201,15 @@ class PipelineEngine:
         self.topological_sort(pipeline)  # cycle validation
         self._validate_table_names(pipeline)
         cache_keys = compute_cache_keys(pipeline)
-        node_map = {n.id: n for n in pipeline.nodes}
-        upstream_ids: dict[str, list[str]] = {n.id: [] for n in pipeline.nodes}
-        for edge in pipeline.edges:
-            if edge.target in upstream_ids:
-                upstream_ids[edge.target].append(edge.source)
+        # Workbook hubs are invisible to execution: their structural edges are
+        # filtered from the dependency map AND they get no task/done-event/result.
+        # These two must stay in lockstep — a scheduled hub would hit "Unknown
+        # node type", while an unscheduled hub left in upstream_ids would make
+        # its sheets await a done-event that never fires.
+        upstream_ids = data_upstream_ids(pipeline)
+        node_map = {
+            n.id: n for n in pipeline.nodes if n.type != NodeType.EXCEL_WORKBOOK
+        }
 
         results: dict[str, NodeExecutionResult] = {}
         done_events = {node_id: asyncio.Event() for node_id in node_map}
@@ -278,6 +289,10 @@ class PipelineEngine:
         execution_controller: ExecutionController | None = None,
         upstream_resolution: dict[str, str] | None = None,
     ) -> NodeExecutionResult:
+        if node.type == NodeType.EXCEL_WORKBOOK:
+            raise ValueError(
+                "Excel workbook nodes have no executable output; run their sheet nodes instead."
+            )
         if execution_controller is not None:
             execution_controller.raise_if_cancelled()
         if not force_refresh:
@@ -477,6 +492,10 @@ class PipelineEngine:
                         execution_controller.clear_abort_callback(node.id)
             elif node.type == NodeType.EXPORT:
                 stats = {"row_count": 0, "column_count": 0, "columns": []}
+            elif node.type == NodeType.EXCEL_WORKBOOK:
+                raise ValueError(
+                    "Excel workbook nodes have no executable output; run their sheet nodes instead."
+                )
             else:
                 raise ValueError(f"Unknown node type: {node.type}")
 
