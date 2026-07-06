@@ -82,6 +82,11 @@ interface PipelineState {
   openNodeError: (nodeId: string) => void
   closeNodeError: () => void
 
+  // Workbook sheet picker (docs/excel-node-model.md §4)
+  sheetPickerHubId: string | null
+  openSheetPicker: (hubId: string) => void
+  closeSheetPicker: () => void
+
   // Data preview
   previewTabsByNodeId: Record<string, MaterializedPreviewTab>
   previewTabOrder: string[]
@@ -127,6 +132,13 @@ interface PipelineState {
   commitNodeEditor: () => string | null
   updateNodeData: (nodeId: string, data: Record<string, unknown>) => void
   deleteNode: (nodeId: string) => void
+  /** Sheet-picker confirm: create one excel_source node + structural edge per
+   * selection, laid out in a column right of the hub; optionally batch-load. */
+  addWorkbookSheets: (
+    hubId: string,
+    selections: WorkbookSheetSelection[],
+    options?: { batchLoadMode?: NodeLoadMode | null },
+  ) => Promise<string[]>
   executePipeline: (force?: boolean) => Promise<void>
   executeSingleNode: (nodeId: string, options?: { loadPreviewOnSuccess?: boolean; force?: boolean }) => Promise<void>
   runNodeWithLoadMode: (nodeId: string, loadMode: NodeLoadMode, options?: { loadPreviewOnSuccess?: boolean; force?: boolean }) => Promise<void>
@@ -141,6 +153,14 @@ interface PipelineState {
   markProjectCatalogChanged: () => void
   confirmDiscardChanges: (nextProjectName?: string) => boolean
   abortDatabaseNodeExecution: (nodeId: string) => Promise<void>
+}
+
+export interface WorkbookSheetSelection {
+  sheet: string
+  tableName: string
+  cellRange?: string
+  header: boolean
+  allVarchar: boolean
 }
 
 type StoreSet = (
@@ -885,6 +905,7 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   executionClockNow: Date.now(),
   errorDialogNodeId: null,
   selectedNodeId: null,
+  sheetPickerHubId: null,
   previewTabsByNodeId: {},
   previewTabOrder: [],
   activePreviewTarget: null,
@@ -975,6 +996,8 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
   openNodeError: (nodeId) => set({ errorDialogNodeId: nodeId }),
   closeNodeError: () => set({ errorDialogNodeId: null }),
+  openSheetPicker: (hubId) => set({ sheetPickerHubId: hubId }),
+  closeSheetPicker: () => set({ sheetPickerHubId: null }),
   selectPreviewTab: (nodeId) => {
     if (!get().previewTabsByNodeId[nodeId]) return
     set({ activePreviewTarget: { kind: 'tab', nodeId } })
@@ -1077,6 +1100,75 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     set({
       hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
     })
+  },
+
+  addWorkbookSheets: async (hubId, selections, options) => {
+    const hub = get().nodes.find((candidate) => candidate.id === hubId)
+    if (!hub || hub.type !== 'excel_workbook' || selections.length === 0) return []
+    const hubConfig = (hub.data as Record<string, unknown>).config as Record<string, unknown>
+
+    // Column to the right of the hub; the re-open flow stacks new sheets
+    // below this hub's existing children instead of overlapping them.
+    const existingChildIds = new Set(
+      get().edges.filter((edge) => edge.source === hubId).map((edge) => edge.target),
+    )
+    const childYs = get().nodes
+      .filter((candidate) => existingChildIds.has(candidate.id))
+      .map((candidate) => candidate.position.y)
+    const columnX = hub.position.x + 340
+    let nextY = childYs.length > 0 ? Math.max(...childYs) + 150 : hub.position.y
+
+    const createdNodes: Node[] = []
+    const createdEdges: Edge[] = []
+    for (const selection of selections) {
+      const draft = buildNodeDraft('excel_source', { x: columnX, y: nextY }, {
+        label: selection.sheet,
+        tableName: selection.tableName,
+        config: {
+          file_path: hubConfig.file_path,
+          original_filename: hubConfig.original_filename,
+          sheet_names: cloneValue(hubConfig.sheet_names),
+          selected_sheet: selection.sheet,
+          cell_range: selection.cellRange || undefined,
+          header: selection.header,
+          all_varchar: selection.allVarchar,
+          load_mode: options?.batchLoadMode ?? 'in_memory',
+        },
+      })
+      const node = buildNodeFromDraft(draft)
+      createdNodes.push(node)
+      createdEdges.push({
+        id: `edge_${Date.now()}_${createdEdges.length}`,
+        source: hubId,
+        target: node.id,
+      })
+      nextY += 150
+    }
+
+    set({
+      nodes: [...get().nodes, ...createdNodes],
+      edges: [...get().edges, ...createdEdges],
+      selectedNodeId: hubId,
+    })
+    const state = get()
+    set({
+      hasUnsavedChanges: snapshotPipelineDefinition(buildPipelineDefinitionFromState(state)) !== state.savedPipelineSnapshot,
+    })
+    scheduleCacheStatusRefresh(get)
+
+    const createdIds = createdNodes.map((node) => node.id)
+    if (options?.batchLoadMode) {
+      // Each sheet gets exactly the run it would get individually; one failing
+      // must not stop the rest (spec decision 11 — sibling isolation).
+      for (const nodeId of createdIds) {
+        try {
+          await get().runNodeWithLoadMode(nodeId, options.batchLoadMode)
+        } catch {
+          // The per-node error result is already recorded by executeSingleNode.
+        }
+      }
+    }
+    return createdIds
   },
 
   addDatabaseConnection: (connection) => {

@@ -2032,3 +2032,97 @@ describe('excel workbook hub', () => {
     expect(results['hub-1']).toBeUndefined()
   })
 })
+
+describe('addWorkbookSheets', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    act(() => {
+      usePipelineStore.getState().newPipeline()
+    })
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [{
+          id: 'hub-1',
+          type: 'excel_workbook',
+          position: { x: 100, y: 200 },
+          data: {
+            label: 'Workbook',
+            tableName: '',
+            config: { file_path: '/tmp/wb.xlsx', original_filename: 'wb.xlsx', sheet_names: ['Orders', 'Summary', 'Notes'] },
+          },
+        }],
+        edges: [],
+      })
+    })
+  })
+
+  it('creates one sheet node + structural edge per selection in a column right of the hub', async () => {
+    const created = await usePipelineStore.getState().addWorkbookSheets('hub-1', [
+      { sheet: 'Orders', tableName: 'orders_t', header: true, allVarchar: false },
+      { sheet: 'Summary', tableName: 'summary_t', cellRange: 'A1:F50', header: false, allVarchar: true },
+    ])
+
+    const state = usePipelineStore.getState()
+    expect(created).toHaveLength(2)
+    expect(state.nodes).toHaveLength(3)
+
+    const [first, second] = created.map((id) => state.nodes.find((n) => n.id === id)!)
+    expect(first.type).toBe('excel_source')
+    expect(first.position).toEqual({ x: 440, y: 200 })
+    expect(second.position).toEqual({ x: 440, y: 350 })
+
+    const firstConfig = (first.data as Record<string, unknown>).config as Record<string, unknown>
+    expect(firstConfig.file_path).toBe('/tmp/wb.xlsx')
+    expect(firstConfig.selected_sheet).toBe('Orders')
+    expect(firstConfig.header).toBe(true)
+    expect((first.data as Record<string, unknown>).tableName).toBe('orders_t')
+    expect((first.data as Record<string, unknown>).label).toBe('Orders')
+
+    const secondConfig = (second.data as Record<string, unknown>).config as Record<string, unknown>
+    expect(secondConfig.cell_range).toBe('A1:F50')
+    expect(secondConfig.all_varchar).toBe(true)
+
+    expect(state.edges).toHaveLength(2)
+    expect(state.edges.every((e) => e.source === 'hub-1')).toBe(true)
+    expect(state.edges.map((e) => e.target)).toEqual(created)
+  })
+
+  it('stacks new sheets below existing children on reopen', async () => {
+    await usePipelineStore.getState().addWorkbookSheets('hub-1', [
+      { sheet: 'Orders', tableName: 'orders_t', header: true, allVarchar: false },
+    ])
+    const created = await usePipelineStore.getState().addWorkbookSheets('hub-1', [
+      { sheet: 'Summary', tableName: 'summary_t', header: true, allVarchar: false },
+    ])
+
+    const node = usePipelineStore.getState().nodes.find((n) => n.id === created[0])!
+    expect(node.position).toEqual({ x: 440, y: 350 })
+  })
+
+  it('batch load runs each created node and survives a failing one', async () => {
+    const runNodeWithLoadMode = vi.fn()
+      .mockRejectedValueOnce(new Error('sheet 1 exploded'))
+      .mockResolvedValue(undefined)
+    act(() => usePipelineStore.setState({ runNodeWithLoadMode }))
+
+    const created = await usePipelineStore.getState().addWorkbookSheets('hub-1', [
+      { sheet: 'Orders', tableName: 'orders_t', header: true, allVarchar: false },
+      { sheet: 'Summary', tableName: 'summary_t', header: true, allVarchar: false },
+    ], { batchLoadMode: 'materialized' })
+
+    expect(runNodeWithLoadMode).toHaveBeenCalledTimes(2)
+    expect(runNodeWithLoadMode).toHaveBeenNthCalledWith(1, created[0], 'materialized')
+    expect(runNodeWithLoadMode).toHaveBeenNthCalledWith(2, created[1], 'materialized')
+  })
+
+  it('does nothing for a non-hub target', async () => {
+    act(() => usePipelineStore.getState().addNode('csv_source', { x: 0, y: 0 }))
+    const csvId = usePipelineStore.getState().nodes.find((n) => n.type === 'csv_source')!.id
+
+    const created = await usePipelineStore.getState().addWorkbookSheets(csvId, [
+      { sheet: 'Orders', tableName: 'orders_t', header: true, allVarchar: false },
+    ])
+    expect(created).toEqual([])
+    expect(usePipelineStore.getState().edges).toHaveLength(0)
+  })
+})

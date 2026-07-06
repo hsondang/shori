@@ -9,7 +9,10 @@ import ProjectSettingsModal from '../panels/ProjectSettingsModal'
 
 const nodeTypeOptions: { type: NodeType; label: string; color: string }[] = [
   { type: 'csv_source', label: 'CSV Source', color: 'bg-blue-100 text-blue-700 border-blue-300' },
-  { type: 'excel_source', label: 'Excel Source', color: 'bg-emerald-100 text-emerald-700 border-emerald-300' },
+  // Excel imports go through the workbook hub; single-sheet import is the
+  // hub + one checked sheet (docs/excel-node-model.md §4). Existing
+  // excel_source (sheet) nodes stay fully editable, just not chip-creatable.
+  { type: 'excel_workbook', label: 'Excel Source', color: 'bg-emerald-100 text-emerald-700 border-emerald-300' },
   { type: 'transform', label: 'Transform', color: 'bg-purple-100 text-purple-700 border-purple-300' },
   { type: 'export', label: 'Export', color: 'bg-green-100 text-green-700 border-green-300' },
 ]

@@ -294,6 +294,7 @@ export default function NodeConfigPanel() {
   const updateNodeData = usePipelineStore((s) => s.updateNodeData)
   const deleteNode = usePipelineStore((s) => s.deleteNode)
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
+  const openSheetPicker = usePipelineStore((s) => s.openSheetPicker)
   const openEditNodeEditor = usePipelineStore((s) => s.openEditNodeEditor)
   const executeSingleNode = usePipelineStore((s) => s.executeSingleNode)
   const runNodeWithLoadMode = usePipelineStore((s) => s.runNodeWithLoadMode)
@@ -1200,6 +1201,16 @@ export default function NodeConfigPanel() {
                 )}
               </div>
             </div>
+
+            {workbookConfig.sheet_names.length > 0 && (
+              <button
+                type="button"
+                onClick={() => openSheetPicker(node.id)}
+                className="w-full rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-emerald-700"
+              >
+                Add sheets…
+              </button>
+            )}
 
             <div>
               <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">Sheet nodes</div>

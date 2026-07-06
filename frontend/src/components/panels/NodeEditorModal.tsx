@@ -1,6 +1,6 @@
 import { useEffect, useRef, type ChangeEvent } from 'react'
 import { uploadCsv } from '../../api/client'
-import { createExcelUploadHandler } from '../../lib/excelUpload'
+import { createExcelUploadHandler, createWorkbookUploadHandler } from '../../lib/excelUpload'
 import {
   defaultConnectionConfig,
   defaultOracleFetchConfig,
@@ -18,6 +18,7 @@ import type {
   DatabaseSourceConfig,
   DbType,
   ExcelSourceConfig,
+  ExcelWorkbookConfig,
   ExportConfig,
   NodeLoadMode,
   OracleConnectionConfig,
@@ -111,6 +112,7 @@ export default function NodeEditorModal() {
   const updateNodeEditorDraft = usePipelineStore((s) => s.updateNodeEditorDraft)
   const closeNodeEditor = usePipelineStore((s) => s.closeNodeEditor)
   const commitNodeEditor = usePipelineStore((s) => s.commitNodeEditor)
+  const openSheetPicker = usePipelineStore((s) => s.openSheetPicker)
   const globalDatabaseConnections = useSettingsStore((s) => s.globalDatabaseConnections)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -133,6 +135,7 @@ export default function NodeEditorModal() {
   const title = getNodeTypeTitle(draft.type)
   const csvConfig = draft.type === 'csv_source' ? (draft.config as unknown as CsvSourceConfig) : null
   const excelConfig = draft.type === 'excel_source' ? (draft.config as unknown as ExcelSourceConfig) : null
+  const workbookConfig = draft.type === 'excel_workbook' ? (draft.config as unknown as ExcelWorkbookConfig) : null
   const dbConfig = draft.type === 'db_source' ? getDatabaseSourceConfig(draft.config as Record<string, unknown>) : null
   const transformConfig = draft.type === 'transform' ? (draft.config as Record<string, unknown>) : null
   const exportConfig = draft.type === 'export' ? (draft.config as unknown as ExportConfig) : null
@@ -190,6 +193,10 @@ export default function NodeEditorModal() {
 
   const handleExcelUpload = createExcelUploadHandler({
     excelConfig,
+    applyConfig: (config) => updateConfig({ ...config }),
+  })
+
+  const handleWorkbookUpload = createWorkbookUploadHandler({
     applyConfig: (config) => updateConfig({ ...config }),
   })
 
@@ -364,6 +371,34 @@ export default function NodeEditorModal() {
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {draft.type === 'excel_workbook' && workbookConfig && (
+            <div className="space-y-4">
+              <div>
+                <label className="mb-2 block text-xs text-gray-500">Excel Workbook</label>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".xlsx,.xlsm"
+                  onChange={handleWorkbookUpload}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full rounded-lg border-2 border-dashed border-gray-300 p-4 text-sm text-gray-500 transition hover:border-emerald-400 hover:text-emerald-600"
+                >
+                  {workbookConfig.original_filename || 'Click to upload Excel workbook'}
+                </button>
+              </div>
+
+              <p className="text-xs text-gray-500">
+                {workbookConfig.sheet_names.length > 0
+                  ? `${workbookConfig.sheet_names.length} ${workbookConfig.sheet_names.length === 1 ? 'sheet' : 'sheets'} detected — pick the sheets to import after creating; each becomes its own table on the canvas.`
+                  : 'Upload a workbook to list its sheets. Each imported sheet becomes its own sheet node with one table.'}
+              </p>
             </div>
           )}
 
@@ -641,7 +676,15 @@ export default function NodeEditorModal() {
             type="button"
             onClick={() => {
               if (oracleFetchError) return
-              commitNodeEditor()
+              const wasCreatingWorkbook = isCreateMode
+                && draft.type === 'excel_workbook'
+                && (workbookConfig?.sheet_names.length ?? 0) > 0
+              const committedId = commitNodeEditor()
+              // The natural §4 flow: a freshly created hub with a parsed
+              // workbook goes straight into picking sheets.
+              if (wasCreatingWorkbook && committedId) {
+                openSheetPicker(committedId)
+              }
             }}
             disabled={Boolean(oracleFetchError)}
             className="rounded bg-stone-900 px-3 py-1 text-sm text-white hover:bg-stone-700"

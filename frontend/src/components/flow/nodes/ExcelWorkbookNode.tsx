@@ -14,9 +14,13 @@ export default function ExcelWorkbookNode({ id, data }: NodeProps) {
   const edges = usePipelineStore((s) => s.edges)
   const nodeResults = usePipelineStore((s) => s.nodeResults)
   const setSelectedNodeId = usePipelineStore((s) => s.setSelectedNodeId)
+  const openSheetPicker = usePipelineStore((s) => s.openSheetPicker)
   const d = data as Record<string, unknown>
   const config = d.config as ExcelWorkbookConfig
   const rollup = computeWorkbookRollup({ hubId: id, edges, nodeResults })
+  const actions = config.sheet_names.length > 0
+    ? [{ label: 'Add sheets…', onClick: () => openSheetPicker(id) }]
+    : []
 
   const sheetCount = config.sheet_names.length
   const subtitle = config.original_filename
@@ -31,6 +35,7 @@ export default function ExcelWorkbookNode({ id, data }: NodeProps) {
         title={(d.label as string) || 'Excel Workbook'}
         subtitle={subtitle}
         onSelect={() => setSelectedNodeId(id)}
+        actions={actions}
       >
         {rollup.label && (
           <div
