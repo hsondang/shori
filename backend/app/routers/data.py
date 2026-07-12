@@ -12,7 +12,7 @@ from app.services.csv_service import (
     preview_preprocessed_csv_text,
 )
 from app.services.duckdb_manager import is_reserved_table_name
-from app.services.export_service import export_table_to_local
+from app.services.export_service import export_table_to_ai_workspace, export_table_to_local
 
 router = APIRouter()
 
@@ -21,6 +21,11 @@ class ExportToPathRequest(BaseModel):
     table_name: str
     output_path: str
     format: str = "csv"
+
+
+class ExportToAiRequest(BaseModel):
+    table_name: str
+    source_node_id: str | None = None
 
 
 class CsvSourcePreviewRequest(BaseModel):
@@ -103,6 +108,17 @@ def export_to_path(project_id: str, payload: ExportToPathRequest, request: Reque
     db = _get_project_db(request, project_id)
     try:
         return export_table_to_local(db, payload.table_name, payload.output_path, payload.format)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/{project_id}/export-to-ai")
+def export_to_ai(project_id: str, payload: ExportToAiRequest, request: Request):
+    # AI workspace touchpoint #2 (docs/ai-workspace-model.md §5): drop a
+    # parquet clone in the spool; the /ai sub-app ingests it independently.
+    db = _get_project_db(request, project_id)
+    try:
+        return export_table_to_ai_workspace(db, project_id, payload.table_name, payload.source_node_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

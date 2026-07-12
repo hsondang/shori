@@ -133,8 +133,8 @@ export interface TransformConfig {
 
 export interface ExportConfig {
   format: string
-  /** Only 'local' for now; structured so other destinations can be added. */
-  destination?: 'local'
+  /** 'local' writes a file; 'ai_workspace' clones the table into the project's AI workspace. */
+  destination?: 'local' | 'ai_workspace'
   output_path?: string
 }
 

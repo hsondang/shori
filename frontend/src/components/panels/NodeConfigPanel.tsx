@@ -1,4 +1,4 @@
-import { exportToPath, uploadCsv } from '../../api/client'
+import { exportToAiWorkspace, exportToPath, uploadCsv } from '../../api/client'
 import {
   useCallback,
   useEffect,
@@ -156,14 +156,23 @@ function ExportNodeConfig({
   const [status, setStatus] = useState<{ kind: 'idle' | 'running' | 'done' | 'error'; message?: string }>({ kind: 'idle' })
   const format = config.format || 'csv'
   const outputPath = config.output_path ?? ''
-  const canExport = Boolean(sourceTableName) && Boolean(outputPath.trim()) && status.kind !== 'running'
+  const destination = config.destination === 'ai_workspace' ? 'ai_workspace' : 'local'
+  const canExport =
+    Boolean(sourceTableName) &&
+    status.kind !== 'running' &&
+    (destination === 'ai_workspace' || Boolean(outputPath.trim()))
 
   const handleExport = async () => {
-    if (!sourceTableName || !outputPath.trim()) return
+    if (!sourceTableName || !canExport) return
     setStatus({ kind: 'running' })
     try {
-      const result = await exportToPath(projectId, sourceTableName, outputPath.trim(), format)
-      setStatus({ kind: 'done', message: `Wrote ${result.row_count} rows to ${result.output_path}` })
+      if (destination === 'ai_workspace') {
+        const result = await exportToAiWorkspace(projectId, sourceTableName)
+        setStatus({ kind: 'done', message: `Cloned ${result.row_count} rows to the AI workspace` })
+      } else {
+        const result = await exportToPath(projectId, sourceTableName, outputPath.trim(), format)
+        setStatus({ kind: 'done', message: `Wrote ${result.row_count} rows to ${result.output_path}` })
+      }
     } catch (err) {
       setStatus({ kind: 'error', message: err instanceof Error ? err.message : 'Export failed' })
     }
@@ -178,29 +187,50 @@ function ExportNodeConfig({
         </div>
       </div>
       <div>
-        <label htmlFor="export-format" className="mb-1 block text-xs text-gray-500">Format</label>
+        <label htmlFor="export-destination" className="mb-1 block text-xs text-gray-500">Destination</label>
         <select
-          id="export-format"
-          value={format}
-          onChange={(event) => onChange({ format: event.target.value })}
+          id="export-destination"
+          value={destination}
+          onChange={(event) => onChange({ destination: event.target.value as 'local' | 'ai_workspace' })}
           className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
         >
-          <option value="csv">CSV</option>
-          <option value="parquet">Parquet</option>
-          <option value="xlsx">Excel (.xlsx)</option>
+          <option value="local">Local file</option>
+          <option value="ai_workspace">AI workspace</option>
         </select>
       </div>
-      <div>
-        <label htmlFor="export-path" className="mb-1 block text-xs text-gray-500">Output path</label>
-        <input
-          id="export-path"
-          type="text"
-          value={outputPath}
-          onChange={(event) => onChange({ destination: 'local', output_path: event.target.value })}
-          placeholder="/path/to/output"
-          className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm font-mono"
-        />
-      </div>
+      {destination === 'local' ? (
+        <>
+          <div>
+            <label htmlFor="export-format" className="mb-1 block text-xs text-gray-500">Format</label>
+            <select
+              id="export-format"
+              value={format}
+              onChange={(event) => onChange({ format: event.target.value })}
+              className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
+            >
+              <option value="csv">CSV</option>
+              <option value="parquet">Parquet</option>
+              <option value="xlsx">Excel (.xlsx)</option>
+            </select>
+          </div>
+          <div>
+            <label htmlFor="export-path" className="mb-1 block text-xs text-gray-500">Output path</label>
+            <input
+              id="export-path"
+              type="text"
+              value={outputPath}
+              onChange={(event) => onChange({ destination: 'local', output_path: event.target.value })}
+              placeholder="/path/to/output"
+              className="w-full rounded border border-gray-300 bg-white px-2 py-1.5 text-sm font-mono"
+            />
+          </div>
+        </>
+      ) : (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Clones a snapshot of the source table into this project's AI workspace, where the AI
+          agent can explore it. Export again any time to refresh the snapshot.
+        </p>
+      )}
       <DescriptionField value={description} onChange={onDescriptionChange} />
       <button
         type="button"
@@ -210,7 +240,11 @@ function ExportNodeConfig({
           canExport ? 'bg-blue-500 text-white hover:bg-blue-600' : 'bg-gray-100 text-gray-400'
         }`}
       >
-        {status.kind === 'running' ? 'Exporting…' : 'Export'}
+        {status.kind === 'running'
+          ? 'Exporting…'
+          : destination === 'ai_workspace'
+            ? 'Export to AI workspace'
+            : 'Export'}
       </button>
       {status.kind === 'done' && <p className="text-xs text-emerald-600">{status.message}</p>}
       {status.kind === 'error' && <p className="text-xs text-red-600">{status.message}</p>}
