@@ -211,6 +211,18 @@ export async function exportToPath(
   return data
 }
 
+export async function exportToAiWorkspace(
+  projectId: string,
+  tableName: string,
+  sourceNodeId?: string,
+): Promise<{ destination: string; table_name: string; row_count: number }> {
+  const { data } = await api.post(`/data/${projectId}/export-to-ai`, {
+    table_name: tableName,
+    source_node_id: sourceNodeId ?? null,
+  })
+  return data
+}
+
 export async function exportData(projectId: string, tableName: string): Promise<void> {
   const { data } = await api.get(`/data/${projectId}/export/${tableName}`, {
     responseType: 'blob',

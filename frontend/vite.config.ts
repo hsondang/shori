@@ -13,6 +13,8 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': 'http://localhost:8000',
+      // AI workspace UI + API live on the backend (docs/ai-workspace-model.md)
+      '/ai': 'http://localhost:8000',
     },
   },
 })

@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shori · AI Workspace</title>
+<style>
+  :root {
+    --bg: #fafaf8; --panel: #ffffff; --border: #e2e0da; --text: #2b2a27;
+    --muted: #8a877f; --accent: #b45309; --accent-bg: #fef3e2;
+    --ok: #16803c; --ok-bg: #e8f5ec; --err: #b91c1c; --err-bg: #fdecec;
+    --agent: #7c3aed; --agent-bg: #f1eafd;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  header .brand { font-weight: 700; }
+  header .prj { color: var(--muted); }
+  header .spacer { flex: 1; }
+  .layout { display: grid; grid-template-columns: 1fr 340px; gap: 14px; padding: 14px 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+  .panel h2 {
+    margin: 0; padding: 8px 12px; font-size: 11px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--border);
+  }
+  .pad { padding: 12px; }
+  .badge {
+    display: inline-block; padding: 1px 7px; border-radius: 9px;
+    font-size: 11px; border: 1px solid transparent;
+  }
+  .badge.user  { background: #eef2ff; color: #4338ca; }
+  .badge.agent { background: var(--agent-bg); color: var(--agent); }
+  .badge.stale { background: var(--accent-bg); color: var(--accent); }
+  .badge.ok    { background: var(--ok-bg); color: var(--ok); }
+  .badge.err   { background: var(--err-bg); color: var(--err); }
+  .badge.pending { background: var(--accent-bg); color: var(--accent); }
+  #draft-banner {
+    display: none; margin: 12px 12px 0; padding: 8px 10px; border-radius: 6px;
+    background: var(--accent-bg); border: 1px solid #f0d9b5;
+  }
+  #draft-banner .note { color: var(--accent); }
+  #draft-banner button { float: right; }
+  textarea {
+    width: 100%; min-height: 180px; resize: vertical; border: 1px solid var(--border);
+    border-radius: 6px; padding: 10px; font: inherit; background: #fdfdfc; color: var(--text);
+  }
+  textarea:focus { outline: 2px solid #d8d4ca; }
+  button {
+    font: inherit; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--panel); padding: 4px 12px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--bg); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--text); color: #fff; border-color: var(--text); }
+  .editor-foot { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .editor-foot .hint { color: var(--muted); font-size: 12px; }
+  .tbl { width: 100%; border-collapse: collapse; }
+  .tbl td { padding: 6px 8px; border-top: 1px solid var(--border); vertical-align: top; }
+  .tbl tr:first-child td { border-top: none; }
+  .muted { color: var(--muted); }
+  .name { font-weight: 700; }
+  #activity .entry { padding: 8px 12px; border-top: 1px solid var(--border); }
+  #activity .entry:first-child { border-top: none; }
+  #activity .sql { color: var(--muted); white-space: pre-wrap; word-break: break-word; margin-top: 2px; }
+  #activity .when { float: right; color: var(--muted); font-size: 11px; }
+  .empty { padding: 14px 12px; color: var(--muted); }
+  #conn { font-size: 11px; }
+  .col-right { display: flex; flex-direction: column; gap: 14px; }
+  .result-placeholder { color: var(--muted); padding: 14px 12px; }
+  button.run-pending {
+    background: var(--accent); color: #fff; border-color: var(--accent);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .6; } }
+  .setting {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 12px; border-top: 1px solid var(--border);
+  }
+  .setting:first-child { border-top: none; }
+  .setting .label { font-weight: 700; }
+  .setting .desc { color: var(--muted); font-size: 11px; }
+  .switch { position: relative; width: 38px; height: 20px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute; inset: 0; cursor: pointer; background: #d6d3ca;
+    border-radius: 20px; transition: .15s;
+  }
+  .slider::before {
+    content: ""; position: absolute; height: 14px; width: 14px; left: 3px; top: 3px;
+    background: #fff; border-radius: 50%; transition: .15s;
+  }
+  .switch input:checked + .slider { background: var(--ok); }
+  .switch input:checked + .slider::before { transform: translateX(18px); }
+  .result-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; border-bottom: 1px solid var(--border);
+  }
+  .result-bar .spacer { flex: 1; }
+  button.share-pending {
+    background: var(--agent); color: #fff; border-color: var(--agent);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  .result-meta { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .result-scroll { overflow: auto; max-height: 260px; }
+  .rtbl { border-collapse: collapse; width: 100%; font-size: 12px; }
+  .rtbl th, .rtbl td {
+    border: 1px solid var(--border); padding: 4px 8px; text-align: left; white-space: nowrap;
+  }
+  .rtbl th { background: var(--bg); position: sticky; top: 0; }
+  .result-error { padding: 12px; color: var(--err); white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">shori</span><span class="muted">/</span><span>AI Workspace</span>
+  <span class="prj" id="prj">·</span>
+  <span class="spacer"></span>
+  <span id="conn" class="badge">connecting…</span>
+</header>
+
+<div class="layout">
+  <div>
+    <div class="panel">
+      <h2>Editor</h2>
+      <div id="draft-banner">
+        <button id="draft-load">Load</button>
+        <span class="badge agent">agent</span>
+        <span class="note" id="draft-note"></span>
+        <span class="muted" id="draft-when"></span>
+      </div>
+      <div class="pad">
+        <textarea id="editor" spellcheck="false"
+          placeholder="-- Shared query editor. The AI agent reads and writes this too."></textarea>
+        <div class="editor-foot">
+          <button class="primary" id="run">Run</button>
+          <span id="editor-owner"></span>
+          <span class="hint" id="save-state"></span>
+        </div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:14px">
+      <h2>Result</h2>
+      <div id="result-bar" class="result-bar" style="display:none">
+        <span id="result-visibility" class="badge">visible to you only</span>
+        <span class="spacer"></span>
+        <button id="share">Share with AI</button>
+      </div>
+      <div id="result"><div class="result-placeholder">Run a query to see results here.</div></div>
+    </div>
+  </div>
+
+  <div class="col-right">
+    <div class="panel">
+      <h2>Consent</h2>
+      <div class="setting">
+        <div>
+          <div class="label">Autonomous execute</div>
+          <div class="desc">Let the agent run the editor's query itself. Off = you click Run.</div>
+        </div>
+        <label class="switch"><input type="checkbox" id="t-autonomous"><span class="slider"></span></label>
+      </div>
+      <div class="setting">
+        <div>
+          <div class="label">Auto-share results</div>
+          <div class="desc">Let the agent read every result. Off = you Share each one.</div>
+        </div>
+        <label class="switch"><input type="checkbox" id="t-autoshare"><span class="slider"></span></label>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Tables</h2>
+      <div id="tables"><div class="empty">Nothing exported yet — use an export node with destination “AI workspace”.</div></div>
+    </div>
+    <div class="panel">
+      <h2>Activity feed</h2>
+      <div id="activity"><div class="empty">Agent tool calls will show up here.</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const projectId = location.pathname.split('/').filter(Boolean).pop();
+const api = (p) => `/ai/api/projects/${projectId}${p}`;
+const $ = (id) => document.getElementById(id);
+
+let dirty = false;          // local edits not yet acked by the server
+let saveTimer = null;
+let lastServerSql = null;
+let renderedResultId = null;
+let settingsBusy = false;
+let running = false;
+let latestResultId = null;
+
+function ago(iso) {
+  if (!iso) return '';
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+const esc = (t) => (t ?? '').toString().replace(/[&<>"]/g, (c) =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// --- editor sync -------------------------------------------------------------
+
+$('editor').addEventListener('input', () => {
+  dirty = true;
+  $('save-state').textContent = 'typing…';
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveEditor, 600);
+});
+
+async function saveEditor() {
+  const sql = $('editor').value;
+  try {
+    await fetch(api('/editor'), {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({sql}),
+    });
+    dirty = ($('editor').value !== sql);
+    if (!dirty) $('save-state').textContent = 'saved';
+  } catch { $('save-state').textContent = 'save failed — retrying'; }
+}
+
+function applyEditorState(editor) {
+  const ta = $('editor');
+  const canApply = !dirty && document.activeElement !== ta;
+  if (canApply && editor.sql !== ta.value) ta.value = editor.sql;
+  lastServerSql = editor.sql;
+
+  $('editor-owner').innerHTML = editor.last_editor
+    ? `<span class="badge ${editor.last_editor}">${
+        editor.last_editor === 'user' ? 'edited by you' : 'written by agent'}</span>`
+    : '';
+
+  const draft = editor.staged_draft;
+  const banner = $('draft-banner');
+  if (draft) {
+    banner.style.display = 'block';
+    $('draft-note').textContent = ` draft: “${draft.note || 'updated query'}” `;
+    $('draft-when').textContent = `· ${ago(draft.created_at)}`;
+    $('draft-load').onclick = async () => {
+      await fetch(api(`/editor/drafts/${draft.id}/load`), {method: 'POST'});
+      dirty = false;
+      refresh();
+    };
+  } else {
+    banner.style.display = 'none';
+  }
+}
+
+// --- execution + settings ------------------------------------------------------
+
+$('run').addEventListener('click', async () => {
+  if (running) return;
+  running = true;
+  $('run').textContent = 'Running…';
+  $('run').disabled = true;
+  try {
+    if (dirty) await saveEditor();       // run exactly what's on screen
+    const result = await fetch(api('/execute/run'), {method: 'POST'}).then((r) => r.json());
+    renderedResultId = null;             // force re-render of this result
+    await loadResult(result.result_id);
+  } catch { /* surfaced on next poll */ }
+  finally {
+    running = false;
+    $('run').disabled = false;
+    $('run').textContent = 'Run';
+  }
+});
+
+async function putSetting(patch) {
+  settingsBusy = true;
+  try {
+    await fetch(api('/settings'), {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(patch),
+    });
+  } finally { settingsBusy = false; }
+}
+
+$('t-autonomous').addEventListener('change', (e) => putSetting({autonomous_execute: e.target.checked}));
+$('t-autoshare').addEventListener('change', (e) => putSetting({auto_share_results: e.target.checked}));
+
+$('share').addEventListener('click', async () => {
+  if (latestResultId == null) return;
+  await fetch(api(`/results/${latestResultId}/share`), {method: 'POST'});
+  refresh();
+});
+
+function applySettings(settings) {
+  if (settingsBusy) return;
+  $('t-autonomous').checked = !!settings.autonomous_execute;
+  $('t-autoshare').checked = !!settings.auto_share_results;
+}
+
+function applyPending(pending) {
+  // Run pulses when the agent is waiting on the user to approve execution.
+  const execPending = pending.some((p) => p.kind === 'execute');
+  $('run').classList.toggle('run-pending', execPending);
+  $('run').title = execPending
+    ? 'The agent queued a query — click to run it'
+    : 'Execute the editor';
+}
+
+function updateResultBar(latest, pending, settings) {
+  const bar = $('result-bar');
+  if (!latest) { bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  latestResultId = latest.result_id;
+  const vis = $('result-visibility');
+  const share = $('share');
+  const autoShared = !!settings.auto_share_results;
+  const shared = !!latest.shared || autoShared;
+  if (shared) {
+    vis.textContent = autoShared && !latest.shared ? 'shared with AI · auto' : 'shared with AI';
+    vis.className = 'badge agent';
+    share.style.display = 'none';
+  } else {
+    vis.textContent = 'visible to you only';
+    vis.className = 'badge';
+    share.style.display = 'inline-block';
+    // Share pulses when the agent has asked to read this specific result.
+    const wants = pending.some((p) => p.kind === 'disclose' && p.result_id === latest.result_id);
+    share.classList.toggle('share-pending', wants);
+    share.title = wants ? 'The agent asked to read this result' : 'Let the agent read this result';
+  }
+}
+
+async function loadResult(resultId) {
+  if (resultId == null || resultId === renderedResultId) return;
+  renderedResultId = resultId;
+  const r = await fetch(api(`/results/${resultId}/rows?limit=100`)).then((x) => x.json());
+  const box = $('result');
+  if (r.status === 'error') {
+    box.innerHTML = `<div class="result-error">${esc(r.error)}</div>`;
+    return;
+  }
+  if (!r.columns.length) {
+    box.innerHTML = `<div class="result-meta muted">Statement executed — no result rows${
+      r.row_count != null ? ` (${r.row_count} rows affected)` : ''}.</div>`;
+    return;
+  }
+  const head = r.columns.map((c) => `<th>${esc(c.name)}<div class="muted">${esc(c.type)}</div></th>`).join('');
+  const body = r.rows.map((row) =>
+    `<tr>${r.columns.map((c) => `<td>${esc(row[c.name])}</td>`).join('')}</tr>`).join('');
+  box.innerHTML = `
+    <div class="result-meta muted">${r.row_count} row${r.row_count === 1 ? '' : 's'}${
+      r.truncated ? ` · showing first ${r.rows.length}` : ''}</div>
+    <div class="result-scroll"><table class="rtbl"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+// --- panels -------------------------------------------------------------------
+
+function renderTables(tables) {
+  if (!tables.length) return;
+  $('tables').innerHTML = `<table class="tbl">${tables.map((t) => {
+    const staleDays = (Date.now() - new Date(t.cloned_at).getTime()) / 86400000;
+    return `<tr><td>
+      <div class="name">${esc(t.name)}
+        ${staleDays > 7 ? `<span class="badge stale">${Math.floor(staleDays)}d old</span>` : ''}
+      </div>
+      <div class="muted">${t.column_count} cols · ${t.row_count ?? '?'} rows · cloned ${ago(t.cloned_at)}</div>
+    </td></tr>`;
+  }).join('')}</table>`;
+}
+
+function renderActivity(entries) {
+  if (!entries.length) return;
+  $('activity').innerHTML = entries.map((e) => {
+    const sql = e.detail && e.detail.sql ? `<div class="sql">${esc(e.detail.sql.slice(0, 220))}</div>` : '';
+    const extra = e.detail && e.detail.table ? ` <span class="muted">${esc(e.detail.table)}</span>` : '';
+    return `<div class="entry">
+      <span class="when">${ago(e.ts)}</span>
+      <span class="badge agent">AG</span> ${esc(e.tool)}${extra}
+      <span class="badge ${e.decision === 'allowed' ? 'ok' : e.decision === 'pending' ? 'pending' : 'err'}">${esc(e.decision)}</span>
+      ${sql}
+    </div>`;
+  }).join('');
+}
+
+// --- poll loop ------------------------------------------------------------------
+
+async function refresh() {
+  try {
+    const [state, tables, activity] = await Promise.all([
+      fetch(api('/state')).then((r) => r.json()),
+      fetch(api('/tables')).then((r) => r.json()),
+      fetch(api('/activity?limit=50')).then((r) => r.json()),
+    ]);
+    document.title = `${state.project_name} · AI Workspace`;
+    $('prj').textContent = `· prj: ${state.project_name}`;
+    $('conn').textContent = 'workspace live';
+    $('conn').className = 'badge ok';
+    applyEditorState(state.editor);
+    applySettings(state.settings);
+    applyPending(state.pending_requests);
+    updateResultBar(state.latest_result, state.pending_requests, state.settings);
+    renderTables(tables);
+    renderActivity(activity);
+    if (state.latest_result) await loadResult(state.latest_result.result_id);
+  } catch {
+    $('conn').textContent = 'backend unreachable';
+    $('conn').className = 'badge err';
+  }
+}
+
+refresh();
+setInterval(refresh, 1500);
+</script>
+</body>
+</html>

@@ -50,6 +50,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# AI workspace sub-app (docs/ai-workspace-model.md). Guarded so the main app
+# boots even if the ai_workspace package is broken or deleted.
+try:
+    from ai_workspace import build_ai_app
+
+    app.mount("/ai", build_ai_app())
+except Exception:  # noqa: BLE001 — any failure here must not block startup
+    import logging
+
+    logging.getLogger(__name__).exception("AI workspace disabled: failed to mount")
+
 app.include_router(pipelines.router, prefix="/api/pipelines", tags=["pipelines"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(execution.router, prefix="/api/execute", tags=["execution"])
