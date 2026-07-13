@@ -98,6 +98,13 @@ export default function Toolbar() {
       >
         ⚙︎
       </button>
+      <button
+        onClick={() => window.open(`/ai/${pipelineId}`, '_blank', 'noopener')}
+        title="Open this project's AI workspace in a new tab"
+        className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-50"
+      >
+        AI workspace
+      </button>
       {settingsOpen && <ProjectSettingsModal onClose={() => setSettingsOpen(false)} />}
 
       <div className="h-6 w-px bg-gray-300" />

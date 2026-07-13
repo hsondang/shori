@@ -303,11 +303,16 @@ the UI is for observation and control, not chat.
    `list_tables` / `get_table_schema`. Clone metadata in a sidecar
    `meta.sqlite3` (agent SQL can touch every workspace table, so provenance and
    audit records must not live in the workspace DuckDB itself).
-3. **Phase 2 — the shared editor.** Editor state store (content, owner-of-last-
-   edit, staged drafts), `read_editor` / `write_editor` / `validate_sql`,
-   `get_workspace_state`; SPA skeleton (tables, editor pane, activity feed,
-   polling). Already a useful product at the default trust posture (use case 2
-   complete: agent drafts from schema, user runs).
+3. **Phase 2 — the shared editor.** ✅ implemented. Editor state store (content,
+   owner-of-last-edit, staged drafts that supersede each other),
+   `read_editor` / `write_editor` / `validate_sql` (bind-only via DESCRIBE →
+   EXPLAIN, with a multi-statement guard so validation can never execute),
+   `get_workspace_state` (replaces the permissions stub); activity audit of all
+   agent-originated calls (`X-Shori-Client: mcp`); workspace UI as a single
+   static no-build page served at `/ai/<project_id>` (tables, editor with
+   draft-Load banner and edited-by-you badge, activity feed, ~1.5s polling);
+   main-app toolbar button + `/ai` dev-proxy entry (touchpoint #3). Use case 2
+   is complete at the default trust posture.
 4. **Phase 3 — execution.** `autonomous_execute` toggle, `shori_execute` on
    editor content with timeout, JIT execution requests wired to the Run button,
    results store, feed entries.

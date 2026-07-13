@@ -82,19 +82,21 @@ async def test_list_projects_without_store_is_empty(tmp_path):
     assert resp.json() == []
 
 
-async def test_permissions_stub_for_known_project(ai_client):
+async def test_state_for_known_project(ai_client):
     async with ai_client as client:
-        resp = await client.get("/api/projects/proj-a/permissions")
+        resp = await client.get("/api/projects/proj-a/state")
     assert resp.status_code == 200
     body = resp.json()
     assert body["project_id"] == "proj-a"
     assert body["project_name"] == "Alpha"
-    assert body["tables"] == []
+    assert body["settings"] == {"autonomous_execute": False, "auto_share_results": False}
+    assert body["editor"]["sql"] == ""
+    assert body["pending_requests"] == []
 
 
-async def test_permissions_unknown_project_404(ai_client):
+async def test_state_unknown_project_404(ai_client):
     async with ai_client as client:
-        resp = await client.get("/api/projects/nope/permissions")
+        resp = await client.get("/api/projects/nope/state")
     assert resp.status_code == 404
 
 
@@ -216,6 +218,152 @@ def test_workspace_sandbox_is_locked(tmp_path):
     # ...but the ingested table is fully queryable
     assert conn.execute('SELECT count(*) FROM "t"').fetchone()[0] == 1
     workspace.close()
+
+
+# --- Phase 2: shared editor, validation, activity -----------------------------
+
+AGENT = {"X-Shori-Client": "mcp"}
+
+
+async def test_editor_conflict_semantics(ai_client):
+    async with ai_client as client:
+        # Empty editor: agent writes land directly
+        resp = await client.post(
+            "/api/projects/proj-a/editor/agent-write",
+            json={"sql": "SELECT 1", "note": "first"},
+            headers=AGENT,
+        )
+        assert resp.json() == {"mode": "written"}
+
+        # Agent-owned editor: agent may overwrite directly
+        resp = await client.post(
+            "/api/projects/proj-a/editor/agent-write", json={"sql": "SELECT 2"}, headers=AGENT
+        )
+        assert resp.json() == {"mode": "written"}
+
+        # User edits -> next agent write is STAGED, never clobbering
+        await client.put("/api/projects/proj-a/editor", json={"sql": "SELECT 2 -- tweaked"})
+        resp = await client.post(
+            "/api/projects/proj-a/editor/agent-write",
+            json={"sql": "SELECT 3", "note": "v3"},
+            headers=AGENT,
+        )
+        body = resp.json()
+        assert body["mode"] == "staged"
+        first_draft = body["draft_id"]
+
+        # A second staged write supersedes the first
+        resp = await client.post(
+            "/api/projects/proj-a/editor/agent-write",
+            json={"sql": "SELECT 4", "note": "v4"},
+            headers=AGENT,
+        )
+        second_draft = resp.json()["draft_id"]
+
+        editor = (await client.get("/api/projects/proj-a/editor")).json()
+        assert editor["sql"] == "SELECT 2 -- tweaked"  # user content untouched
+        assert editor["last_editor"] == "user"
+        assert editor["staged_draft"]["id"] == second_draft
+
+        # Superseded draft can no longer be loaded
+        resp = await client.post(f"/api/projects/proj-a/editor/drafts/{first_draft}/load")
+        assert resp.status_code == 404
+
+        # Loading the staged draft makes it the editor content, agent-owned...
+        resp = await client.post(f"/api/projects/proj-a/editor/drafts/{second_draft}/load")
+        editor = resp.json()
+        assert editor["sql"] == "SELECT 4"
+        assert editor["last_editor"] == "agent"
+        assert editor["staged_draft"] is None
+
+        # ...so the next agent write is direct again
+        resp = await client.post(
+            "/api/projects/proj-a/editor/agent-write", json={"sql": "SELECT 5"}, headers=AGENT
+        )
+        assert resp.json() == {"mode": "written"}
+
+
+async def test_agent_cannot_use_user_editor_path(ai_client):
+    async with ai_client as client:
+        resp = await client.put(
+            "/api/projects/proj-a/editor", json={"sql": "SELECT 1"}, headers=AGENT
+        )
+    assert resp.status_code == 403
+
+
+async def test_validate_sql(ai_data_dir, ai_client):
+    _spool_clone(ai_data_dir, "proj-a", "orders", sql="SELECT 1 AS id, 'x' AS label")
+    async with ai_client as client:
+        ok = await client.post(
+            "/api/projects/proj-a/validate", json={"sql": "SELECT id FROM orders"}, headers=AGENT
+        )
+        bad_column = await client.post(
+            "/api/projects/proj-a/validate", json={"sql": "SELECT nope FROM orders"}, headers=AGENT
+        )
+        multi = await client.post(
+            "/api/projects/proj-a/validate", json={"sql": "SELECT 1; SELECT 2"}, headers=AGENT
+        )
+        sandboxed = await client.post(
+            "/api/projects/proj-a/validate",
+            json={"sql": "SELECT * FROM read_parquet('/tmp/x.parquet')"},
+            headers=AGENT,
+        )
+    assert ok.json() == {"valid": True, "columns": [{"name": "id", "type": "INTEGER"}]}
+    assert bad_column.json()["valid"] is False
+    assert "nope" in bad_column.json()["error"]
+    assert multi.json()["valid"] is False
+    assert "one statement" in multi.json()["error"]
+    assert sandboxed.json()["valid"] is False  # sandbox applies even to validation
+
+
+async def test_validate_never_executes(ai_data_dir, ai_client):
+    """DDL validates via EXPLAIN, and injection via a second statement is rejected —
+    in neither case may anything actually run."""
+    _spool_clone(ai_data_dir, "proj-a", "orders")
+    async with ai_client as client:
+        ddl = await client.post(
+            "/api/projects/proj-a/validate",
+            json={"sql": "CREATE TABLE hacked AS SELECT 1 AS x"},
+            headers=AGENT,
+        )
+        injected = await client.post(
+            "/api/projects/proj-a/validate",
+            json={"sql": "SELECT 1; CREATE TABLE hacked2 AS SELECT 1 AS x"},
+            headers=AGENT,
+        )
+        tables = await client.get("/api/projects/proj-a/tables")
+        schema_hacked = await client.get("/api/projects/proj-a/tables/hacked/schema")
+    assert ddl.json()["valid"] is True  # valid DDL...
+    assert injected.json()["valid"] is False
+    assert [t["name"] for t in tables.json()] == ["orders"]  # ...but nothing was created
+    assert schema_hacked.status_code == 404
+
+
+async def test_agent_calls_are_audited_and_user_calls_are_not(ai_data_dir, ai_client):
+    _spool_clone(ai_data_dir, "proj-a", "orders")
+    async with ai_client as client:
+        await client.get("/api/projects/proj-a/tables", headers=AGENT)
+        await client.get("/api/projects/proj-a/tables")  # UI/user: not audited
+        await client.post(
+            "/api/projects/proj-a/editor/agent-write",
+            json={"sql": "SELECT 1", "note": "draft"},
+            headers=AGENT,
+        )
+        feed = (await client.get("/api/projects/proj-a/activity")).json()
+    assert [(e["tool"], e["decision"]) for e in feed] == [
+        ("write_editor", "allowed"),
+        ("list_tables", "allowed"),
+    ]
+    assert feed[0]["detail"]["sql"] == "SELECT 1"
+
+
+async def test_workspace_page_served(ai_client):
+    async with ai_client as client:
+        page = await client.get("/proj-a")
+        missing = await client.get("/nope")
+    assert page.status_code == 200
+    assert "AI Workspace" in page.text
+    assert missing.status_code == 404
 
 
 def test_export_service_writes_spool(monkeypatch, tmp_path):

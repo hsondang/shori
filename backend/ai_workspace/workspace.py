@@ -64,8 +64,12 @@ class AIWorkspace:
     # -- lifecycle -----------------------------------------------------------
 
     def exists(self) -> bool:
-        """True once anything has ever been exported to this workspace."""
-        return self.db_path.exists() or any(self.inbox.glob("*.json"))
+        """True once anything has ever been exported to or drafted in this workspace."""
+        return (
+            self.db_path.exists()
+            or self.meta_path.exists()
+            or any(self.inbox.glob("*.json"))
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -81,8 +85,9 @@ class AIWorkspace:
         return self._conn
 
     def _meta(self) -> sqlite3.Connection:
+        self.root.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.meta_path)
-        conn.execute(
+        conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS tables (
                 name TEXT PRIMARY KEY,
@@ -91,7 +96,31 @@ class AIWorkspace:
                 exported_at TEXT,
                 cloned_at TEXT NOT NULL,
                 row_count INTEGER
-            )
+            );
+            CREATE TABLE IF NOT EXISTS editor (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                sql TEXT NOT NULL,
+                last_editor TEXT NOT NULL,   -- 'user' | 'agent'
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS drafts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sql TEXT NOT NULL,
+                note TEXT,
+                status TEXT NOT NULL,        -- 'staged' | 'loaded' | 'superseded'
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                tool TEXT NOT NULL,
+                detail TEXT NOT NULL,        -- JSON
+                decision TEXT NOT NULL       -- 'allowed' | 'pending' | 'denied' | 'error'
+            );
             """
         )
         return conn
@@ -204,6 +233,162 @@ class AIWorkspace:
                 "cloned_at": row[0],
                 "columns": [{"name": col[0], "type": col[1]} for col in described],
             }
+
+    # -- shared editor (docs/ai-workspace-model.md §6b, §7) --------------------
+
+    def get_editor(self) -> dict:
+        with self._lock:
+            return self._editor_snapshot()
+
+    def _editor_snapshot(self) -> dict:
+        if not self.meta_path.exists():
+            return {"sql": "", "last_editor": None, "updated_at": None, "staged_draft": None}
+        with self._meta() as meta_conn:
+            row = meta_conn.execute(
+                "SELECT sql, last_editor, updated_at FROM editor WHERE id = 1"
+            ).fetchone()
+            draft = meta_conn.execute(
+                "SELECT id, sql, note, created_at FROM drafts WHERE status = 'staged' "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return {
+            "sql": row[0] if row else "",
+            "last_editor": row[1] if row else None,
+            "updated_at": row[2] if row else None,
+            "staged_draft": (
+                {"id": draft[0], "sql": draft[1], "note": draft[2], "created_at": draft[3]}
+                if draft
+                else None
+            ),
+        }
+
+    def _set_editor(self, meta_conn: sqlite3.Connection, sql: str, editor: str) -> None:
+        meta_conn.execute(
+            """
+            INSERT INTO editor (id, sql, last_editor, updated_at) VALUES (1, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                sql = excluded.sql,
+                last_editor = excluded.last_editor,
+                updated_at = excluded.updated_at
+            """,
+            (sql, editor, _utc_now_iso()),
+        )
+
+    def user_set_editor(self, sql: str) -> dict:
+        with self._lock:
+            with self._meta() as meta_conn:
+                self._set_editor(meta_conn, sql, "user")
+            return self._editor_snapshot()
+
+    def agent_write_editor(self, sql: str, note: str | None = None) -> dict:
+        """Direct write when the editor is clean (empty or agent-owned); otherwise
+        stage a draft so the agent never clobbers the user's typing."""
+        with self._lock:
+            with self._meta() as meta_conn:
+                row = meta_conn.execute(
+                    "SELECT sql, last_editor FROM editor WHERE id = 1"
+                ).fetchone()
+                editor_clean = row is None or not row[0].strip() or row[1] == "agent"
+                if editor_clean:
+                    self._set_editor(meta_conn, sql, "agent")
+                    return {"mode": "written"}
+                meta_conn.execute("UPDATE drafts SET status = 'superseded' WHERE status = 'staged'")
+                cursor = meta_conn.execute(
+                    "INSERT INTO drafts (sql, note, status, created_at) VALUES (?, ?, 'staged', ?)",
+                    (sql, note, _utc_now_iso()),
+                )
+                return {"mode": "staged", "draft_id": cursor.lastrowid}
+
+    def load_draft(self, draft_id: int) -> dict:
+        """User accepted a staged draft: it becomes the editor content, owned by
+        the agent (so follow-up agent writes are direct until the user types)."""
+        with self._lock:
+            with self._meta() as meta_conn:
+                row = meta_conn.execute(
+                    "SELECT sql FROM drafts WHERE id = ? AND status = 'staged'", (draft_id,)
+                ).fetchone()
+                if row is None:
+                    raise KeyError(draft_id)
+                self._set_editor(meta_conn, row[0], "agent")
+                meta_conn.execute("UPDATE drafts SET status = 'loaded' WHERE id = ?", (draft_id,))
+            return self._editor_snapshot()
+
+    # -- validation ------------------------------------------------------------
+
+    def validate_sql(self, sql: str) -> dict:
+        """Bind-only validation on the sandboxed connection: never executes.
+
+        DESCRIBE runs the binder and yields output columns for query-shaped
+        statements; EXPLAIN covers the rest (DDL/DML) without executing either.
+        The multi-statement guard matters: a second statement appended after the
+        one being validated would otherwise be *executed* by conn.execute().
+        """
+        stripped = sql.strip().rstrip(";").strip()
+        if not stripped:
+            return {"valid": False, "error": "Empty SQL"}
+        with self._lock:
+            conn = self._connection()
+            try:
+                if len(conn.extract_statements(stripped)) != 1:
+                    return {
+                        "valid": False,
+                        "error": "Validate one statement at a time (multiple statements found).",
+                    }
+            except Exception as exc:  # parse error
+                return {"valid": False, "error": str(exc)}
+            try:
+                described = conn.execute(f"DESCRIBE {stripped}").fetchall()
+                return {
+                    "valid": True,
+                    "columns": [{"name": col[0], "type": col[1]} for col in described],
+                }
+            except Exception as describe_error:
+                try:
+                    conn.execute(f"EXPLAIN {stripped}").fetchall()
+                    return {"valid": True, "columns": []}
+                except Exception:
+                    return {"valid": False, "error": str(describe_error)}
+
+    # -- settings, activity, state ---------------------------------------------
+
+    SETTING_DEFAULTS = {"autonomous_execute": False, "auto_share_results": False}
+
+    def get_settings(self) -> dict:
+        values = dict(self.SETTING_DEFAULTS)
+        if self.meta_path.exists():
+            with self._lock, self._meta() as meta_conn:
+                for key, value in meta_conn.execute("SELECT key, value FROM settings"):
+                    if key in values:
+                        values[key] = bool(value)
+        return values
+
+    def log_activity(self, tool: str, detail: dict, decision: str = "allowed") -> None:
+        with self._lock, self._meta() as meta_conn:
+            meta_conn.execute(
+                "INSERT INTO activity (ts, tool, detail, decision) VALUES (?, ?, ?, ?)",
+                (_utc_now_iso(), tool, json.dumps(detail)[:4000], decision),
+            )
+
+    def list_activity(self, limit: int = 50) -> list[dict]:
+        if not self.meta_path.exists():
+            return []
+        with self._lock, self._meta() as meta_conn:
+            rows = meta_conn.execute(
+                "SELECT ts, tool, detail, decision FROM activity ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [
+            {"ts": ts, "tool": tool, "detail": json.loads(detail), "decision": decision}
+            for ts, tool, detail, decision in rows
+        ]
+
+    def workspace_state(self) -> dict:
+        return {
+            "settings": self.get_settings(),
+            "editor": self.get_editor(),
+            "latest_result": None,  # Phase 3
+            "pending_requests": [],  # Phases 3-4
+        }
 
 
 class AIWorkspaceRegistry:

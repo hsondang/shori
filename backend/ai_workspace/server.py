@@ -1,11 +1,13 @@
 """FastAPI sub-app for the AI workspace.
 
-Mounted at /ai by app/main.py, so every route here is served under /ai/api/*.
-The MCP shim (shori_mcp.py) and the workspace UI are the only intended clients.
+Mounted at /ai by app/main.py, so API routes are served under /ai/api/* and the
+workspace UI at /ai/<project_id>. The MCP shim (shori_mcp.py) and that UI are
+the only intended clients.
 
-Phase 1 scope (docs/ai-workspace-model.md §8): project identity, inbox sweep
-(clone-by-export ingestion), table listing and schema. The permissions stub
-remains until Phase 2 reshapes it into workspace state.
+Phase 2 scope (docs/ai-workspace-model.md §8): the shared editor (agent writes
+stage as drafts when the user has local edits), bind-only SQL validation,
+workspace state, the activity feed, and the static UI page. Agent-originated
+calls (X-Shori-Client: mcp) are audited into the per-project activity log.
 """
 
 import os
@@ -14,12 +16,18 @@ import sqlite3
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
 
-from ai_workspace.workspace import AIWorkspaceRegistry
+from ai_workspace.workspace import AIWorkspace, AIWorkspaceRegistry
 
 # Matches app/config.py's project-id rule by value, not by import: ids become
 # directory names, so anything else is rejected before touching the filesystem.
 _SAFE_PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+_MAX_SQL_LENGTH = 100_000
+
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 def _default_data_dir() -> Path:
@@ -48,11 +56,24 @@ def _read_projects(projects_db: Path) -> list[dict]:
     return [{"id": row[0], "name": row[1]} for row in rows]
 
 
+class EditorWrite(BaseModel):
+    sql: str = Field(max_length=_MAX_SQL_LENGTH)
+
+
+class AgentEditorWrite(BaseModel):
+    sql: str = Field(max_length=_MAX_SQL_LENGTH)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class ValidateRequest(BaseModel):
+    sql: str = Field(max_length=_MAX_SQL_LENGTH)
+
+
 def build_ai_app(data_dir: Path | None = None) -> FastAPI:
     data_dir = data_dir or _default_data_dir()
     projects_db = data_dir / "projects.sqlite3"
 
-    ai_app = FastAPI(title="Shori AI Workspace", version="0.1.0")
+    ai_app = FastAPI(title="Shori AI Workspace", version="0.2.0")
     ai_app.state.data_dir = data_dir
     ai_app.state.projects_db = projects_db
     ai_app.state.workspaces = AIWorkspaceRegistry(data_dir)
@@ -64,12 +85,24 @@ def build_ai_app(data_dir: Path | None = None) -> FastAPI:
                     return project
         raise HTTPException(status_code=404, detail=f"Unknown project: {project_id}")
 
-    def _workspace(request: Request, project_id: str):
+    def _workspace(request: Request, project_id: str) -> AIWorkspace:
         _find_project(request, project_id)
         workspace = request.app.state.workspaces.get(project_id)
         # Lazy ingestion: any read of the workspace first drains the spool.
         workspace.sweep_inbox()
         return workspace
+
+    def _is_agent(request: Request) -> bool:
+        return request.headers.get("x-shori-client") == "mcp"
+
+    def _audit(request: Request, workspace: AIWorkspace, tool: str, detail: dict,
+               decision: str = "allowed") -> None:
+        # Every agent-originated call lands in the activity feed (§4). UI and
+        # internal calls are not agent actions and are not logged here.
+        if _is_agent(request):
+            workspace.log_activity(tool, detail, decision)
+
+    # -- health / projects -----------------------------------------------------
 
     @ai_app.get("/api/health")
     def health():
@@ -87,16 +120,22 @@ def build_ai_app(data_dir: Path | None = None) -> FastAPI:
             project["has_ai_workspace"] = has_workspace
         return projects
 
+    # -- tables / schema ---------------------------------------------------------
+
     @ai_app.get("/api/projects/{project_id}/tables")
     def list_tables(project_id: str, request: Request):
-        return _workspace(request, project_id).list_tables()
+        workspace = _workspace(request, project_id)
+        tables = workspace.list_tables()
+        _audit(request, workspace, "list_tables", {"count": len(tables)})
+        return tables
 
     @ai_app.get("/api/projects/{project_id}/tables/{table_name}/schema")
     def get_table_schema(project_id: str, table_name: str, request: Request):
         workspace = _workspace(request, project_id)
         try:
-            return workspace.get_table_schema(table_name)
+            schema = workspace.get_table_schema(table_name)
         except KeyError:
+            _audit(request, workspace, "get_table_schema", {"table": table_name}, "error")
             raise HTTPException(
                 status_code=404,
                 detail=(
@@ -104,21 +143,82 @@ def build_ai_app(data_dir: Path | None = None) -> FastAPI:
                     "The user can export it there via an export node in the main app."
                 ),
             ) from None
+        _audit(request, workspace, "get_table_schema", {"table": table_name})
+        return schema
 
-    @ai_app.get("/api/projects/{project_id}/permissions")
-    def get_permissions(project_id: str, request: Request):
+    # -- shared editor -----------------------------------------------------------
+
+    @ai_app.get("/api/projects/{project_id}/editor")
+    def get_editor(project_id: str, request: Request):
+        workspace = _workspace(request, project_id)
+        editor = workspace.get_editor()
+        _audit(request, workspace, "read_editor", {"last_editor": editor["last_editor"]})
+        return editor
+
+    @ai_app.put("/api/projects/{project_id}/editor")
+    def put_editor(project_id: str, payload: EditorWrite, request: Request):
+        if _is_agent(request):
+            raise HTTPException(
+                status_code=403,
+                detail="Agents must use the agent-write path (shori_write_editor).",
+            )
+        return _workspace(request, project_id).user_set_editor(payload.sql)
+
+    @ai_app.post("/api/projects/{project_id}/editor/agent-write")
+    def agent_write_editor(project_id: str, payload: AgentEditorWrite, request: Request):
+        workspace = _workspace(request, project_id)
+        result = workspace.agent_write_editor(payload.sql, payload.note)
+        _audit(
+            request,
+            workspace,
+            "write_editor",
+            {"mode": result["mode"], "note": payload.note, "sql": payload.sql[:2000]},
+        )
+        return result
+
+    @ai_app.post("/api/projects/{project_id}/editor/drafts/{draft_id}/load")
+    def load_draft(project_id: str, draft_id: int, request: Request):
+        workspace = _workspace(request, project_id)
+        try:
+            return workspace.load_draft(draft_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"No staged draft {draft_id}") from None
+
+    # -- validation / state / activity --------------------------------------------
+
+    @ai_app.post("/api/projects/{project_id}/validate")
+    def validate_sql(project_id: str, payload: ValidateRequest, request: Request):
+        workspace = _workspace(request, project_id)
+        result = workspace.validate_sql(payload.sql)
+        _audit(
+            request,
+            workspace,
+            "validate_sql",
+            {"valid": result["valid"], "sql": payload.sql[:2000]},
+        )
+        return result
+
+    @ai_app.get("/api/projects/{project_id}/state")
+    def get_state(project_id: str, request: Request):
         project = _find_project(request, project_id)
-        # Phase 1 stub: becomes get_workspace_state in Phase 2 (editor status,
-        # toggles, pending requests). Table visibility needs no gate — the
-        # clone boundary is the consent (docs/ai-workspace-model.md §4).
-        return {
-            "project_id": project["id"],
-            "project_name": project["name"],
-            "tables": [],
-            "note": (
-                "Consent model v2: cloned tables are always visible (schema + drafting). "
-                "Execution and result visibility controls arrive in later phases."
-            ),
-        }
+        workspace = request.app.state.workspaces.get(project_id)
+        workspace.sweep_inbox()
+        state = workspace.workspace_state()
+        state["project_id"] = project["id"]
+        state["project_name"] = project["name"]
+        _audit(request, workspace, "get_workspace_state", {})
+        return state
+
+    @ai_app.get("/api/projects/{project_id}/activity")
+    def get_activity(project_id: str, request: Request, limit: int = 50):
+        workspace = _workspace(request, project_id)
+        return workspace.list_activity(limit=max(1, min(limit, 200)))
+
+    # -- workspace UI (registered last so /api/* always wins) ---------------------
+
+    @ai_app.get("/{project_id}", response_class=HTMLResponse)
+    def workspace_page(project_id: str, request: Request):
+        _find_project(request, project_id)
+        return HTMLResponse((_STATIC_DIR / "index.html").read_text())
 
     return ai_app

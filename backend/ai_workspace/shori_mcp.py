@@ -62,20 +62,34 @@ mcp = FastMCP(
 )
 
 
-def _get(path: str) -> dict | list:
-    """GET from the backend's /ai sub-app, with actionable failure messages."""
+# Identifies agent-originated calls so the backend audits them (activity feed).
+_HEADERS = {"X-Shori-Client": "mcp"}
+
+
+def _request(method: str, path: str, json_body: dict | None = None) -> dict | list:
+    """Call the backend's /ai sub-app, with actionable failure messages."""
     try:
-        response = httpx.get(f"{BACKEND_URL}/ai{path}", timeout=15.0)
+        response = httpx.request(
+            method, f"{BACKEND_URL}/ai{path}", json=json_body, headers=_HEADERS, timeout=15.0
+        )
     except httpx.ConnectError as exc:
         raise RuntimeError(
             f"The Shori backend is not reachable at {BACKEND_URL}. "
             "Ask the user to start the Shori application, then retry."
         ) from exc
-    if response.status_code == 404:
+    if response.status_code in (403, 404):
         detail = response.json().get("detail", "not found")
         raise RuntimeError(str(detail))
     response.raise_for_status()
     return response.json()
+
+
+def _get(path: str) -> dict | list:
+    return _request("GET", path)
+
+
+def _post(path: str, json_body: dict) -> dict | list:
+    return _request("POST", path, json_body)
 
 
 def _current_project_id() -> str:
@@ -150,16 +164,55 @@ def shori_get_table_schema(table_name: str) -> dict:
 
 
 @mcp.tool()
-def shori_get_permissions() -> dict:
-    """Show the per-table permission toggles the user has granted in this project's AI workspace.
+def shori_get_workspace_state() -> dict:
+    """Get the AI workspace's current state: consent toggles, editor status, pending items.
 
-    Call this early to learn what you may do: 'schema' lets you see table
-    structure, 'execute' lets you run SQL blind (results go to the user's
-    workspace UI, not to you), 'preview' lets you read rows of your own query
-    results. If a capability you need is off, tell the user they can enable it
-    in the AI workspace settings — you cannot change permissions yourself.
+    Call this early to learn your situation. `settings.autonomous_execute` and
+    `settings.auto_share_results` are granted by the user in the workspace UI —
+    you cannot change them; if you need one, ask the user to enable it there.
+    `editor` shows the shared query editor (and whether the user edited it
+    since you last wrote).
     """
-    return _get(f"/api/projects/{_current_project_id()}/permissions")
+    return _get(f"/api/projects/{_current_project_id()}/state")
+
+
+@mcp.tool()
+def shori_read_editor() -> dict:
+    """Read the shared query editor's current content.
+
+    The editor is the single collaboration surface: the user sees and can edit
+    exactly this SQL in the workspace UI. Read it before writing, especially if
+    `last_editor` is 'user' — their edits are the latest intent.
+    """
+    return _get(f"/api/projects/{_current_project_id()}/editor")
+
+
+@mcp.tool()
+def shori_write_editor(sql: str, note: str = "") -> dict:
+    """Put SQL into the shared query editor for the user to review and run.
+
+    This is your output channel for queries. If the editor is clean (empty or
+    still holding your last write), the write lands directly. If the user has
+    edited since, your SQL is STAGED as a draft instead — tell the user a draft
+    is waiting and they can click Load in the workspace UI to accept it.
+    Use `note` for a one-line description of what the query does or changed.
+    """
+    return _post(
+        f"/api/projects/{_current_project_id()}/editor/agent-write",
+        {"sql": sql, "note": note or None},
+    )
+
+
+@mcp.tool()
+def shori_validate_sql(sql: str) -> dict:
+    """Validate one SQL statement against the AI workspace without executing it.
+
+    Binder-level check: catches syntax errors, unknown tables/columns, and type
+    problems, and returns the output columns for query-shaped statements.
+    Always validate before putting a query in the editor. One statement at a
+    time.
+    """
+    return _post(f"/api/projects/{_current_project_id()}/validate", {"sql": sql})
 
 
 if __name__ == "__main__":
