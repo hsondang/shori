@@ -97,6 +97,15 @@
   }
   .switch input:checked + .slider { background: var(--ok); }
   .switch input:checked + .slider::before { transform: translateX(18px); }
+  .result-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; border-bottom: 1px solid var(--border);
+  }
+  .result-bar .spacer { flex: 1; }
+  button.share-pending {
+    background: var(--agent); color: #fff; border-color: var(--agent);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
   .result-meta { padding: 8px 12px; border-bottom: 1px solid var(--border); }
   .result-scroll { overflow: auto; max-height: 260px; }
   .rtbl { border-collapse: collapse; width: 100%; font-size: 12px; }
@@ -136,7 +145,12 @@
       </div>
     </div>
     <div class="panel" style="margin-top:14px">
-      <h2>Result <span id="result-visibility" class="badge" style="display:none">visible to you only</span></h2>
+      <h2>Result</h2>
+      <div id="result-bar" class="result-bar" style="display:none">
+        <span id="result-visibility" class="badge">visible to you only</span>
+        <span class="spacer"></span>
+        <button id="share">Share with AI</button>
+      </div>
       <div id="result"><div class="result-placeholder">Run a query to see results here.</div></div>
     </div>
   </div>
@@ -150,6 +164,13 @@
           <div class="desc">Let the agent run the editor's query itself. Off = you click Run.</div>
         </div>
         <label class="switch"><input type="checkbox" id="t-autonomous"><span class="slider"></span></label>
+      </div>
+      <div class="setting">
+        <div>
+          <div class="label">Auto-share results</div>
+          <div class="desc">Let the agent read every result. Off = you Share each one.</div>
+        </div>
+        <label class="switch"><input type="checkbox" id="t-autoshare"><span class="slider"></span></label>
       </div>
     </div>
     <div class="panel">
@@ -174,6 +195,7 @@ let lastServerSql = null;
 let renderedResultId = null;
 let settingsBusy = false;
 let running = false;
+let latestResultId = null;
 
 function ago(iso) {
   if (!iso) return '';
@@ -255,36 +277,69 @@ $('run').addEventListener('click', async () => {
   }
 });
 
-$('t-autonomous').addEventListener('change', async (e) => {
+async function putSetting(patch) {
   settingsBusy = true;
   try {
     await fetch(api('/settings'), {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({autonomous_execute: e.target.checked}),
+      body: JSON.stringify(patch),
     });
   } finally { settingsBusy = false; }
+}
+
+$('t-autonomous').addEventListener('change', (e) => putSetting({autonomous_execute: e.target.checked}));
+$('t-autoshare').addEventListener('change', (e) => putSetting({auto_share_results: e.target.checked}));
+
+$('share').addEventListener('click', async () => {
+  if (latestResultId == null) return;
+  await fetch(api(`/results/${latestResultId}/share`), {method: 'POST'});
+  refresh();
 });
 
 function applySettings(settings) {
-  if (!settingsBusy) $('t-autonomous').checked = !!settings.autonomous_execute;
+  if (settingsBusy) return;
+  $('t-autonomous').checked = !!settings.autonomous_execute;
+  $('t-autoshare').checked = !!settings.auto_share_results;
 }
 
 function applyPending(pending) {
   // Run pulses when the agent is waiting on the user to approve execution.
-  $('run').classList.toggle('run-pending', pending.length > 0);
-  $('run').title = pending.length
+  const execPending = pending.some((p) => p.kind === 'execute');
+  $('run').classList.toggle('run-pending', execPending);
+  $('run').title = execPending
     ? 'The agent queued a query — click to run it'
     : 'Execute the editor';
+}
+
+function updateResultBar(latest, pending, settings) {
+  const bar = $('result-bar');
+  if (!latest) { bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  latestResultId = latest.result_id;
+  const vis = $('result-visibility');
+  const share = $('share');
+  const autoShared = !!settings.auto_share_results;
+  const shared = !!latest.shared || autoShared;
+  if (shared) {
+    vis.textContent = autoShared && !latest.shared ? 'shared with AI · auto' : 'shared with AI';
+    vis.className = 'badge agent';
+    share.style.display = 'none';
+  } else {
+    vis.textContent = 'visible to you only';
+    vis.className = 'badge';
+    share.style.display = 'inline-block';
+    // Share pulses when the agent has asked to read this specific result.
+    const wants = pending.some((p) => p.kind === 'disclose' && p.result_id === latest.result_id);
+    share.classList.toggle('share-pending', wants);
+    share.title = wants ? 'The agent asked to read this result' : 'Let the agent read this result';
+  }
 }
 
 async function loadResult(resultId) {
   if (resultId == null || resultId === renderedResultId) return;
   renderedResultId = resultId;
   const r = await fetch(api(`/results/${resultId}/rows?limit=100`)).then((x) => x.json());
-  const vis = $('result-visibility');
-  vis.style.display = 'inline-block';
-  vis.className = 'badge';
   const box = $('result');
   if (r.status === 'error') {
     box.innerHTML = `<div class="result-error">${esc(r.error)}</div>`;
@@ -349,6 +404,7 @@ async function refresh() {
     applyEditorState(state.editor);
     applySettings(state.settings);
     applyPending(state.pending_requests);
+    updateResultBar(state.latest_result, state.pending_requests, state.settings);
     renderTables(tables);
     renderActivity(activity);
     if (state.latest_result) await loadResult(state.latest_result.result_id);

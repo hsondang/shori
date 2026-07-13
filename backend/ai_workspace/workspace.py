@@ -133,6 +133,13 @@ class AIWorkspace:
                 resolved_at TEXT,
                 result_id INTEGER
             );
+            CREATE TABLE IF NOT EXISTS disclosure_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                result_id INTEGER NOT NULL,  -- the result the agent wants to read
+                status TEXT NOT NULL,        -- 'pending' | 'approved'
+                created_at TEXT NOT NULL,
+                resolved_at TEXT
+            );
             CREATE TABLE IF NOT EXISTS results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 sql TEXT NOT NULL,
@@ -502,14 +509,95 @@ class AIWorkspace:
         if not self.meta_path.exists():
             return []
         with self._meta() as meta_conn:
-            rows = meta_conn.execute(
+            exec_rows = meta_conn.execute(
                 "SELECT id, sql, created_at FROM execution_requests WHERE status = 'pending' "
                 "ORDER BY id"
             ).fetchall()
-        return [
+            disc_rows = meta_conn.execute(
+                "SELECT id, result_id, created_at FROM disclosure_requests WHERE status = 'pending' "
+                "ORDER BY id"
+            ).fetchall()
+        pending = [
             {"id": rid, "kind": "execute", "sql": sql, "created_at": created}
-            for rid, sql, created in rows
+            for rid, sql, created in exec_rows
         ]
+        pending += [
+            {"id": rid, "kind": "disclose", "result_id": result_id, "created_at": created}
+            for rid, result_id, created in disc_rows
+        ]
+        return pending
+
+    # -- result disclosure (docs/ai-workspace-model.md §4, §6b) ----------------
+
+    def _resolve_result_ref(self, ref: str) -> int:
+        """Map "latest" or a numeric id to an existing result id (else KeyError)."""
+        if ref == "latest":
+            latest = self._latest_result()
+            if latest is None:
+                raise KeyError("no results yet")
+            return latest["result_id"]
+        try:
+            result_id = int(ref)
+        except (TypeError, ValueError):
+            raise KeyError(ref) from None
+        with self._meta() as meta_conn:
+            if meta_conn.execute(
+                "SELECT 1 FROM results WHERE id = ?", (result_id,)
+            ).fetchone() is None:
+                raise KeyError(result_id)
+        return result_id
+
+    def _is_result_shared(self, result_id: int) -> bool:
+        with self._meta() as meta_conn:
+            row = meta_conn.execute(
+                "SELECT shared FROM results WHERE id = ?", (result_id,)
+            ).fetchone()
+        return bool(row and row[0])
+
+    def get_result_for_agent(self, ref: str, limit: int = 100) -> dict:
+        """Gated read of a result's rows for the agent (docs §4).
+
+        Rows are returned only when the user has shared this specific result or
+        turned on auto-share; otherwise a disclosure request is registered for
+        the user to approve with the result's Share action, and the agent is
+        told to wait. When disclosed, row counts and rows are no longer secret —
+        that is the whole point of sharing."""
+        result_id = self._resolve_result_ref(ref)
+        disclosed = self._is_result_shared(result_id) or self.get_settings()["auto_share_results"]
+        if disclosed:
+            rows = self.read_result_rows(result_id, limit=limit)
+            return {"disclosed": True, "result_id": result_id, **rows}
+        request_id = self.create_disclosure_request(result_id)
+        return {"disclosed": False, "result_id": result_id, "request_id": request_id}
+
+    def create_disclosure_request(self, result_id: int) -> int:
+        """One pending request per result — a repeat ask returns the same id."""
+        with self._lock, self._meta() as meta_conn:
+            row = meta_conn.execute(
+                "SELECT id FROM disclosure_requests WHERE result_id = ? AND status = 'pending'",
+                (result_id,),
+            ).fetchone()
+            if row is not None:
+                return row[0]
+            cursor = meta_conn.execute(
+                "INSERT INTO disclosure_requests (result_id, status, created_at) VALUES (?, 'pending', ?)",
+                (result_id, _utc_now_iso()),
+            )
+            return cursor.lastrowid
+
+    def share_result(self, result_id: int) -> None:
+        """User discloses one result to the agent (marks shared, resolves any request)."""
+        with self._lock, self._meta() as meta_conn:
+            if meta_conn.execute(
+                "SELECT 1 FROM results WHERE id = ?", (result_id,)
+            ).fetchone() is None:
+                raise KeyError(result_id)
+            meta_conn.execute("UPDATE results SET shared = 1 WHERE id = ?", (result_id,))
+            meta_conn.execute(
+                "UPDATE disclosure_requests SET status = 'approved', resolved_at = ? "
+                "WHERE result_id = ? AND status = 'pending'",
+                (_utc_now_iso(), result_id),
+            )
 
     def _latest_result(self) -> dict | None:
         if not self.meta_path.exists():

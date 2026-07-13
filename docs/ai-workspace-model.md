@@ -322,8 +322,16 @@ the UI is for observation and control, not chat.
    result pane in the UI. Full SQL runs inside the sandbox (scratch tables,
    DDL). Consent, `/execute/run`, `/settings`, and result rows are user-only
    (agent 403).
-5. **Phase 4 — disclosure.** Result pane share action + `auto_share_results`
-   toggle, `shori_get_result`, JIT disclosure requests (use case 1 complete).
+5. **Phase 4 — disclosure.** ✅ implemented. `shori_get_result(ref, limit)`
+   gated on per-result `shared` OR `auto_share_results`; user-only Share action
+   (`/results/{id}/share`) marks a result shared and resolves any pending
+   disclosure request; JIT disclosure requests (deduped per result) surface in
+   `pending_requests` with `kind: "disclose"`; `auto_share_results` toggle and a
+   Share-with-AI result action in the UI (badge flips visible-to-you →
+   shared-with-AI; Share pulses on a pending request). Share and get-result are
+   caller-checked (agent 403 on Share, user 403 on the agent path). Use case 1
+   complete.
 
 Each phase is independently shippable and reviewable; consent defaults to the
-safest state at every step.
+safest state at every step. **All five phases are implemented and verified
+(backend + stdio E2E + browser); the MVP is feature-complete.**

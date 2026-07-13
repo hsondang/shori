@@ -74,6 +74,11 @@ class SettingsUpdate(BaseModel):
     auto_share_results: bool | None = None
 
 
+class GetResultRequest(BaseModel):
+    ref: str = "latest"  # "latest" or a numeric result id
+    limit: int = Field(default=100, ge=1, le=500)
+
+
 def build_ai_app(data_dir: Path | None = None) -> FastAPI:
     data_dir = data_dir or _default_data_dir()
     projects_db = data_dir / "projects.sqlite3"
@@ -266,6 +271,56 @@ def build_ai_app(data_dir: Path | None = None) -> FastAPI:
             if value is not None:
                 workspace.set_setting(key, value)
         return workspace.get_settings()
+
+    # -- result disclosure -------------------------------------------------------
+
+    @ai_app.post("/api/projects/{project_id}/results/{result_id}/share")
+    def share_result(project_id: str, result_id: int, request: Request):
+        # User-only: disclosing a result to the agent is the user's decision.
+        if _is_agent(request):
+            raise HTTPException(status_code=403, detail="Only the user can share a result.")
+        workspace = _workspace(request, project_id)
+        try:
+            workspace.share_result(result_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"No result {result_id}") from None
+        return {"result_id": result_id, "shared": True}
+
+    @ai_app.post("/api/projects/{project_id}/agent/get-result")
+    def agent_get_result(project_id: str, payload: GetResultRequest, request: Request):
+        # Agent-only disclosure path (docs §4). Returns rows only when the user
+        # has shared this result or enabled auto-share; otherwise registers a
+        # request and tells the agent to wait for the user's Share click.
+        if not _is_agent(request):
+            raise HTTPException(status_code=403, detail="Use /results/{id}/rows from the UI.")
+        workspace = _workspace(request, project_id)
+        try:
+            result = workspace.get_result_for_agent(payload.ref, limit=payload.limit)
+        except KeyError:
+            _audit(request, workspace, "get_result", {"ref": payload.ref}, "error")
+            raise HTTPException(
+                status_code=404,
+                detail=f"No result matching '{payload.ref}'. Run a query first.",
+            ) from None
+        if result["disclosed"]:
+            _audit(
+                request, workspace, "get_result",
+                {"result_id": result["result_id"], "rows": len(result["rows"])}, "allowed",
+            )
+            return result
+        _audit(
+            request, workspace, "get_result",
+            {"result_id": result["result_id"], "reason": "not_shared"}, "pending",
+        )
+        return {
+            "status": "pending_approval",
+            "result_id": result["result_id"],
+            "request_id": result["request_id"],
+            "message": (
+                "This result is not shared with you. Ask the user to click 'Share with AI' on "
+                "the result in the AI workspace, then call shori_get_result again."
+            ),
+        }
 
     # -- validation / state / activity --------------------------------------------
 

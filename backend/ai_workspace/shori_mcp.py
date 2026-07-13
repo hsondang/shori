@@ -230,5 +230,22 @@ def shori_execute() -> dict:
     return _post(f"/api/projects/{_current_project_id()}/execute", {})
 
 
+@mcp.tool()
+def shori_get_result(result_ref: str = "latest", limit: int = 100) -> dict:
+    """Read the rows of a query result — subject to the user's consent.
+
+    Pass "latest" (default) for the most recent result, or a result_id. Rows
+    come back only if the user has shared that result (or enabled auto-share):
+    then you get {disclosed: true, columns, rows, row_count}. Otherwise you get
+    {status: "pending_approval"} — tell the user to click 'Share with AI' on the
+    result in the workspace, then call this again. Use this to pull a result the
+    user ran and wants you to work with (summaries, insights, follow-up SQL).
+    """
+    return _post(
+        f"/api/projects/{_current_project_id()}/agent/get-result",
+        {"ref": result_ref, "limit": limit},
+    )
+
+
 if __name__ == "__main__":
     mcp.run()

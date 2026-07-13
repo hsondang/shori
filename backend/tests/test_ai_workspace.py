@@ -507,6 +507,117 @@ async def test_empty_editor_execute(ai_client):
     assert user.status_code == 400
 
 
+# --- Phase 4: result disclosure -----------------------------------------------
+
+
+async def _agent_run(client, sql):
+    """Autonomous-execute an agent query and return its result_id."""
+    await _write_editor_as_agent(client, sql)
+    return (await client.post("/api/projects/proj-a/execute", headers=AGENT)).json()["result_id"]
+
+
+async def test_disclosure_requires_share(ai_data_dir, ai_client):
+    _spool_clone(ai_data_dir, "proj-a", "orders", sql="SELECT 7 AS answer")
+    async with ai_client as client:
+        await client.put("/api/projects/proj-a/settings", json={"autonomous_execute": True})
+        rid = await _agent_run(client, "SELECT answer FROM orders")
+
+        # Unshared, auto-share off: agent gets pending, not rows
+        pend = (await client.post(
+            "/api/projects/proj-a/agent/get-result", json={"ref": "latest"}, headers=AGENT
+        )).json()
+        assert pend["status"] == "pending_approval"
+        assert pend["result_id"] == rid
+
+        # The disclosure request surfaces in state for the UI
+        state = (await client.get("/api/projects/proj-a/state")).json()
+        disc = [p for p in state["pending_requests"] if p["kind"] == "disclose"]
+        assert len(disc) == 1 and disc[0]["result_id"] == rid
+
+        # User clicks Share -> agent can now read the rows
+        await client.post(f"/api/projects/proj-a/results/{rid}/share")
+        got = (await client.post(
+            "/api/projects/proj-a/agent/get-result", json={"ref": "latest"}, headers=AGENT
+        )).json()
+        assert got["disclosed"] is True
+        assert got["rows"] == [{"answer": 7}]
+
+        # Request resolved
+        state = (await client.get("/api/projects/proj-a/state")).json()
+        assert [p for p in state["pending_requests"] if p["kind"] == "disclose"] == []
+
+
+async def test_auto_share_discloses_without_request(ai_data_dir, ai_client):
+    _spool_clone(ai_data_dir, "proj-a", "orders", sql="SELECT 1 AS a UNION ALL SELECT 2")
+    async with ai_client as client:
+        await client.put(
+            "/api/projects/proj-a/settings",
+            json={"autonomous_execute": True, "auto_share_results": True},
+        )
+        await _agent_run(client, "SELECT * FROM orders")
+        got = (await client.post(
+            "/api/projects/proj-a/agent/get-result", json={"ref": "latest"}, headers=AGENT
+        )).json()
+        state = (await client.get("/api/projects/proj-a/state")).json()
+    assert got["disclosed"] is True
+    assert got["row_count"] == 2
+    # No disclosure request is created when auto-share is on
+    assert [p for p in state["pending_requests"] if p["kind"] == "disclose"] == []
+
+
+async def test_user_run_then_share_disclosure(ai_data_dir, ai_client):
+    """Core use case 1: the user runs a query, shares it, the agent reads it."""
+    _spool_clone(ai_data_dir, "proj-a", "orders", sql="SELECT 'x' AS name, 5 AS qty")
+    async with ai_client as client:
+        await client.put("/api/projects/proj-a/editor", json={"sql": "SELECT * FROM orders"})
+        run = (await client.post("/api/projects/proj-a/execute/run")).json()
+        await client.post(f"/api/projects/proj-a/results/{run['result_id']}/share")
+        got = (await client.post(
+            "/api/projects/proj-a/agent/get-result", json={"ref": "latest"}, headers=AGENT
+        )).json()
+    assert got["disclosed"] is True
+    assert got["rows"] == [{"name": "x", "qty": 5}]
+
+
+async def test_share_and_getresult_reject_wrong_caller(ai_data_dir, ai_client):
+    _spool_clone(ai_data_dir, "proj-a", "orders")
+    async with ai_client as client:
+        await client.put("/api/projects/proj-a/settings", json={"autonomous_execute": True})
+        rid = await _agent_run(client, "SELECT 1 AS id")
+        agent_share = await client.post(
+            f"/api/projects/proj-a/results/{rid}/share", headers=AGENT
+        )
+        user_getresult = await client.post(
+            "/api/projects/proj-a/agent/get-result", json={"ref": "latest"}
+        )
+    assert agent_share.status_code == 403  # only the user shares
+    assert user_getresult.status_code == 403  # agent path
+
+
+async def test_duplicate_disclosure_requests_deduped(ai_data_dir, ai_client):
+    _spool_clone(ai_data_dir, "proj-a", "orders")
+    async with ai_client as client:
+        await client.put("/api/projects/proj-a/settings", json={"autonomous_execute": True})
+        await _agent_run(client, "SELECT 1 AS id")
+        first = (await client.post(
+            "/api/projects/proj-a/agent/get-result", json={"ref": "latest"}, headers=AGENT
+        )).json()
+        second = (await client.post(
+            "/api/projects/proj-a/agent/get-result", json={"ref": "latest"}, headers=AGENT
+        )).json()
+        state = (await client.get("/api/projects/proj-a/state")).json()
+    assert first["request_id"] == second["request_id"]  # same pending request
+    assert len([p for p in state["pending_requests"] if p["kind"] == "disclose"]) == 1
+
+
+async def test_getresult_no_results_404(ai_client):
+    async with ai_client as client:
+        resp = await client.post(
+            "/api/projects/proj-a/agent/get-result", json={"ref": "latest"}, headers=AGENT
+        )
+    assert resp.status_code == 404
+
+
 def test_execution_timeout(monkeypatch, tmp_path):
     """A runaway query is interrupted by the wall-clock timer, surfaced as error."""
     import ai_workspace.workspace as ws_mod
