@@ -313,9 +313,15 @@ the UI is for observation and control, not chat.
    draft-Load banner and edited-by-you badge, activity feed, ~1.5s polling);
    main-app toolbar button + `/ai` dev-proxy entry (touchpoint #3). Use case 2
    is complete at the default trust posture.
-4. **Phase 3 — execution.** `autonomous_execute` toggle, `shori_execute` on
-   editor content with timeout, JIT execution requests wired to the Run button,
-   results store, feed entries.
+4. **Phase 3 — execution.** ✅ implemented. `autonomous_execute` toggle,
+   `shori_execute` on editor content (no SQL arg — audit invariant) with a
+   `conn.interrupt()` wall-clock timeout, JIT execution requests wired to the
+   Run button (pending → user Run resolves), results store as parquet under
+   `results/` (unreadable by agent SQL — external access disabled, verified by
+   test), agent state redaction (no row_count/columns), consent panel + Run +
+   result pane in the UI. Full SQL runs inside the sandbox (scratch tables,
+   DDL). Consent, `/execute/run`, `/settings`, and result rows are user-only
+   (agent 403).
 5. **Phase 4 — disclosure.** Result pane share action + `auto_share_results`
    toggle, `shori_get_result`, JIT disclosure requests (use case 1 complete).
 

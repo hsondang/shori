@@ -366,6 +366,164 @@ async def test_workspace_page_served(ai_client):
     assert missing.status_code == 404
 
 
+# --- Phase 3: execution, results, consent -------------------------------------
+
+
+async def _write_editor_as_agent(client, sql):
+    await client.post(
+        "/api/projects/proj-a/editor/agent-write", json={"sql": sql}, headers=AGENT
+    )
+
+
+async def test_gated_execute_requires_user_approval(ai_data_dir, ai_client):
+    _spool_clone(ai_data_dir, "proj-a", "orders", sql="SELECT 1 AS id, 'a' AS label")
+    async with ai_client as client:
+        await _write_editor_as_agent(client, "SELECT * FROM orders")
+
+        # Autonomous off (default): agent execute only queues a request
+        resp = await client.post("/api/projects/proj-a/execute", headers=AGENT)
+        body = resp.json()
+        assert body["status"] == "pending_approval"
+        assert body["request_id"]
+
+        # The pending request shows up in state
+        state = (await client.get("/api/projects/proj-a/state", headers=AGENT)).json()
+        assert len(state["pending_requests"]) == 1
+        assert state["latest_result"] is None
+
+        # User clicks Run -> executes, produces a result, resolves the request
+        run = (await client.post("/api/projects/proj-a/execute/run")).json()
+        assert run["status"] == "ok"
+        assert run["row_count"] == 1
+        state = (await client.get("/api/projects/proj-a/state")).json()
+        assert state["pending_requests"] == []
+        assert state["latest_result"]["result_id"] == run["result_id"]
+
+
+async def test_autonomous_execute_runs_immediately(ai_data_dir, ai_client):
+    _spool_clone(ai_data_dir, "proj-a", "orders", sql="SELECT 1 AS id UNION ALL SELECT 2")
+    async with ai_client as client:
+        await client.put(
+            "/api/projects/proj-a/settings", json={"autonomous_execute": True}
+        )
+        await _write_editor_as_agent(client, "SELECT * FROM orders")
+        resp = await client.post("/api/projects/proj-a/execute", headers=AGENT)
+        body = resp.json()
+        assert body["status"] == "ok"
+        assert body["result_id"]
+        # The agent's execute return carries no rows and no counts
+        assert "row_count" not in body and "columns" not in body
+
+
+async def test_agent_state_hides_row_count_and_columns(ai_data_dir, ai_client):
+    _spool_clone(ai_data_dir, "proj-a", "orders")
+    async with ai_client as client:
+        await client.put("/api/projects/proj-a/settings", json={"autonomous_execute": True})
+        await _write_editor_as_agent(client, "SELECT 1 AS id, 2 AS n")
+        await client.post("/api/projects/proj-a/execute", headers=AGENT)
+
+        agent_view = (await client.get("/api/projects/proj-a/state", headers=AGENT)).json()
+        user_view = (await client.get("/api/projects/proj-a/state")).json()
+    assert "row_count" not in agent_view["latest_result"]
+    assert "columns" not in agent_view["latest_result"]
+    assert agent_view["latest_result"]["status"] == "ok"
+    # The user's view keeps the data-bearing fields
+    assert user_view["latest_result"]["row_count"] == 1
+    assert [c["name"] for c in user_view["latest_result"]["columns"]] == ["id", "n"]
+
+
+async def test_agent_scratch_tables_persist_and_results_capture(ai_data_dir, ai_client):
+    _spool_clone(ai_data_dir, "proj-a", "orders", sql="SELECT 10 AS v UNION ALL SELECT 20")
+    async with ai_client as client:
+        await client.put("/api/projects/proj-a/settings", json={"autonomous_execute": True})
+
+        # Full SQL inside the sandbox: CREATE TABLE AS works
+        await _write_editor_as_agent(client, "CREATE TABLE scratch AS SELECT v * 2 AS doubled FROM orders")
+        ddl = (await client.post("/api/projects/proj-a/execute", headers=AGENT)).json()
+        assert ddl["status"] == "ok"
+
+        # The scratch table persists and is queryable in a later execution
+        await _write_editor_as_agent(client, "SELECT sum(doubled) AS total FROM scratch")
+        run = (await client.post("/api/projects/proj-a/execute", headers=AGENT)).json()
+        rows = (await client.get(f"/api/projects/proj-a/results/{run['result_id']}/rows")).json()
+    assert rows["rows"] == [{"total": 60}]
+
+
+async def test_agent_sql_cannot_read_stored_results(ai_data_dir, ai_client):
+    """The disclosure boundary is real: a stored result parquet is not readable
+    through the agent's own SQL (external access is disabled)."""
+    _spool_clone(ai_data_dir, "proj-a", "orders")
+    results_dir = ai_data_dir / "ai" / "proj-a" / "results"
+    async with ai_client as client:
+        await client.put("/api/projects/proj-a/settings", json={"autonomous_execute": True})
+        await _write_editor_as_agent(client, "SELECT 42 AS secret")
+        run = (await client.post("/api/projects/proj-a/execute", headers=AGENT)).json()
+        assert (results_dir / f"{run['result_id']}.parquet").exists()
+
+        # Agent tries to read that very parquet back through SQL -> blocked
+        await _write_editor_as_agent(
+            client, f"SELECT * FROM read_parquet('{results_dir}/{run['result_id']}.parquet')"
+        )
+        blocked = (await client.post("/api/projects/proj-a/execute", headers=AGENT)).json()
+    assert blocked["status"] == "error"
+
+
+async def test_result_rows_and_settings_reject_agent(ai_data_dir, ai_client):
+    _spool_clone(ai_data_dir, "proj-a", "orders")
+    async with ai_client as client:
+        await _write_editor_as_agent(client, "SELECT 1 AS id")
+        await client.put("/api/projects/proj-a/settings", json={"autonomous_execute": True})
+        run = (await client.post("/api/projects/proj-a/execute", headers=AGENT)).json()
+
+        agent_rows = await client.get(
+            f"/api/projects/proj-a/results/{run['result_id']}/rows", headers=AGENT
+        )
+        agent_settings = await client.put(
+            "/api/projects/proj-a/settings", json={"autonomous_execute": False}, headers=AGENT
+        )
+        agent_run = await client.post("/api/projects/proj-a/execute/run", headers=AGENT)
+    assert agent_rows.status_code == 403  # result disclosure is Phase 4
+    assert agent_settings.status_code == 403  # consent is user-only
+    assert agent_run.status_code == 403  # /execute/run is the user path
+
+
+async def test_execute_error_is_reported_without_result_file(ai_data_dir, ai_client):
+    _spool_clone(ai_data_dir, "proj-a", "orders")
+    results_dir = ai_data_dir / "ai" / "proj-a" / "results"
+    async with ai_client as client:
+        await client.put("/api/projects/proj-a/settings", json={"autonomous_execute": True})
+        await _write_editor_as_agent(client, "SELECT nope FROM orders")
+        run = (await client.post("/api/projects/proj-a/execute", headers=AGENT)).json()
+    assert run["status"] == "error"
+    assert "nope" in run["error"]
+    assert not (results_dir / f"{run['result_id']}.parquet").exists()
+
+
+async def test_empty_editor_execute(ai_client):
+    async with ai_client as client:
+        agent = (await client.post("/api/projects/proj-a/execute", headers=AGENT)).json()
+        user = await client.post("/api/projects/proj-a/execute/run")
+    assert agent["status"] == "error" and "empty" in agent["error"].lower()
+    assert user.status_code == 400
+
+
+def test_execution_timeout(monkeypatch, tmp_path):
+    """A runaway query is interrupted by the wall-clock timer, surfaced as error."""
+    import ai_workspace.workspace as ws_mod
+
+    monkeypatch.setattr(ws_mod, "EXECUTION_TIMEOUT_S", 0.3)
+    _spool_clone(tmp_path, "p", "t")
+    workspace = ws_mod.AIWorkspace(tmp_path / "ai" / "p")
+    assert workspace.sweep_inbox() == 1
+    workspace.user_set_editor(
+        "SELECT count(*) FROM range(100000000) a, range(100000000) b"
+    )
+    result = workspace.execute_editor(initiated_by="user")
+    workspace.close()
+    assert result["status"] == "error"
+    assert "time limit" in result["error"]
+
+
 def test_export_service_writes_spool(monkeypatch, tmp_path):
     """Main-app side: parquet lands first, sidecar last (the commit marker)."""
     import app.services.export_service as export_service

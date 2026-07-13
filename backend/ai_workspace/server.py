@@ -69,6 +69,11 @@ class ValidateRequest(BaseModel):
     sql: str = Field(max_length=_MAX_SQL_LENGTH)
 
 
+class SettingsUpdate(BaseModel):
+    autonomous_execute: bool | None = None
+    auto_share_results: bool | None = None
+
+
 def build_ai_app(data_dir: Path | None = None) -> FastAPI:
     data_dir = data_dir or _default_data_dir()
     projects_db = data_dir / "projects.sqlite3"
@@ -184,6 +189,84 @@ def build_ai_app(data_dir: Path | None = None) -> FastAPI:
         except KeyError:
             raise HTTPException(status_code=404, detail=f"No staged draft {draft_id}") from None
 
+    # -- execution ---------------------------------------------------------------
+
+    @ai_app.post("/api/projects/{project_id}/execute")
+    def agent_execute(project_id: str, request: Request):
+        # Agent-only path. Runs the editor's content if the user has granted
+        # autonomous execution; otherwise registers a request the user approves
+        # by clicking Run (docs/ai-workspace-model.md §4).
+        if not _is_agent(request):
+            raise HTTPException(status_code=403, detail="Use /execute/run from the UI.")
+        workspace = _workspace(request, project_id)
+        editor_sql = workspace.get_editor()["sql"]
+        if not editor_sql.strip():
+            _audit(request, workspace, "execute", {"reason": "empty_editor"}, "error")
+            return {
+                "status": "error",
+                "error": "The editor is empty. Put a query in it with shori_write_editor first.",
+            }
+        if workspace.get_settings()["autonomous_execute"]:
+            result = workspace.execute_editor(initiated_by="agent")
+            _audit(
+                request, workspace, "execute",
+                {"mode": "autonomous", "status": result["status"], "sql": editor_sql[:2000]},
+                "allowed" if result["status"] == "ok" else "error",
+            )
+            return {
+                "status": result["status"],
+                "result_id": result["result_id"],
+                "error": result["error"],
+            }
+        request_id = workspace.create_execution_request(editor_sql)
+        _audit(request, workspace, "execute", {"mode": "pending", "sql": editor_sql[:2000]}, "pending")
+        return {
+            "status": "pending_approval",
+            "request_id": request_id,
+            "message": (
+                "Autonomous execution is off. The query is queued for the user to run with the "
+                "Run button in the AI workspace. Poll shori_get_workspace_state for the outcome."
+            ),
+        }
+
+    @ai_app.post("/api/projects/{project_id}/execute/run")
+    def user_run(project_id: str, request: Request):
+        if _is_agent(request):
+            raise HTTPException(status_code=403, detail="Agents use /execute.")
+        workspace = _workspace(request, project_id)
+        try:
+            result = workspace.execute_editor(initiated_by="user")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        workspace.resolve_pending_execute(result["result_id"])
+        return result
+
+    @ai_app.get("/api/projects/{project_id}/results/{result_id}/rows")
+    def result_rows(project_id: str, result_id: int, request: Request, limit: int = 100):
+        # Phase 3: user/UI only. Gated agent access arrives in Phase 4.
+        if _is_agent(request):
+            raise HTTPException(
+                status_code=403,
+                detail="Result rows are not available to the agent yet (result disclosure is Phase 4).",
+            )
+        workspace = _workspace(request, project_id)
+        try:
+            return workspace.read_result_rows(result_id, limit=max(1, min(limit, 500)))
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"No result {result_id}") from None
+
+    @ai_app.put("/api/projects/{project_id}/settings")
+    def put_settings(project_id: str, payload: SettingsUpdate, request: Request):
+        # Consent toggles are user-only — the agent can never widen its own access.
+        if _is_agent(request):
+            raise HTTPException(status_code=403, detail="Consent settings are set by the user only.")
+        workspace = _workspace(request, project_id)
+        for key in ("autonomous_execute", "auto_share_results"):
+            value = getattr(payload, key)
+            if value is not None:
+                workspace.set_setting(key, value)
+        return workspace.get_settings()
+
     # -- validation / state / activity --------------------------------------------
 
     @ai_app.post("/api/projects/{project_id}/validate")
@@ -206,6 +289,15 @@ def build_ai_app(data_dir: Path | None = None) -> FastAPI:
         state = workspace.workspace_state()
         state["project_id"] = project["id"]
         state["project_name"] = project["name"]
+        if _is_agent(request) and state.get("latest_result"):
+            # The agent learns only that its query ran and whether it errored —
+            # never row counts or result columns (docs §4). Rows come via the
+            # gated Phase 4 disclosure path, not here.
+            latest = state["latest_result"]
+            state["latest_result"] = {
+                key: latest.get(key)
+                for key in ("result_id", "status", "error", "request_id", "shared", "ran_at")
+            }
         _audit(request, workspace, "get_workspace_state", {})
         return state
 

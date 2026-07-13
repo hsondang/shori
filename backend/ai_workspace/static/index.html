@@ -73,6 +73,38 @@
   #conn { font-size: 11px; }
   .col-right { display: flex; flex-direction: column; gap: 14px; }
   .result-placeholder { color: var(--muted); padding: 14px 12px; }
+  button.run-pending {
+    background: var(--accent); color: #fff; border-color: var(--accent);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .6; } }
+  .setting {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 12px; border-top: 1px solid var(--border);
+  }
+  .setting:first-child { border-top: none; }
+  .setting .label { font-weight: 700; }
+  .setting .desc { color: var(--muted); font-size: 11px; }
+  .switch { position: relative; width: 38px; height: 20px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute; inset: 0; cursor: pointer; background: #d6d3ca;
+    border-radius: 20px; transition: .15s;
+  }
+  .slider::before {
+    content: ""; position: absolute; height: 14px; width: 14px; left: 3px; top: 3px;
+    background: #fff; border-radius: 50%; transition: .15s;
+  }
+  .switch input:checked + .slider { background: var(--ok); }
+  .switch input:checked + .slider::before { transform: translateX(18px); }
+  .result-meta { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .result-scroll { overflow: auto; max-height: 260px; }
+  .rtbl { border-collapse: collapse; width: 100%; font-size: 12px; }
+  .rtbl th, .rtbl td {
+    border: 1px solid var(--border); padding: 4px 8px; text-align: left; white-space: nowrap;
+  }
+  .rtbl th { background: var(--bg); position: sticky; top: 0; }
+  .result-error { padding: 12px; color: var(--err); white-space: pre-wrap; }
 </style>
 </head>
 <body>
@@ -97,19 +129,29 @@
         <textarea id="editor" spellcheck="false"
           placeholder="-- Shared query editor. The AI agent reads and writes this too."></textarea>
         <div class="editor-foot">
-          <button class="primary" disabled title="Query execution arrives in Phase 3">Run</button>
+          <button class="primary" id="run">Run</button>
           <span id="editor-owner"></span>
           <span class="hint" id="save-state"></span>
         </div>
       </div>
     </div>
     <div class="panel" style="margin-top:14px">
-      <h2>Result</h2>
-      <div class="result-placeholder">Results appear here once execution lands (Phase 3).</div>
+      <h2>Result <span id="result-visibility" class="badge" style="display:none">visible to you only</span></h2>
+      <div id="result"><div class="result-placeholder">Run a query to see results here.</div></div>
     </div>
   </div>
 
   <div class="col-right">
+    <div class="panel">
+      <h2>Consent</h2>
+      <div class="setting">
+        <div>
+          <div class="label">Autonomous execute</div>
+          <div class="desc">Let the agent run the editor's query itself. Off = you click Run.</div>
+        </div>
+        <label class="switch"><input type="checkbox" id="t-autonomous"><span class="slider"></span></label>
+      </div>
+    </div>
     <div class="panel">
       <h2>Tables</h2>
       <div id="tables"><div class="empty">Nothing exported yet — use an export node with destination “AI workspace”.</div></div>
@@ -129,6 +171,9 @@ const $ = (id) => document.getElementById(id);
 let dirty = false;          // local edits not yet acked by the server
 let saveTimer = null;
 let lastServerSql = null;
+let renderedResultId = null;
+let settingsBusy = false;
+let running = false;
 
 function ago(iso) {
   if (!iso) return '';
@@ -190,6 +235,75 @@ function applyEditorState(editor) {
   }
 }
 
+// --- execution + settings ------------------------------------------------------
+
+$('run').addEventListener('click', async () => {
+  if (running) return;
+  running = true;
+  $('run').textContent = 'Running…';
+  $('run').disabled = true;
+  try {
+    if (dirty) await saveEditor();       // run exactly what's on screen
+    const result = await fetch(api('/execute/run'), {method: 'POST'}).then((r) => r.json());
+    renderedResultId = null;             // force re-render of this result
+    await loadResult(result.result_id);
+  } catch { /* surfaced on next poll */ }
+  finally {
+    running = false;
+    $('run').disabled = false;
+    $('run').textContent = 'Run';
+  }
+});
+
+$('t-autonomous').addEventListener('change', async (e) => {
+  settingsBusy = true;
+  try {
+    await fetch(api('/settings'), {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({autonomous_execute: e.target.checked}),
+    });
+  } finally { settingsBusy = false; }
+});
+
+function applySettings(settings) {
+  if (!settingsBusy) $('t-autonomous').checked = !!settings.autonomous_execute;
+}
+
+function applyPending(pending) {
+  // Run pulses when the agent is waiting on the user to approve execution.
+  $('run').classList.toggle('run-pending', pending.length > 0);
+  $('run').title = pending.length
+    ? 'The agent queued a query — click to run it'
+    : 'Execute the editor';
+}
+
+async function loadResult(resultId) {
+  if (resultId == null || resultId === renderedResultId) return;
+  renderedResultId = resultId;
+  const r = await fetch(api(`/results/${resultId}/rows?limit=100`)).then((x) => x.json());
+  const vis = $('result-visibility');
+  vis.style.display = 'inline-block';
+  vis.className = 'badge';
+  const box = $('result');
+  if (r.status === 'error') {
+    box.innerHTML = `<div class="result-error">${esc(r.error)}</div>`;
+    return;
+  }
+  if (!r.columns.length) {
+    box.innerHTML = `<div class="result-meta muted">Statement executed — no result rows${
+      r.row_count != null ? ` (${r.row_count} rows affected)` : ''}.</div>`;
+    return;
+  }
+  const head = r.columns.map((c) => `<th>${esc(c.name)}<div class="muted">${esc(c.type)}</div></th>`).join('');
+  const body = r.rows.map((row) =>
+    `<tr>${r.columns.map((c) => `<td>${esc(row[c.name])}</td>`).join('')}</tr>`).join('');
+  box.innerHTML = `
+    <div class="result-meta muted">${r.row_count} row${r.row_count === 1 ? '' : 's'}${
+      r.truncated ? ` · showing first ${r.rows.length}` : ''}</div>
+    <div class="result-scroll"><table class="rtbl"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
 // --- panels -------------------------------------------------------------------
 
 function renderTables(tables) {
@@ -233,8 +347,11 @@ async function refresh() {
     $('conn').textContent = 'workspace live';
     $('conn').className = 'badge ok';
     applyEditorState(state.editor);
+    applySettings(state.settings);
+    applyPending(state.pending_requests);
     renderTables(tables);
     renderActivity(activity);
+    if (state.latest_result) await loadResult(state.latest_result.result_id);
   } catch {
     $('conn').textContent = 'backend unreachable';
     $('conn').className = 'badge err';

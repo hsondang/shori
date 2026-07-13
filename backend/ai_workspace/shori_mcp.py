@@ -215,5 +215,20 @@ def shori_validate_sql(sql: str) -> dict:
     return _post(f"/api/projects/{_current_project_id()}/validate", {"sql": sql})
 
 
+@mcp.tool()
+def shori_execute() -> dict:
+    """Execute whatever SQL is currently in the shared editor.
+
+    You do not pass SQL here — only the query the user can see in the editor
+    runs, so put it there first with shori_write_editor. You never receive the
+    result rows: on success you get {status: "ok", result_id}, and the user
+    sees the rows in the workspace UI. If the user has not granted autonomous
+    execution, this returns {status: "pending_approval"} — tell them to click
+    Run in the workspace, then poll shori_get_workspace_state for the outcome.
+    On failure you get the database error message so you can fix the query.
+    """
+    return _post(f"/api/projects/{_current_project_id()}/execute", {})
+
+
 if __name__ == "__main__":
     mcp.run()
