@@ -805,13 +805,15 @@ export default function NodeConfigPanel() {
       description: 'Execute this source query and open its preview.',
       metadata: (
         <>
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Table</div>
-            <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
-              {tableName}
+          {!isDbEditMode && (
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Table</div>
+              <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
+                {tableName}
+              </div>
             </div>
-          </div>
-          {dbConnection && (
+          )}
+          {!isDbEditMode && dbConnection && (
             <div>
               <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Connection</div>
               <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
@@ -819,7 +821,7 @@ export default function NodeConfigPanel() {
               </div>
             </div>
           )}
-          {dbConnectionScope === 'global' && (
+          {!isDbEditMode && dbConnectionScope === 'global' && (
             <div>
               <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Source</div>
               <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
@@ -827,8 +829,8 @@ export default function NodeConfigPanel() {
               </div>
             </div>
           )}
-          <LoadModeToggle value={loadMode} onChange={updateLoadMode} />
-          <DescriptionField value={nodeDescription} onChange={updateNodeDescription} />
+          {!isDbEditMode && <LoadModeToggle value={loadMode} onChange={updateLoadMode} />}
+          {!isDbEditMode && <DescriptionField value={nodeDescription} onChange={updateNodeDescription} />}
         </>
       ),
       onExecute: () => { void executeSingleNode(node.id, { loadPreviewOnSuccess: true }) },
@@ -850,12 +852,14 @@ export default function NodeConfigPanel() {
       description: 'Execute this transform and open its preview. Missing upstream tables will prompt before running dependencies.',
       metadata: (
         <>
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Table</div>
-            <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
-              {tableName}
+          {!isTransformEditMode && (
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Table</div>
+              <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
+                {tableName}
+              </div>
             </div>
-          </div>
+          )}
           <button
             type="button"
             onClick={() => { void startLivePreview(node.id) }}
@@ -864,8 +868,8 @@ export default function NodeConfigPanel() {
           >
             Preview (live, no table written)
           </button>
-          <LoadModeToggle value={loadMode} onChange={updateLoadMode} />
-          <DescriptionField value={nodeDescription} onChange={updateNodeDescription} />
+          {!isTransformEditMode && <LoadModeToggle value={loadMode} onChange={updateLoadMode} />}
+          {!isTransformEditMode && <DescriptionField value={nodeDescription} onChange={updateNodeDescription} />}
         </>
       ),
       extraEditorContent: availableUpstreamTables.length > 0 ? (
