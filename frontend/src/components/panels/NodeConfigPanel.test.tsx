@@ -553,6 +553,58 @@ describe('NodeConfigPanel', () => {
     expect((updated.config as Record<string, unknown>).query).toBe('SELECT id FROM events')
   })
 
+  it('hides table name, load mode, and description for a database node in edit mode', async () => {
+    const user = userEvent.setup()
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'db-node',
+            type: 'db_source',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Analytics DB',
+              autoLabel: 'Analytics DB',
+              labelMode: 'auto',
+              tableName: 'db_table',
+              description: 'Nightly analytics pull',
+              config: {
+                db_type: 'postgres',
+                connection: {
+                  host: 'localhost',
+                  port: 5432,
+                  database: 'analytics',
+                  user: 'user',
+                  password: 'secret',
+                },
+                query: 'SELECT 1',
+              },
+            },
+          },
+        ],
+        selectedNodeId: 'db-node',
+      })
+    })
+
+    renderPanel()
+
+    expect(screen.getByText('db_table')).toBeInTheDocument()
+    expect(screen.getByText('Default load mode')).toBeInTheDocument()
+    expect(screen.getByText('Description')).toBeInTheDocument()
+
+    expect(screen.getByText('Connection')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Edit mode' }))
+
+    expect(screen.queryByText('db_table')).not.toBeInTheDocument()
+    expect(screen.queryByText('Default load mode')).not.toBeInTheDocument()
+    expect(screen.queryByText('Description')).not.toBeInTheDocument()
+    // Connection and Source collapse too, leaving the SQL editor maximum room.
+    expect(screen.queryByText('Connection')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('sql-editor')).toHaveValue('SELECT 1')
+  })
+
   it('shows Abort for a busy database node and aborts the tracked execution', async () => {
     const user = userEvent.setup()
     mockAbortExecutionRun.mockResolvedValueOnce({
@@ -704,6 +756,46 @@ describe('NodeConfigPanel', () => {
 
     const updated = usePipelineStore.getState().nodes[1].data as Record<string, unknown>
     expect((updated.config as Record<string, unknown>).sql).toBe('select id from orders_table')
+  })
+
+  it('hides table name, load mode, and description for a transform node in edit mode', async () => {
+    const user = userEvent.setup()
+
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'transform-node',
+            type: 'transform',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Transform Orders',
+              autoLabel: 'Transform',
+              labelMode: 'custom',
+              tableName: 'orders_final',
+              description: 'Curated orders',
+              config: { sql: 'select * from orders_table' },
+            },
+          },
+        ],
+        selectedNodeId: 'transform-node',
+      })
+    })
+
+    renderPanel()
+
+    expect(screen.getByText('orders_final')).toBeInTheDocument()
+    expect(screen.getByText('Default load mode')).toBeInTheDocument()
+    expect(screen.getByText('Description')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Edit mode' }))
+
+    expect(screen.queryByText('orders_final')).not.toBeInTheDocument()
+    expect(screen.queryByText('Default load mode')).not.toBeInTheDocument()
+    expect(screen.queryByText('Description')).not.toBeInTheDocument()
+    // The live preview button and the SQL editor stay available while editing.
+    expect(screen.getByRole('button', { name: 'Preview (live, no table written)' })).toBeInTheDocument()
+    expect(screen.getByLabelText('sql-editor')).toHaveValue('select * from orders_table')
   })
 
   it('resizes the panel horizontally from the left-edge drag handle', () => {
