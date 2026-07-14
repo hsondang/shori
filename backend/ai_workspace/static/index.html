@@ -15,15 +15,27 @@
   body {
     margin: 0; background: var(--bg); color: var(--text);
     font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
   }
   header {
-    display: flex; align-items: center; gap: 10px;
+    display: flex; align-items: center; gap: 10px; flex: none;
     padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel);
   }
   header .brand { font-weight: 700; }
   header .prj { color: var(--muted); }
   header .spacer { flex: 1; }
-  .layout { display: grid; grid-template-columns: 1fr 340px; gap: 14px; padding: 14px 16px; }
+  .layout { display: flex; flex: 1; min-height: 0; padding: 14px 16px; }
+  .main-col { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 320px; min-height: 0; }
+  .editor-panel { flex: 1 1 auto; min-height: 120px; display: flex; flex-direction: column; overflow: hidden; }
+  .editor-panel .editor-body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .result-panel { height: 300px; flex: none; min-height: 90px; display: flex; flex-direction: column; overflow: hidden; }
+  .result-panel > #result { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+  .h-splitter, .v-splitter { flex: none; position: relative; background: transparent; }
+  .h-splitter { width: 12px; cursor: col-resize; }
+  .v-splitter { height: 12px; cursor: row-resize; }
+  .h-splitter::before { content: ""; position: absolute; top: 0; bottom: 0; left: 5px; width: 2px; background: var(--border); border-radius: 2px; transition: background .12s; }
+  .v-splitter::before { content: ""; position: absolute; left: 0; right: 0; top: 5px; height: 2px; background: var(--border); border-radius: 2px; transition: background .12s; }
+  .h-splitter:hover::before, .v-splitter:hover::before, .dragging::before { background: var(--accent); }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
   .panel h2 {
     margin: 0; padding: 8px 12px; font-size: 11px; letter-spacing: .08em;
@@ -47,7 +59,7 @@
   #draft-banner .note { color: var(--accent); }
   #draft-banner button { float: right; }
   textarea {
-    width: 100%; min-height: 180px; resize: vertical; border: 1px solid var(--border);
+    width: 100%; flex: 1; min-height: 0; resize: none; border: 1px solid var(--border);
     border-radius: 6px; padding: 10px; font: inherit; background: #fdfdfc; color: var(--text);
   }
   textarea:focus { outline: 2px solid #d8d4ca; }
@@ -71,7 +83,7 @@
   #activity .when { float: right; color: var(--muted); font-size: 11px; }
   .empty { padding: 14px 12px; color: var(--muted); }
   #conn { font-size: 11px; }
-  .col-right { display: flex; flex-direction: column; gap: 14px; }
+  .col-right { display: flex; flex-direction: column; gap: 14px; width: 340px; flex: none; overflow-y: auto; min-height: 0; }
   .result-placeholder { color: var(--muted); padding: 14px 12px; }
   button.run-pending {
     background: var(--accent); color: #fff; border-color: var(--accent);
@@ -106,8 +118,8 @@
     background: var(--agent); color: #fff; border-color: var(--agent);
     animation: pulse 1.4s ease-in-out infinite;
   }
-  .result-meta { padding: 8px 12px; border-bottom: 1px solid var(--border); }
-  .result-scroll { overflow: auto; max-height: 260px; }
+  .result-meta { padding: 8px 12px; border-bottom: 1px solid var(--border); flex: none; }
+  .result-scroll { flex: 1; min-height: 0; overflow: auto; }
   .rtbl { border-collapse: collapse; width: 100%; font-size: 12px; }
   .rtbl th, .rtbl td {
     border: 1px solid var(--border); padding: 4px 8px; text-align: left; white-space: nowrap;
@@ -125,8 +137,8 @@
 </header>
 
 <div class="layout">
-  <div>
-    <div class="panel">
+  <div class="main-col">
+    <div class="panel editor-panel">
       <h2>Editor</h2>
       <div id="draft-banner">
         <button id="draft-load">Load</button>
@@ -134,7 +146,7 @@
         <span class="note" id="draft-note"></span>
         <span class="muted" id="draft-when"></span>
       </div>
-      <div class="pad">
+      <div class="pad editor-body">
         <textarea id="editor" spellcheck="false"
           placeholder="-- Shared query editor. The AI agent reads and writes this too."></textarea>
         <div class="editor-foot">
@@ -144,7 +156,8 @@
         </div>
       </div>
     </div>
-    <div class="panel" style="margin-top:14px">
+    <div class="v-splitter" id="v-splitter" title="Drag to resize editor / result"></div>
+    <div class="panel result-panel" id="result-panel">
       <h2>Result</h2>
       <div id="result-bar" class="result-bar" style="display:none">
         <span id="result-visibility" class="badge">visible to you only</span>
@@ -155,7 +168,9 @@
     </div>
   </div>
 
-  <div class="col-right">
+  <div class="h-splitter" id="h-splitter" title="Drag to resize side panel"></div>
+
+  <div class="col-right" id="side-col">
     <div class="panel">
       <h2>Consent</h2>
       <div class="setting">
@@ -413,6 +428,57 @@ async function refresh() {
     $('conn').className = 'badge err';
   }
 }
+
+// --- resizable splitters -----------------------------------------------------
+// Result height (vertical split) and side-panel width (horizontal split) are
+// user-draggable and persisted to localStorage so they survive reloads.
+
+const LS_SIDE = 'shori.sideWidth';
+const LS_RESULT = 'shori.resultHeight';
+const sideCol = $('side-col');
+const resultPanel = $('result-panel');
+
+const savedSide = parseInt(localStorage.getItem(LS_SIDE), 10);
+if (savedSide) sideCol.style.width = savedSide + 'px';
+const savedResult = parseInt(localStorage.getItem(LS_RESULT), 10);
+if (savedResult) resultPanel.style.height = savedResult + 'px';
+
+function makeDrag(handle, onMove) {
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    handle.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+    const move = (ev) => onMove(ev);
+    const up = () => {
+      handle.classList.remove('dragging');
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  });
+}
+
+// Horizontal: right edge fixed; width grows as the cursor moves left. Clamp so
+// the main column keeps at least 340px and the side panel at least 220px.
+makeDrag($('h-splitter'), (ev) => {
+  const rect = document.querySelector('.layout').getBoundingClientRect();
+  const width = Math.max(220, Math.min(rect.right - ev.clientX - 6, rect.width - 340));
+  sideCol.style.width = width + 'px';
+  localStorage.setItem(LS_SIDE, Math.round(width));
+});
+
+// Vertical: bottom fixed; result height grows as the cursor moves up. Clamp so
+// the editor keeps at least 160px and the result at least 90px.
+makeDrag($('v-splitter'), (ev) => {
+  const rect = document.querySelector('.main-col').getBoundingClientRect();
+  const height = Math.max(90, Math.min(rect.bottom - ev.clientY - 6, rect.height - 160));
+  resultPanel.style.height = height + 'px';
+  localStorage.setItem(LS_RESULT, Math.round(height));
+});
+
+// --- poll loop ------------------------------------------------------------------
 
 refresh();
 setInterval(refresh, 1500);
