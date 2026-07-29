@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { deletePipeline, listPipelines, savePipeline, setPipelineStar } from '../../api/client'
-import { createBlankPipelineDefinition } from '../../lib/pipelineDefinitions'
+import { deletePipeline, listPipelines, loadPipeline, savePipeline, setPipelineStar } from '../../api/client'
+import { createBlankPipelineDefinition, duplicatePipelineDefinition } from '../../lib/pipelineDefinitions'
 import { usePipelineStore } from '../../store/pipelineStore'
 import type { ProjectSummary } from '../../types/pipeline'
 import { PROJECT_BROWSER_TRIGGER_SLOT_PX } from './projectLayout'
@@ -31,9 +31,10 @@ export default function ProjectSidebar({
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [menuProjectId, setMenuProjectId] = useState<string | null>(null)
+  const [duplicatingId, setDuplicatingId] = useState<string | null>(null)
   const location = useLocation()
   const navigate = useNavigate()
-  const rootRef = useRef<HTMLElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -60,15 +61,17 @@ export default function ProjectSidebar({
   }, [projectListRevision])
 
   useEffect(() => {
+    if (menuProjectId === null) return
+
     const handlePointerDown = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
         setMenuProjectId(null)
       }
     }
 
     document.addEventListener('mousedown', handlePointerDown)
     return () => document.removeEventListener('mousedown', handlePointerDown)
-  }, [])
+  }, [menuProjectId])
 
   const activeProjectId = location.pathname.startsWith('/projects/')
     ? location.pathname.split('/')[2] ?? null
@@ -104,6 +107,19 @@ export default function ProjectSidebar({
     markProjectCatalogChanged()
   }
 
+  const handleDuplicateProject = async (project: ProjectSummary) => {
+    setMenuProjectId(null)
+    setDuplicatingId(project.id)
+    try {
+      const source = await loadPipeline(project.id)
+      const copy = duplicatePipelineDefinition(source)
+      await savePipeline(copy)
+      markProjectCatalogChanged()
+    } finally {
+      setDuplicatingId(null)
+    }
+  }
+
   const handleDeleteProject = async (project: ProjectSummary) => {
     const confirmed = window.confirm(`Delete "${project.name}"? This cannot be undone.`)
     if (!confirmed) return
@@ -136,7 +152,6 @@ export default function ProjectSidebar({
   return (
     <aside
       id="project-browser"
-      ref={rootRef}
       aria-hidden={!open}
       data-variant={variant}
       className={sidebarClassName}
@@ -205,42 +220,56 @@ export default function ProjectSidebar({
                       )}
                     </div>
                     <div className={`mt-1 text-xs ${isActive ? 'text-stone-300' : 'text-stone-500'}`}>
-                      Updated {formatUpdatedAt(project.updated_at)}
+                      {duplicatingId === project.id
+                        ? 'Duplicating…'
+                        : `Updated ${formatUpdatedAt(project.updated_at)}`}
                     </div>
                   </button>
 
-                  <button
-                    type="button"
-                    aria-label={`More options for ${project.name}`}
-                    aria-expanded={menuProjectId === project.id}
-                    onClick={() => {
-                      setMenuProjectId((current) => current === project.id ? null : project.id)
-                    }}
-                    className={`shrink-0 rounded-lg px-2 py-1 text-lg leading-none transition ${
-                      isActive ? 'text-stone-200 hover:bg-stone-800' : 'text-stone-500 hover:bg-stone-100'
-                    }`}
+                  <div
+                    className="relative shrink-0"
+                    ref={menuProjectId === project.id ? menuRef : null}
                   >
-                    ⋯
-                  </button>
+                    <button
+                      type="button"
+                      aria-label={`More options for ${project.name}`}
+                      aria-expanded={menuProjectId === project.id}
+                      onClick={() => {
+                        setMenuProjectId((current) => current === project.id ? null : project.id)
+                      }}
+                      className={`rounded-lg px-2 py-1 text-lg leading-none transition ${
+                        isActive ? 'text-stone-200 hover:bg-stone-800' : 'text-stone-500 hover:bg-stone-100'
+                      }`}
+                    >
+                      ⋯
+                    </button>
 
-                  {menuProjectId === project.id && (
-                    <div className="absolute right-2 top-12 z-10 min-w-36 rounded-xl border border-stone-200 bg-white p-1.5 text-sm text-stone-700 shadow-lg">
-                      <button
-                        type="button"
-                        onClick={() => { void handleToggleStar(project) }}
-                        className="block w-full rounded-lg px-3 py-2 text-left transition hover:bg-stone-100"
-                      >
-                        {project.starred ? 'Unstar' : 'Star'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { void handleDeleteProject(project) }}
-                        className="block w-full rounded-lg px-3 py-2 text-left text-red-600 transition hover:bg-red-50"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  )}
+                    {menuProjectId === project.id && (
+                      <div className="absolute right-0 top-full z-20 mt-1 min-w-36 rounded-xl border border-stone-200 bg-white p-1.5 text-sm text-stone-700 shadow-lg">
+                        <button
+                          type="button"
+                          onClick={() => { void handleToggleStar(project) }}
+                          className="block w-full rounded-lg px-3 py-2 text-left transition hover:bg-stone-100"
+                        >
+                          {project.starred ? 'Unstar' : 'Star'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { void handleDuplicateProject(project) }}
+                          className="block w-full rounded-lg px-3 py-2 text-left transition hover:bg-stone-100"
+                        >
+                          Duplicate
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { void handleDeleteProject(project) }}
+                          className="block w-full rounded-lg px-3 py-2 text-left text-red-600 transition hover:bg-red-50"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )
             })}
