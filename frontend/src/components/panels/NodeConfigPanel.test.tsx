@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import NodeConfigPanel from './NodeConfigPanel'
 import NodeEditorModal from './NodeEditorModal'
 import { usePipelineStore } from '../../store/pipelineStore'
+import { useSettingsStore } from '../../store/settingsStore'
 
 const mockUploadCsv = vi.fn()
 const mockUploadExcel = vi.fn()
@@ -985,5 +986,184 @@ describe('NodeConfigPanel', () => {
 
     expect(confirmSpy).toHaveBeenCalledWith('Delete "Export Orders"? This cannot be undone.')
     expect(usePipelineStore.getState().nodes).toHaveLength(0)
+  })
+
+  describe('export to a database', () => {
+    const ORACLE_APPROVED = {
+      id: 'ora-1', name: 'Oracle Prod', db_type: 'oracle' as const, host: 'h', port: 1521,
+      service_name: 'KM', user: 'u', password: 'p', allow_export: true,
+    }
+    const ORACLE_NOT_APPROVED = { ...ORACLE_APPROVED, id: 'ora-2', name: 'Oracle Dev', allow_export: false }
+    const POSTGRES = {
+      id: 'pg-1', name: 'Warehouse', db_type: 'postgres' as const, host: 'h', port: 5432,
+      database: 'w', user: 'u', password: 'p',
+    }
+
+    function setupExportNode(config: Record<string, unknown>, connections = [ORACLE_APPROVED]) {
+      act(() => {
+        useSettingsStore.setState({ globalDatabaseConnections: connections as never })
+        usePipelineStore.setState({
+          nodes: [
+            {
+              id: 'src', type: 'csv_source', position: { x: 0, y: 0 },
+              data: { label: 'Orders', autoLabel: 'Orders', labelMode: 'auto', tableName: 'orders', config: {} },
+            },
+            {
+              id: 'export-node', type: 'export', position: { x: 200, y: 0 },
+              data: { label: 'Export Orders', autoLabel: 'Export', labelMode: 'auto', tableName: 'export_1', config },
+            },
+          ],
+          edges: [{ id: 'e1', source: 'src', target: 'export-node' }],
+          selectedNodeId: 'export-node',
+        })
+      })
+    }
+
+    it('lists only export-approved oracle connections as destinations', () => {
+      setupExportNode({ format: 'csv' }, [ORACLE_APPROVED, ORACLE_NOT_APPROVED, POSTGRES] as never)
+      renderPanel()
+
+      const select = screen.getByLabelText('Destination') as HTMLSelectElement
+      const options = Array.from(select.options).map((option) => option.textContent)
+      expect(options).toContain('Oracle Prod')
+      expect(options).not.toContain('Oracle Dev')
+      expect(options).not.toContain('Warehouse')
+    })
+
+    it('switches to the database destination and records the connection', async () => {
+      const user = userEvent.setup()
+      setupExportNode({ format: 'csv' })
+      renderPanel()
+
+      await user.selectOptions(screen.getByLabelText('Destination'), 'db:ora-1')
+
+      const config = usePipelineStore.getState().nodes.find((n) => n.id === 'export-node')!.data.config as Record<string, unknown>
+      expect(config.destination).toBe('database')
+      expect(config.connection_source_id).toBe('ora-1')
+    })
+
+    it('keeps a revoked connection visible instead of silently dropping the target', () => {
+      setupExportNode(
+        { format: 'csv', destination: 'database', connection_source_id: 'ora-2', target_table: 'S.T' },
+        [ORACLE_APPROVED, ORACLE_NOT_APPROVED] as never,
+      )
+      renderPanel()
+
+      expect(screen.getByText('Oracle Dev (exports not enabled)')).toBeInTheDocument()
+    })
+
+    it('requires a well-formed SCHEMA.TABLE before the export button enables', async () => {
+      const user = userEvent.setup()
+      setupExportNode({ format: 'csv', destination: 'database', connection_source_id: 'ora-1' })
+      renderPanel()
+
+      const exportButton = screen.getByRole('button', { name: 'Export' })
+      expect(exportButton).toBeDisabled()
+
+      await user.type(screen.getByLabelText(/target table/i), 'orders')
+      expect(screen.getByRole('button', { name: 'Export' })).toBeDisabled()
+      expect(screen.getByText('Use the form SCHEMA.TABLE_NAME.')).toBeInTheDocument()
+
+      await user.clear(screen.getByLabelText(/target table/i))
+      await user.type(screen.getByLabelText(/target table/i), 'SALES.ORDERS')
+      expect(screen.getByRole('button', { name: 'Export' })).toBeEnabled()
+    })
+
+    it('hides the SQL editor until the query toggle is turned on', async () => {
+      const user = userEvent.setup()
+      setupExportNode({
+        format: 'csv', destination: 'database', connection_source_id: 'ora-1', target_table: 'SALES.ORDERS',
+      })
+      renderPanel()
+
+      expect(screen.queryByLabelText('sql-editor')).not.toBeInTheDocument()
+
+      await user.click(screen.getByRole('switch', { name: /use a sql query/i }))
+
+      expect(screen.getByLabelText('sql-editor')).toBeInTheDocument()
+      // Seeded from the upstream table so there is something runnable to edit.
+      const config = usePipelineStore.getState().nodes.find((n) => n.id === 'export-node')!.data.config as Record<string, unknown>
+      expect(config.sql).toBe('SELECT * FROM orders')
+    })
+
+    it('does not overwrite an existing query when the toggle is turned back on', async () => {
+      const user = userEvent.setup()
+      setupExportNode({
+        format: 'csv', destination: 'database', connection_source_id: 'ora-1',
+        target_table: 'SALES.ORDERS', use_sql: true, sql: 'SELECT id FROM orders',
+      })
+      renderPanel()
+
+      await user.click(screen.getByRole('switch', { name: /use a sql query/i }))
+      await user.click(screen.getByRole('switch', { name: /use a sql query/i }))
+
+      const config = usePipelineStore.getState().nodes.find((n) => n.id === 'export-node')!.data.config as Record<string, unknown>
+      expect(config.sql).toBe('SELECT id FROM orders')
+    })
+
+    it('previews without validating by default, and validates from the dropdown', async () => {
+      const user = userEvent.setup()
+      const startLivePreview = vi.fn()
+      const validateDatabaseExport = vi.fn()
+      setupExportNode({
+        format: 'csv', destination: 'database', connection_source_id: 'ora-1', target_table: 'SALES.ORDERS',
+      })
+      act(() => { usePipelineStore.setState({ startLivePreview, validateDatabaseExport }) })
+      renderPanel()
+
+      // The plain button never reaches the destination database.
+      await user.click(screen.getByRole('button', { name: 'Preview' }))
+      expect(startLivePreview).toHaveBeenCalledWith('export-node')
+      expect(validateDatabaseExport).not.toHaveBeenCalled()
+
+      await user.click(screen.getByRole('button', { name: 'More preview options' }))
+      await user.click(screen.getByRole('menuitem', { name: 'Preview and validate target' }))
+      expect(validateDatabaseExport).toHaveBeenCalledWith('export-node')
+    })
+
+    it('runs the export and shows validation problems', async () => {
+      const user = userEvent.setup()
+      const runDatabaseExport = vi.fn()
+      setupExportNode({
+        format: 'csv', destination: 'database', connection_source_id: 'ora-1', target_table: 'SALES.ORDERS',
+      })
+      act(() => {
+        usePipelineStore.setState({
+          runDatabaseExport,
+          databaseExportValidationByNodeId: {
+            'export-node': {
+              status: 'done',
+              report: {
+                target_table: 'SALES.ORDERS',
+                target_exists: true,
+                columns: [
+                  { source_column: 'ghost', source_type: 'VARCHAR', target_column: null, target_type: null, status: 'missing_in_target', message: null },
+                ],
+                unmapped_target_columns: [],
+                errors: ['Column "ghost" does not exist in the target table'],
+                warnings: [],
+                ok: false,
+              },
+            },
+          },
+        })
+      })
+      renderPanel()
+
+      expect(screen.getByText('SALES.ORDERS cannot accept this query')).toBeInTheDocument()
+      expect(screen.getByText(/Column "ghost" does not exist/)).toBeInTheDocument()
+
+      await user.click(screen.getByRole('button', { name: 'Export' }))
+      expect(runDatabaseExport).toHaveBeenCalledWith('export-node')
+    })
+
+    it('keeps the compact panel for local and AI workspace destinations', () => {
+      setupExportNode({ format: 'csv', destination: 'local', output_path: '/tmp/out.csv' })
+      renderPanel()
+
+      expect(screen.getByLabelText('Output path')).toBeInTheDocument()
+      expect(screen.queryByLabelText(/target table/i)).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Preview' })).not.toBeInTheDocument()
+    })
   })
 })

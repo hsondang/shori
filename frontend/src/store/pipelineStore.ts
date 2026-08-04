@@ -14,6 +14,7 @@ import type {
   CsvPreprocessingConfig,
   CsvSourceConfig,
   CsvTextPreviewData,
+  DatabaseExportValidationState,
   DatabaseSourceConfig,
   ExcelSourceConfig,
   ExcelWorkbookConfig,
@@ -147,6 +148,14 @@ interface PipelineState {
   executeSingleNode: (nodeId: string, options?: { loadPreviewOnSuccess?: boolean; force?: boolean }) => Promise<void>
   runNodeWithLoadMode: (nodeId: string, loadMode: NodeLoadMode, options?: { loadPreviewOnSuccess?: boolean; force?: boolean }) => Promise<void>
   runTransformPreview: (nodeId: string) => Promise<void>
+  /** Append an export node's rows to its target database table, tracked as a
+   * normal execution run so the node card shows progress and can be aborted. */
+  runDatabaseExport: (nodeId: string) => Promise<void>
+  /** Column-by-column comparison against the live target table. The only
+   * export path that touches the destination database before a run. */
+  databaseExportValidationByNodeId: Record<string, DatabaseExportValidationState>
+  validateDatabaseExport: (nodeId: string) => Promise<void>
+  clearDatabaseExportValidation: (nodeId: string) => void
   loadCsvPreview: (nodeId: string, filePath: string) => Promise<void>
   loadPreprocessedCsvPreview: (nodeId: string, filePath: string, preprocessing: CsvPreprocessingConfig) => Promise<void>
   loadTablePreview: (nodeId: string, tableName: string, offset?: number, options?: { forceReload?: boolean }) => Promise<void>
@@ -1545,6 +1554,88 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
     }
   },
 
+  runDatabaseExport: async (nodeId) => {
+    const node = get().nodes.find((candidate) => candidate.id === nodeId)
+    if (!node || node.type !== 'export') return
+
+    try {
+      // Same gate as a transform preview: the export reads upstream tables, so
+      // every upstream needs a copy in one of the two DuckDB locations first.
+      await get().refreshCacheStatus()
+      const candidates = nodesNeedingDestination(nodeId, get().nodes, get().edges, get().cacheStatusByNodeId)
+      if (candidates.length > 0) {
+        set({
+          loadDestinationPrompt: {
+            targetNodeId: nodeId,
+            resumeKind: 'materialize',
+            candidates,
+            choices: Object.fromEntries(candidates.map((c) => [c.nodeId, 'in_memory' as NodeLoadMode])),
+          },
+        })
+        return
+      }
+
+      const pipeline = buildPipelineDefinitionFromState(get())
+      const run = await api.exportToDatabase(get().pipelineId, pipeline, nodeId)
+      executionTrackedNodeIds.set(run.execution_id, [nodeId])
+      applyExecutionRunSnapshot(run, set, get)
+      if (run.status === 'running') {
+        scheduleExecutionPoll(run.execution_id, set, get)
+      } else {
+        await finalizeExecutionRun(run, set, get)
+      }
+    } catch (err: unknown) {
+      const message = getRequestErrorMessage(err, 'Export failed')
+      set({
+        nodeResults: {
+          ...get().nodeResults,
+          [nodeId]: { node_id: nodeId, status: 'error', error: message },
+        },
+        errorDialogNodeId: null,
+      })
+    }
+  },
+
+  databaseExportValidationByNodeId: {},
+
+  validateDatabaseExport: async (nodeId) => {
+    const node = get().nodes.find((candidate) => candidate.id === nodeId)
+    if (!node || node.type !== 'export') return
+
+    set({
+      databaseExportValidationByNodeId: {
+        ...get().databaseExportValidationByNodeId,
+        [nodeId]: { status: 'running' },
+      },
+    })
+    try {
+      const pipeline = buildPipelineDefinitionFromState(get())
+      const report = await api.validateDatabaseExport(get().pipelineId, pipeline, nodeId)
+      set({
+        databaseExportValidationByNodeId: {
+          ...get().databaseExportValidationByNodeId,
+          [nodeId]: { status: 'done', report },
+        },
+      })
+    } catch (err: unknown) {
+      set({
+        databaseExportValidationByNodeId: {
+          ...get().databaseExportValidationByNodeId,
+          [nodeId]: {
+            status: 'error',
+            error: getRequestErrorMessage(err, 'Unable to validate against the target table'),
+          },
+        },
+      })
+    }
+  },
+
+  clearDatabaseExportValidation: (nodeId) => {
+    const remaining = { ...get().databaseExportValidationByNodeId }
+    delete remaining[nodeId]
+    set({ databaseExportValidationByNodeId: remaining })
+  },
+
   loadCsvPreview: async (nodeId, filePath) => {
     set({
       activePreviewTarget: { kind: 'transient', nodeId },
@@ -1792,9 +1883,15 @@ export const usePipelineStore = create<PipelineState>((set, get) => ({
 
   startLivePreview: async (nodeId) => {
     const node = get().nodes.find((candidate) => candidate.id === nodeId)
-    if (!node || (node.type !== 'db_source' && node.type !== 'transform')) return
+    if (!node) return
+    const isDatabaseExport =
+      node.type === 'export' && getNodeConfig(node)?.destination === 'database'
+    if (node.type !== 'db_source' && node.type !== 'transform' && !isDatabaseExport) return
 
-    if (node.type === 'transform') {
+    // A transform and a database export both preview a DuckDB query over their
+    // upstreams, so both need every upstream to have a copy first. A db_source
+    // preview queries the remote database directly and needs no such gate.
+    if (node.type === 'transform' || isDatabaseExport) {
       // Cache status drives the gate below; make sure it reflects the current graph.
       await get().refreshCacheStatus()
       const candidates = nodesNeedingDestination(nodeId, get().nodes, get().edges, get().cacheStatusByNodeId)

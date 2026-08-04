@@ -16,12 +16,7 @@ from uuid import uuid4
 import pandas as pd
 
 from app.models.pipeline import NodeDefinition
-from app.services.duckdb_manager import (
-    LOCATION_MEMORY,
-    _json_safe_value,
-    _qualified,
-    _quote_identifier,
-)
+from app.services.duckdb_manager import _json_safe_value, install_temp_views
 
 logger = logging.getLogger(__name__)
 
@@ -245,12 +240,7 @@ class DuckDBPreviewSession:
         try:
             cur = self._db.conn.cursor()
             self._db._set_search_path(cur)
-            for table_name, location in self._resolution.items():
-                catalog = self._db._catalog_for(location == LOCATION_MEMORY)
-                cur.execute(
-                    f"CREATE TEMP VIEW {_quote_identifier(table_name)} AS "
-                    f"SELECT * FROM {_qualified(catalog, table_name)}"
-                )
+            install_temp_views(cur, self._db, self._resolution)
             cur.execute(f"SELECT * FROM ({self._sql})")
             self.columns = [d[0] for d in cur.description]
             self.column_types = [str(d[1]) for d in cur.description]

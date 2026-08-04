@@ -22,6 +22,8 @@ const mockClosePreviewSession = vi.fn((..._args: any[]) => Promise.resolve({ clo
 const mockStartPreviewSession = vi.fn()
 const mockFetchPreviewSessionRows = vi.fn()
 const mockMaterializePreviewSession = vi.fn()
+const mockExportToDatabase = vi.fn()
+const mockValidateDatabaseExport = vi.fn()
 
 // Prevent real API calls
 vi.mock('../api/client', () => ({
@@ -45,6 +47,8 @@ vi.mock('../api/client', () => ({
   savePipeline: (...args: any[]) => mockSavePipeline(...args),
   loadPipeline: (...args: any[]) => mockLoadPipeline(...args),
   listPipelines: (...args: any[]) => mockListPipelines(...args),
+  exportToDatabase: (...args: unknown[]) => mockExportToDatabase(...args),
+  validateDatabaseExport: (...args: unknown[]) => mockValidateDatabaseExport(...args),
 }))
 
 function makeTablePreview(overrides: Record<string, unknown> = {}) {
@@ -2206,5 +2210,295 @@ describe('replaceWorkbookFile', () => {
 
     const config = (usePipelineStore.getState().nodes.find((n) => n.id === 'sheet-kept')!.data as Record<string, unknown>).config as Record<string, unknown>
     expect(config.file_path).toBe('/tmp/old.xlsx')
+  })
+})
+
+describe('runDatabaseExport', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetStore()
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'src-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: { label: 'Orders', tableName: 'orders', config: { file_path: '/tmp/o.csv' } },
+          },
+          {
+            id: 'export-node',
+            type: 'export',
+            position: { x: 200, y: 0 },
+            data: {
+              label: 'Export',
+              tableName: 'export_1',
+              config: {
+                destination: 'database',
+                connection_source_id: 'ora-1',
+                target_table: 'SALES.ORDERS',
+              },
+            },
+          },
+        ],
+        edges: [{ id: 'e1', source: 'src-node', target: 'export-node' }],
+      })
+    })
+  })
+
+  function loadedStatus() {
+    return {
+      locations: {
+        materialized: {
+          present: true, state: 'fresh' as const, row_count: 5, column_count: 1,
+          finished_at: '2026-04-08T09:00:00Z', error: null,
+        },
+      },
+      lifecycle: 'materialized' as const,
+      state: 'fresh' as const,
+      location: 'materialized' as const,
+      row_count: 5, column_count: 1, finished_at: '2026-04-08T09:00:00Z', error: null,
+    }
+  }
+
+  it('starts a tracked run and records the result on the export node', async () => {
+    mockGetCacheStatus.mockResolvedValueOnce({ nodes: { 'src-node': loadedStatus() } })
+    mockExportToDatabase.mockResolvedValueOnce(makeExecutionRun({
+      execution_id: 'exec-export',
+      status: 'success',
+      node_results: {
+        'export-node': {
+          node_id: 'export-node',
+          status: 'success',
+          row_count: 5,
+          column_count: 1,
+          columns: ['ID'],
+          started_at: '2026-04-08T10:00:00Z',
+          finished_at: '2026-04-08T10:00:05Z',
+        },
+      },
+    }))
+
+    await act(async () => {
+      await usePipelineStore.getState().runDatabaseExport('export-node')
+    })
+
+    expect(mockExportToDatabase).toHaveBeenCalledWith(
+      usePipelineStore.getState().pipelineId,
+      expect.objectContaining({ id: usePipelineStore.getState().pipelineId }),
+      'export-node',
+    )
+    expect(usePipelineStore.getState().nodeResults['export-node']).toEqual(
+      expect.objectContaining({ status: 'success', row_count: 5 }),
+    )
+  })
+
+  it('prompts for a load destination instead of exporting unloaded upstream data', async () => {
+    // The upstream has no copy in either DuckDB location, so there is nothing
+    // to read; pushing an empty or stale result to a live table is the failure
+    // this gate exists to prevent.
+    mockGetCacheStatus.mockResolvedValueOnce({ nodes: {} })
+
+    await act(async () => {
+      await usePipelineStore.getState().runDatabaseExport('export-node')
+    })
+
+    expect(mockExportToDatabase).not.toHaveBeenCalled()
+    expect(usePipelineStore.getState().loadDestinationPrompt).toEqual(
+      expect.objectContaining({
+        targetNodeId: 'export-node',
+        candidates: [expect.objectContaining({ nodeId: 'src-node', tableName: 'orders' })],
+      }),
+    )
+  })
+
+  it('surfaces a refused export as a node error', async () => {
+    mockGetCacheStatus.mockResolvedValueOnce({ nodes: { 'src-node': loadedStatus() } })
+    mockExportToDatabase.mockRejectedValueOnce(new Error('Exports to "Oracle Prod" are not enabled.'))
+
+    await act(async () => {
+      await usePipelineStore.getState().runDatabaseExport('export-node')
+    })
+
+    expect(usePipelineStore.getState().nodeResults['export-node']).toEqual(
+      expect.objectContaining({ status: 'error', error: expect.stringContaining('not enabled') }),
+    )
+  })
+
+  it('ignores nodes that are not export nodes', async () => {
+    await act(async () => {
+      await usePipelineStore.getState().runDatabaseExport('src-node')
+    })
+    expect(mockExportToDatabase).not.toHaveBeenCalled()
+  })
+})
+
+describe('validateDatabaseExport', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetStore()
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'export-node',
+            type: 'export',
+            position: { x: 0, y: 0 },
+            data: {
+              label: 'Export',
+              tableName: 'export_1',
+              config: { destination: 'database', connection_source_id: 'ora-1', target_table: 'S.T' },
+            },
+          },
+        ],
+        edges: [],
+      })
+    })
+  })
+
+  it('stores the report against the node', async () => {
+    const report = {
+      target_table: 'S.T', target_exists: true, columns: [],
+      unmapped_target_columns: [], errors: [], warnings: [], ok: true,
+    }
+    mockValidateDatabaseExport.mockResolvedValueOnce(report)
+
+    await act(async () => {
+      await usePipelineStore.getState().validateDatabaseExport('export-node')
+    })
+
+    expect(usePipelineStore.getState().databaseExportValidationByNodeId['export-node']).toEqual({
+      status: 'done',
+      report,
+    })
+  })
+
+  it('keeps a failed check separate from the export result', async () => {
+    mockValidateDatabaseExport.mockRejectedValueOnce(new Error('ORA-12541: TNS:no listener'))
+
+    await act(async () => {
+      await usePipelineStore.getState().validateDatabaseExport('export-node')
+    })
+
+    const state = usePipelineStore.getState()
+    expect(state.databaseExportValidationByNodeId['export-node']).toEqual(
+      expect.objectContaining({ status: 'error' }),
+    )
+    expect(state.nodeResults['export-node']).toBeUndefined()
+  })
+
+  it('clears a stored report', async () => {
+    mockValidateDatabaseExport.mockResolvedValueOnce({
+      target_table: 'S.T', target_exists: true, columns: [],
+      unmapped_target_columns: [], errors: [], warnings: [], ok: true,
+    })
+    await act(async () => {
+      await usePipelineStore.getState().validateDatabaseExport('export-node')
+    })
+
+    act(() => usePipelineStore.getState().clearDatabaseExportValidation('export-node'))
+
+    expect(usePipelineStore.getState().databaseExportValidationByNodeId['export-node']).toBeUndefined()
+  })
+})
+
+describe('startLivePreview for a database export node', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetStore()
+    act(() => {
+      usePipelineStore.setState({
+        nodes: [
+          {
+            id: 'src-node',
+            type: 'csv_source',
+            position: { x: 0, y: 0 },
+            data: { label: 'Orders', tableName: 'orders', config: { file_path: '/tmp/o.csv' } },
+          },
+          {
+            id: 'export-node',
+            type: 'export',
+            position: { x: 200, y: 0 },
+            data: {
+              label: 'Export',
+              tableName: 'export_1',
+              config: {
+                destination: 'database',
+                connection_source_id: 'ora-1',
+                target_table: 'SALES.ORDERS',
+              },
+            },
+          },
+        ],
+        edges: [{ id: 'e1', source: 'src-node', target: 'export-node' }],
+      })
+    })
+  })
+
+  function loadedStatus() {
+    return {
+      locations: {
+        materialized: {
+          present: true, state: 'fresh' as const, row_count: 5, column_count: 1,
+          finished_at: '2026-04-08T09:00:00Z', error: null,
+        },
+      },
+      lifecycle: 'materialized' as const,
+      state: 'fresh' as const,
+      location: 'materialized' as const,
+      row_count: 5, column_count: 1, finished_at: '2026-04-08T09:00:00Z', error: null,
+    }
+  }
+
+  it('opens a preview session for an export node bound to a database', async () => {
+    mockGetCacheStatus.mockResolvedValueOnce({ nodes: { 'src-node': loadedStatus() } })
+    mockStartPreviewSession.mockResolvedValueOnce({
+      session_id: 'sess-export',
+      node_id: 'export-node',
+      columns: ['id'],
+      column_types: ['INTEGER'],
+      rows: [[1]],
+      buffered_rows: 1,
+      has_more: false,
+      buffer_capped: false,
+    })
+
+    await act(async () => {
+      await usePipelineStore.getState().startLivePreview('export-node')
+    })
+
+    expect(mockStartPreviewSession).toHaveBeenCalled()
+    expect(usePipelineStore.getState().livePreviewsByNodeId['export-node'].sessionId).toBe('sess-export')
+  })
+
+  it('gates on unloaded upstreams instead of previewing nothing', async () => {
+    mockGetCacheStatus.mockResolvedValueOnce({ nodes: {} })
+
+    await act(async () => {
+      await usePipelineStore.getState().startLivePreview('export-node')
+    })
+
+    expect(mockStartPreviewSession).not.toHaveBeenCalled()
+    expect(usePipelineStore.getState().loadDestinationPrompt).toEqual(
+      expect.objectContaining({ targetNodeId: 'export-node', resumeKind: 'live-preview' }),
+    )
+  })
+
+  it('does not preview an export node writing to a local file', async () => {
+    act(() => {
+      usePipelineStore.setState({
+        nodes: usePipelineStore.getState().nodes.map((n) =>
+          n.id === 'export-node'
+            ? { ...n, data: { ...n.data, config: { destination: 'local', output_path: '/tmp/x.csv' } } }
+            : n,
+        ),
+      })
+    })
+
+    await act(async () => {
+      await usePipelineStore.getState().startLivePreview('export-node')
+    })
+
+    expect(mockStartPreviewSession).not.toHaveBeenCalled()
   })
 })

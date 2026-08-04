@@ -26,3 +26,52 @@ def data_upstream_ids(pipeline: PipelineDefinition) -> dict[str, list[str]]:
             continue
         upstream_ids[edge.target].append(edge.source)
     return upstream_ids
+
+
+def upstream_table_name(pipeline: PipelineDefinition, node_id: str) -> str | None:
+    """The table name of a node's single data upstream, or None.
+
+    Terminal nodes (export) take exactly one input, so the first data edge is
+    the answer — this mirrors what the canvas shows on the node card.
+    """
+    node_map = {n.id: n for n in pipeline.nodes}
+    for edge in pipeline.edges:
+        if edge.target != node_id or is_structural_edge(edge, node_map):
+            continue
+        upstream = node_map.get(edge.source)
+        if upstream is not None and upstream.table_name:
+            return upstream.table_name
+    return None
+
+
+def resolve_direct_upstreams(
+    pipeline: PipelineDefinition,
+    node_id: str,
+    cache_keys: dict[str, str | None],
+    manager,
+) -> tuple[dict[str, str], list[str]]:
+    """Resolve each direct upstream of a node to its consumable copy.
+
+    Returns (table_name -> location, missing_table_names). Anything reading
+    upstream tables by name — a transform's live preview, an export's SQL —
+    has to pin the precedence-chosen copy (spec §6) rather than trust the
+    search path, or it silently reads a stale materialized table. Callers
+    surface `missing` as the 409 `upstreams_unavailable` contract.
+    """
+    node_map = {n.id: n for n in pipeline.nodes}
+    resolution: dict[str, str] = {}
+    missing: list[str] = []
+    for edge in pipeline.edges:
+        if edge.target != node_id:
+            continue
+        if is_structural_edge(edge, node_map):
+            continue
+        upstream = node_map.get(edge.source)
+        if upstream is None:
+            continue
+        location = manager.consumable_location(edge.source, cache_keys.get(edge.source))
+        if location is None:
+            missing.append(upstream.table_name)
+        else:
+            resolution[upstream.table_name] = location
+    return resolution, missing

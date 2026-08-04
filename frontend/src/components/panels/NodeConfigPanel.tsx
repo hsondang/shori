@@ -11,7 +11,7 @@ import {
   type ReactNode,
   type SetStateAction,
 } from 'react'
-import { Button, Modal } from '@shori/design-system'
+import { Button, Modal, Switch } from '@shori/design-system'
 import { usePipelineStore } from '../../store/pipelineStore'
 import { useSettingsStore } from '../../store/settingsStore'
 import { computeWorkbookRollup } from '../../lib/workbookRollup'
@@ -20,6 +20,7 @@ import {
   getConnectionSummary,
   getDatabaseSourceConnectionScope,
   getDatabaseSourceConnectionSourceId,
+  getExportableConnections,
 } from '../../lib/databaseConnections'
 import { getCsvPreprocessFingerprint } from '../../lib/csvPreprocessing'
 import { createExcelUploadHandler, createWorkbookUploadHandler } from '../../lib/excelUpload'
@@ -30,11 +31,13 @@ import type {
   CsvPreprocessingConfig,
   CsvSourceConfig,
   DatabaseConnectionConfig,
+  DatabaseExportValidationState,
   DbType,
   ExcelSourceConfig,
   ExcelWorkbookConfig,
   ExportConfig,
   NodeLoadMode,
+  SavedDatabaseConnection,
 } from '../../types/pipeline'
 import {
   clampNodeConfigPanelWidth,
@@ -138,10 +141,97 @@ function LoadModeToggle({
   )
 }
 
+/** Encodes destination + connection in one <select> value, so "where does this
+ * go?" stays a single control however many databases are approved. */
+const DATABASE_DESTINATION_PREFIX = 'db:'
+
+/** Mirrors parse_target_table on the backend: two unquoted Oracle identifiers. */
+const TARGET_TABLE_PATTERN = /^[A-Za-z][A-Za-z0-9_$#]*\.[A-Za-z][A-Za-z0-9_$#]*$/
+
+function isValidTargetTable(value: string | undefined): boolean {
+  return TARGET_TABLE_PATTERN.test((value ?? '').trim())
+}
+
+function exportDestinationValue(config: ExportConfig): string {
+  if (config.destination === 'database') {
+    return `${DATABASE_DESTINATION_PREFIX}${config.connection_source_id ?? ''}`
+  }
+  return config.destination === 'ai_workspace' ? 'ai_workspace' : 'local'
+}
+
+function ExportDestinationSelect({
+  config,
+  connections,
+  onChange,
+}: {
+  config: ExportConfig
+  connections: SavedDatabaseConnection[]
+  onChange: (patch: Partial<ExportConfig>) => void
+}) {
+  const exportable = getExportableConnections(connections)
+  const selectedId = config.destination === 'database' ? config.connection_source_id : undefined
+  // A connection whose approval was revoked (or that vanished) still gets an
+  // option, flagged — otherwise the node would silently forget its target and
+  // look like it had never been configured.
+  const revoked = selectedId && !exportable.some((c) => c.id === selectedId)
+    ? findSavedConnectionById(connections, selectedId)
+    : null
+
+  return (
+    <div>
+      <label htmlFor="export-destination" className="mb-1 block text-xs text-gray-500">Destination</label>
+      <select
+        id="export-destination"
+        value={exportDestinationValue(config)}
+        onChange={(event) => {
+          const value = event.target.value
+          if (value.startsWith(DATABASE_DESTINATION_PREFIX)) {
+            onChange({
+              destination: 'database',
+              connection_source_id: value.slice(DATABASE_DESTINATION_PREFIX.length),
+            })
+            return
+          }
+          onChange({ destination: value as 'local' | 'ai_workspace' })
+        }}
+        className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
+      >
+        <option value="local">Local file</option>
+        <option value="ai_workspace">AI workspace</option>
+        {(exportable.length > 0 || revoked || selectedId) && (
+          <optgroup label="Databases">
+            {exportable.map((connection) => (
+              <option key={connection.id} value={`${DATABASE_DESTINATION_PREFIX}${connection.id}`}>
+                {connection.name}
+              </option>
+            ))}
+            {revoked && (
+              <option value={`${DATABASE_DESTINATION_PREFIX}${revoked.id}`}>
+                {revoked.name} (exports not enabled)
+              </option>
+            )}
+            {selectedId && !revoked && !exportable.some((c) => c.id === selectedId) && (
+              <option value={`${DATABASE_DESTINATION_PREFIX}${selectedId}`}>
+                Missing connection
+              </option>
+            )}
+          </optgroup>
+        )}
+      </select>
+      {exportable.length === 0 && config.destination !== 'database' && (
+        <p className="mt-1 text-[11px] text-gray-400">
+          To export to a database, turn on "Allow exports" for an Oracle connection in Platform Settings.
+        </p>
+      )}
+    </div>
+  )
+}
+
 function ExportNodeConfig({
   config,
   sourceTableName,
   projectId,
+  connections,
   onChange,
   description,
   onDescriptionChange,
@@ -149,6 +239,7 @@ function ExportNodeConfig({
   config: ExportConfig
   sourceTableName: string | null
   projectId: string
+  connections: SavedDatabaseConnection[]
   onChange: (patch: Partial<ExportConfig>) => void
   description: string
   onDescriptionChange: (description: string) => void
@@ -186,18 +277,7 @@ function ExportNodeConfig({
           {sourceTableName ?? 'Connect a source to this node'}
         </div>
       </div>
-      <div>
-        <label htmlFor="export-destination" className="mb-1 block text-xs text-gray-500">Destination</label>
-        <select
-          id="export-destination"
-          value={destination}
-          onChange={(event) => onChange({ destination: event.target.value as 'local' | 'ai_workspace' })}
-          className="w-full rounded border border-gray-300 px-2 py-1 text-sm"
-        >
-          <option value="local">Local file</option>
-          <option value="ai_workspace">AI workspace</option>
-        </select>
-      </div>
+      <ExportDestinationSelect config={config} connections={connections} onChange={onChange} />
       {destination === 'local' ? (
         <>
           <div>
@@ -248,6 +328,224 @@ function ExportNodeConfig({
       </button>
       {status.kind === 'done' && <p className="text-xs text-emerald-600">{status.message}</p>}
       {status.kind === 'error' && <p className="text-xs text-red-600">{status.message}</p>}
+    </div>
+  )
+}
+
+/** Target table + SQL toggle: the fields that only exist for a database
+ * destination. Rendered as the query panel's metadata block. */
+function DatabaseExportFields({
+  config,
+  connection,
+  sourceTableName,
+  onChange,
+}: {
+  config: ExportConfig
+  connection: SavedDatabaseConnection | null
+  sourceTableName: string | null
+  onChange: (patch: Partial<ExportConfig>) => void
+}) {
+  const targetTable = config.target_table ?? ''
+  const targetTouched = targetTable.trim().length > 0
+  const targetValid = isValidTargetTable(targetTable)
+
+  return (
+    <>
+      <div>
+        <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Source table</div>
+        <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm text-gray-700">
+          {sourceTableName ?? 'Connect a source to this node'}
+        </div>
+      </div>
+      {connection && (
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Connection</div>
+          <div className="mt-1 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
+            {connection.name} · {getConnectionSummary(connection.db_type, connection)}
+          </div>
+        </div>
+      )}
+      <div>
+        <label htmlFor="export-target-table" className="mb-1 block text-xs text-gray-500">
+          Target table <span className="text-red-500">*</span>
+        </label>
+        <input
+          id="export-target-table"
+          type="text"
+          value={targetTable}
+          onChange={(event) => onChange({ target_table: event.target.value })}
+          placeholder="SCHEMA.TABLE_NAME"
+          aria-invalid={targetTouched && !targetValid}
+          className={`w-full rounded border bg-white px-2 py-1.5 text-sm font-mono ${
+            targetTouched && !targetValid ? 'border-red-400' : 'border-gray-300'
+          }`}
+        />
+        <p className="mt-1 text-[11px] text-gray-400">
+          {targetTouched && !targetValid
+            ? 'Use the form SCHEMA.TABLE_NAME.'
+            : 'Rows are appended. The table must already exist.'}
+        </p>
+      </div>
+      <div className="flex items-start justify-between gap-3 rounded-2xl border border-stone-200 bg-stone-50 px-3 py-3">
+        <div className="min-w-0">
+          <div className="text-xs font-semibold uppercase tracking-wide text-stone-500">SQL query</div>
+          <p className="mt-1 text-xs text-stone-500">
+            {config.use_sql
+              ? 'Select or transform the rows before they are exported.'
+              : 'Off: the whole source table is exported.'}
+          </p>
+        </div>
+        <Switch
+          id="export-use-sql"
+          label="Use a SQL query"
+          checked={config.use_sql === true}
+          onChange={(use_sql) =>
+            onChange({
+              use_sql,
+              // Seed the editor on first turn-on so there is something to run;
+              // an existing query is never overwritten.
+              sql: use_sql && !config.sql && sourceTableName ? `SELECT * FROM ${sourceTableName}` : config.sql,
+            })
+          }
+        />
+      </div>
+    </>
+  )
+}
+
+/** Preview, with a dropdown for the variant that also reaches the destination
+ * database. Split rather than two buttons: validating is the same intent, one
+ * step further, and only the plain form is safe to click without thinking. */
+function PreviewSplitButton({
+  disabled,
+  busy,
+  onPreview,
+  onPreviewAndValidate,
+}: {
+  disabled: boolean
+  busy: boolean
+  onPreview: () => void
+  onPreviewAndValidate: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    return () => document.removeEventListener('mousedown', handlePointerDown)
+  }, [open])
+
+  return (
+    <div ref={containerRef} className="relative mb-2 flex">
+      <button
+        type="button"
+        onClick={onPreview}
+        disabled={disabled}
+        className="flex-1 rounded-l-lg border border-purple-200 bg-purple-50 px-3 py-2 text-sm font-medium text-purple-700 transition hover:bg-purple-100 disabled:opacity-40"
+      >
+        {busy ? 'Validating…' : 'Preview'}
+      </button>
+      <button
+        type="button"
+        aria-label="More preview options"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+        disabled={disabled}
+        className="rounded-r-lg border border-l-0 border-purple-200 bg-purple-50 px-2 py-2 text-sm text-purple-700 transition hover:bg-purple-100 disabled:opacity-40"
+      >
+        ▾
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute bottom-full left-0 z-20 mb-1 w-full rounded-lg border border-stone-200 bg-white p-1 text-sm shadow-lg"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false)
+              onPreviewAndValidate()
+            }}
+            className="block w-full rounded px-3 py-2 text-left transition hover:bg-stone-100"
+          >
+            Preview and validate target
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DatabaseExportValidationReport({
+  state,
+  onDismiss,
+}: {
+  state: DatabaseExportValidationState
+  onDismiss: () => void
+}) {
+  if (state.status === 'running') {
+    return <p className="mb-3 text-xs text-gray-500">Checking the target table…</p>
+  }
+  if (state.status === 'error') {
+    return (
+      <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+        {state.error}
+      </div>
+    )
+  }
+
+  const report = state.report
+  if (!report) return null
+  const problems = report.columns.filter((column) => column.status !== 'ok')
+
+  return (
+    <div
+      className={`mb-3 rounded-lg border px-3 py-2 text-xs ${
+        report.ok ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'
+      }`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className={report.ok ? 'font-medium text-emerald-800' : 'font-medium text-red-800'}>
+          {report.ok
+            ? `${report.target_table} accepts all ${report.columns.length} columns`
+            : `${report.target_table} cannot accept this query`}
+        </div>
+        <button type="button" onClick={onDismiss} className="text-gray-400 hover:text-gray-600" aria-label="Dismiss validation">
+          ✕
+        </button>
+      </div>
+      {report.errors.map((message) => (
+        <div key={message} className="mt-1 text-red-700">• {message}</div>
+      ))}
+      {report.warnings.map((message) => (
+        <div key={message} className="mt-1 text-amber-700">• {message}</div>
+      ))}
+      {problems.length > 0 && (
+        <table className="mt-2 w-full text-left font-mono text-[11px]">
+          <tbody>
+            {problems.map((column) => (
+              <tr key={column.source_column} className="align-top">
+                <td className="pr-2 text-gray-700">{column.source_column}</td>
+                <td className="pr-2 text-gray-400">{column.source_type}</td>
+                <td className="text-gray-500">
+                  {column.target_column ? `→ ${column.target_column} ${column.target_type ?? ''}` : '→ (missing)'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {report.unmapped_target_columns.length > 0 && (
+        <p className="mt-2 text-gray-500">
+          Left to their defaults: {report.unmapped_target_columns.join(', ')}
+        </p>
+      )}
     </div>
   )
 }
@@ -336,6 +634,10 @@ export default function NodeConfigPanel() {
   const abortDatabaseNodeExecution = usePipelineStore((s) => s.abortDatabaseNodeExecution)
   const runTransformPreview = usePipelineStore((s) => s.runTransformPreview)
   const startLivePreview = usePipelineStore((s) => s.startLivePreview)
+  const runDatabaseExport = usePipelineStore((s) => s.runDatabaseExport)
+  const validateDatabaseExport = usePipelineStore((s) => s.validateDatabaseExport)
+  const clearDatabaseExportValidation = usePipelineStore((s) => s.clearDatabaseExportValidation)
+  const databaseExportValidationByNodeId = usePipelineStore((s) => s.databaseExportValidationByNodeId)
   const globalDatabaseConnections = useSettingsStore((s) => s.globalDatabaseConnections)
   const loadCsvPreview = usePipelineStore((s) => s.loadCsvPreview)
   const loadPreprocessedCsvPreview = usePipelineStore((s) => s.loadPreprocessedCsvPreview)
@@ -398,7 +700,8 @@ export default function NodeConfigPanel() {
     && (!csvPreprocessing.enabled || hasReviewedPreprocess)
 
   const availableUpstreamTables = useMemo(() => {
-    if (!selectedNodeId || node?.type !== 'transform') return []
+    // Transform and database-export nodes both write SQL over their upstreams.
+    if (!selectedNodeId || (node?.type !== 'transform' && node?.type !== 'export')) return []
     const upstreamIds = edges.filter((edge) => edge.target === selectedNodeId).map((edge) => edge.source)
     return nodes
       .filter((candidate) => upstreamIds.includes(candidate.id))
@@ -620,6 +923,21 @@ export default function NodeConfigPanel() {
   )
   const nodeStatusLabel = nodeResult ? nodePresentation.label : null
 
+  const exportConfig = config as unknown as ExportConfig
+  const isDatabaseExport = node?.type === 'export' && exportConfig.destination === 'database'
+  const exportConnection = findSavedConnectionById(
+    globalDatabaseConnections,
+    exportConfig.connection_source_id ?? null,
+  )
+  const exportValidation = nodeId ? databaseExportValidationByNodeId[nodeId] : undefined
+  const isExportBusy = nodeResult?.status === 'running' || nodeResult?.status === 'connecting'
+  const canRunDatabaseExport =
+    Boolean(exportSourceTableName)
+    && Boolean(exportConnection)
+    && isValidTargetTable(exportConfig.target_table)
+    && (!exportConfig.use_sql || Boolean((exportConfig.sql ?? '').trim()))
+    && !isExportBusy
+
   const renderActionsMenu = () => (
     <div ref={menuRef} className="relative shrink-0">
       <button
@@ -675,6 +993,8 @@ export default function NodeConfigPanel() {
     description,
     metadata,
     extraEditorContent,
+    editorHidden = false,
+    secondaryFooter,
     onExecute,
     onBusyAction,
   }: {
@@ -693,6 +1013,10 @@ export default function NodeConfigPanel() {
     description: string
     metadata: ReactNode
     extraEditorContent?: ReactNode
+    /** Collapse the SQL editor entirely (the export node's SQL toggle, off). */
+    editorHidden?: boolean
+    /** Rendered above the primary action, for a second action of equal weight. */
+    secondaryFooter?: ReactNode
     onExecute: () => void
     onBusyAction?: () => void
   }) => (
@@ -743,29 +1067,34 @@ export default function NodeConfigPanel() {
         <div className="mt-4 space-y-2">{metadata}</div>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col px-4 py-4">
+      <div className={`flex min-h-0 flex-col px-4 py-4 ${editorHidden ? '' : 'flex-1'}`}>
         {extraEditorContent}
-        <div className="mb-2 flex items-center justify-between">
-          <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500">SQL Query</label>
-          {nodeResult && (
-            <span className="text-xs text-gray-400">
-              {nodeStatusLabel}
-            </span>
-          )}
-        </div>
-        <div className="min-h-0 flex-1">
-          <SqlEditor
-            value={queryValue}
-            onChange={onQueryChange}
-            upstreamTables={availableUpstreamTables}
-            height="100%"
-            containerClassName="h-full"
-          />
-        </div>
+        {!editorHidden && (
+          <>
+            <div className="mb-2 flex items-center justify-between">
+              <label className="block text-xs font-semibold uppercase tracking-wide text-gray-500">SQL Query</label>
+              {nodeResult && (
+                <span className="text-xs text-gray-400">
+                  {nodeStatusLabel}
+                </span>
+              )}
+            </div>
+            <div className="min-h-0 flex-1">
+              <SqlEditor
+                value={queryValue}
+                onChange={onQueryChange}
+                upstreamTables={availableUpstreamTables}
+                height="100%"
+                containerClassName="h-full"
+              />
+            </div>
+          </>
+        )}
       </div>
 
-      <div className="border-t border-gray-200 bg-white px-4 py-4">
+      <div className="mt-auto border-t border-gray-200 bg-white px-4 py-4">
         <p className="mb-3 text-xs text-gray-500">{description}</p>
+        {secondaryFooter}
         <button
           type="button"
           onClick={isBusy ? onBusyAction : onExecute}
@@ -834,6 +1163,76 @@ export default function NodeConfigPanel() {
         </>
       ),
       onExecute: () => { void executeSingleNode(node.id, { loadPreviewOnSuccess: true }) },
+      onBusyAction: () => { void abortDatabaseNodeExecution(node.id) },
+    })
+  }
+
+  if (isDatabaseExport) {
+    return renderQueryPanel({
+      expanded: isTransformEditMode,
+      setExpanded: setIsTransformEditMode,
+      title: 'Export to Database',
+      defaultLabel: 'Export',
+      queryValue: (exportConfig.sql as string | undefined) ?? '',
+      onQueryChange: (query) => updateNodeData(node.id, { config: { ...config, sql: query } }),
+      canExecute: canRunDatabaseExport,
+      actionLabel: 'Export',
+      enabledButtonClassName: 'bg-blue-500 text-white hover:bg-blue-600',
+      isBusy: isExportBusy,
+      busyActionLabel: 'Abort',
+      busyButtonClassName: 'bg-red-500 text-white hover:bg-red-600',
+      // The SQL editor only exists when the toggle is on; without it the panel
+      // is the compact metadata stack and should not reserve editor height.
+      editorHidden: exportConfig.use_sql !== true,
+      description: 'Appends rows to the target table. The table must already exist; nothing is dropped or replaced.',
+      metadata: (
+        <>
+          <ExportDestinationSelect
+            config={exportConfig}
+            connections={globalDatabaseConnections}
+            onChange={(patch) => updateNodeData(node.id, { config: { ...config, ...patch } })}
+          />
+          <DatabaseExportFields
+            config={exportConfig}
+            connection={exportConnection}
+            sourceTableName={exportSourceTableName}
+            onChange={(patch) => updateNodeData(node.id, { config: { ...config, ...patch } })}
+          />
+          <DescriptionField value={nodeDescription} onChange={updateNodeDescription} />
+        </>
+      ),
+      extraEditorContent: exportConfig.use_sql && availableUpstreamTables.length > 0 ? (
+        <div className="mb-3">
+          <label className="mb-1 block text-xs text-gray-500">Available Tables</label>
+          <div className="flex flex-wrap gap-1">
+            {availableUpstreamTables.map((upstreamTable) => (
+              <span key={upstreamTable} className="rounded bg-purple-100 px-2 py-0.5 text-xs font-mono text-purple-700">
+                {upstreamTable}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : undefined,
+      secondaryFooter: (
+        <>
+          {exportValidation && (
+            <DatabaseExportValidationReport
+              state={exportValidation}
+              onDismiss={() => clearDatabaseExportValidation(node.id)}
+            />
+          )}
+          <PreviewSplitButton
+            disabled={isExportBusy || !exportSourceTableName}
+            busy={exportValidation?.status === 'running'}
+            onPreview={() => { void startLivePreview(node.id) }}
+            onPreviewAndValidate={() => {
+              void startLivePreview(node.id)
+              void validateDatabaseExport(node.id)
+            }}
+          />
+        </>
+      ),
+      onExecute: () => { void runDatabaseExport(node.id) },
       onBusyAction: () => { void abortDatabaseNodeExecution(node.id) },
     })
   }
@@ -1357,6 +1756,7 @@ export default function NodeConfigPanel() {
             config={config as unknown as ExportConfig}
             sourceTableName={exportSourceTableName}
             projectId={pipelineId}
+            connections={globalDatabaseConnections}
             onChange={(patch) => { if (nodeId) updateNodeData(nodeId, { config: { ...config, ...patch } }) }}
             description={nodeDescription}
             onDescriptionChange={updateNodeDescription}

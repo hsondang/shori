@@ -4,6 +4,7 @@ import type {
   CsvPreprocessingConfig,
   DataPreview,
   DatabaseConnectionConfig,
+  DatabaseExportValidation,
   ExecutionRunStatus,
   NodeExecutionResult,
   PipelineDefinition,
@@ -219,6 +220,34 @@ export async function exportToAiWorkspace(
   const { data } = await api.post(`/data/${projectId}/export-to-ai`, {
     table_name: tableName,
     source_node_id: sourceNodeId ?? null,
+  })
+  return data
+}
+
+/** Append the export node's rows to its target database table. Returns an
+ * execution-run snapshot; poll getExecutionRunStatus for progress. */
+export async function exportToDatabase(
+  projectId: string,
+  pipeline: PipelineDefinition,
+  nodeId: string,
+): Promise<ExecutionRunStatus> {
+  const { data } = await api.post(`/data/${projectId}/export-to-database`, {
+    pipeline,
+    node_id: nodeId,
+  })
+  return data
+}
+
+/** The only export call that touches the destination database before a run:
+ * compares the query's columns against the live target table. */
+export async function validateDatabaseExport(
+  projectId: string,
+  pipeline: PipelineDefinition,
+  nodeId: string,
+): Promise<DatabaseExportValidation> {
+  const { data } = await api.post(`/data/${projectId}/export-to-database/validate`, {
+    pipeline,
+    node_id: nodeId,
   })
   return data
 }
