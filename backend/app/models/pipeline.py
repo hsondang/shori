@@ -62,10 +62,6 @@ class TransformConfig(BaseModel):
     sql: str
 
 
-class ExportConfig(BaseModel):
-    format: str = "csv"
-
-
 class Position(BaseModel):
     x: float
     y: float
