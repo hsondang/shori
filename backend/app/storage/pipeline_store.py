@@ -31,6 +31,25 @@ class GlobalConnectionInUseError(ValueError):
         )
 
 
+def _node_uses_global_connection(node: object, connection_id: str) -> bool:
+    """Whether a persisted node references a global connection.
+
+    Two shapes point at one: a db_source reading from it (connection_mode
+    "global"), and an export node appending to it (destination "database").
+    Export nodes carry no connection_mode, so both have to be checked.
+    """
+    if not isinstance(node, dict):
+        return False
+    config = node.get("config")
+    if not isinstance(config, dict):
+        return False
+    if config.get("connection_source_id") != connection_id:
+        return False
+    if config.get("connection_mode") == "global":
+        return True
+    return node.get("type") == "export" and config.get("destination") == "database"
+
+
 class PipelineStore:
     def __init__(self):
         self.db_path = PROJECT_DB_PATH
@@ -67,6 +86,7 @@ class PipelineStore:
                     service_name TEXT,
                     user TEXT NOT NULL,
                     password TEXT NOT NULL,
+                    allow_export INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
@@ -79,6 +99,17 @@ class PipelineStore:
             if "starred" not in columns:
                 conn.execute(
                     "ALTER TABLE projects ADD COLUMN starred INTEGER NOT NULL DEFAULT 0"
+                )
+            connection_columns = {
+                row["name"]
+                for row in conn.execute(
+                    "PRAGMA table_info(global_database_connections)"
+                ).fetchall()
+            }
+            if "allow_export" not in connection_columns:
+                conn.execute(
+                    "ALTER TABLE global_database_connections "
+                    "ADD COLUMN allow_export INTEGER NOT NULL DEFAULT 0"
                 )
 
     def _saved_connection_row_to_model(
@@ -95,6 +126,7 @@ class PipelineStore:
         }
         if row["db_type"] == "oracle":
             data["service_name"] = row["service_name"]
+            data["allow_export"] = bool(row["allow_export"])
         else:
             data["database"] = row["database_name"]
         return TypeAdapter(DatabaseConnectionDefinition).validate_python(data)
@@ -106,10 +138,14 @@ class PipelineStore:
 
     def _saved_connection_params(
         self, connection: DatabaseConnectionInputDefinition
-    ) -> tuple[str | None, str | None]:
+    ) -> tuple[str | None, str | None, int]:
+        """(database_name, service_name, allow_export) for the row.
+
+        Export permission is Oracle-only; postgres rows always store 0.
+        """
         if connection.db_type == "oracle":
-            return None, connection.service_name
-        return connection.database, None
+            return None, connection.service_name, 1 if connection.allow_export else 0
+        return connection.database, None, 0
 
     def save(self, pipeline: PipelineDefinition):
         now = _utc_now()
@@ -168,7 +204,7 @@ class PipelineStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, name, db_type, host, port, database_name, service_name, user, password
+                SELECT id, name, db_type, host, port, database_name, service_name, user, password, allow_export
                 FROM global_database_connections
                 ORDER BY name COLLATE NOCASE ASC, id ASC
                 """
@@ -179,7 +215,7 @@ class PipelineStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, name, db_type, host, port, database_name, service_name, user, password
+                SELECT id, name, db_type, host, port, database_name, service_name, user, password, allow_export
                 FROM global_database_connections
                 WHERE id = ?
                 """,
@@ -197,15 +233,16 @@ class PipelineStore:
         connection = self._normalize_saved_connection_input(connection)
         connection_id = uuid4().hex
         now = _utc_now()
-        database_name, service_name = self._saved_connection_params(connection)
+        database_name, service_name, allow_export = self._saved_connection_params(connection)
 
         try:
             with self._connect() as conn:
                 conn.execute(
                     """
                     INSERT INTO global_database_connections (
-                        id, name, db_type, host, port, database_name, service_name, user, password, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        id, name, db_type, host, port, database_name, service_name, user, password,
+                        allow_export, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         connection_id,
@@ -217,6 +254,7 @@ class PipelineStore:
                         service_name,
                         connection.user,
                         connection.password,
+                        allow_export,
                         now,
                         now,
                     ),
@@ -233,14 +271,14 @@ class PipelineStore:
     ) -> DatabaseConnectionDefinition:
         connection = self._normalize_saved_connection_input(connection)
         now = _utc_now()
-        database_name, service_name = self._saved_connection_params(connection)
+        database_name, service_name, allow_export = self._saved_connection_params(connection)
 
         try:
             with self._connect() as conn:
                 result = conn.execute(
                     """
                     UPDATE global_database_connections
-                    SET name = ?, db_type = ?, host = ?, port = ?, database_name = ?, service_name = ?, user = ?, password = ?, updated_at = ?
+                    SET name = ?, db_type = ?, host = ?, port = ?, database_name = ?, service_name = ?, user = ?, password = ?, allow_export = ?, updated_at = ?
                     WHERE id = ?
                     """,
                     (
@@ -252,6 +290,7 @@ class PipelineStore:
                         service_name,
                         connection.user,
                         connection.password,
+                        allow_export,
                         now,
                         connection_id,
                     ),
@@ -281,13 +320,7 @@ class PipelineStore:
             nodes = payload.get("nodes", [])
             if not isinstance(nodes, list):
                 continue
-            if any(
-                isinstance(node, dict)
-                and isinstance(node.get("config"), dict)
-                and node["config"].get("connection_mode") == "global"
-                and node["config"].get("connection_source_id") == connection_id
-                for node in nodes
-            ):
+            if any(_node_uses_global_connection(node, connection_id) for node in nodes):
                 project_names.append(row["name"])
         return project_names
 

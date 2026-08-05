@@ -12,8 +12,9 @@ from app.models.pipeline import (
 )
 from app.services.cache_keys import compute_cache_keys
 from app.services.connection_resolution import resolve_pipeline_connections
+from app.services.database_export import DatabaseExportError, effective_export_sql
 from app.services.execution_registry import ExecutionCancelled
-from app.services.pipeline_graph import is_structural_edge
+from app.services.pipeline_graph import resolve_direct_upstreams, upstream_table_name
 from app.services.preview_sessions import PreviewSession, PreviewSessionNotFound
 from app.storage.pipeline_store import PipelineStore
 
@@ -31,29 +32,6 @@ def _utc_now_iso() -> str:
 
 def _get_sessions(request: Request):
     return request.app.state.preview_sessions
-
-
-def _transform_upstream_gate(pipeline, node_id, cache_keys, manager):
-    """Resolve each direct upstream of a transform to its consumable copy, and
-    collect any upstream with no present copy so the caller can tell the user to
-    load/materialize it first. Returns (resolution, missing_table_names)."""
-    node_map = {n.id: n for n in pipeline.nodes}
-    resolution: dict[str, str] = {}
-    missing: list[str] = []
-    for edge in pipeline.edges:
-        if edge.target != node_id:
-            continue
-        if is_structural_edge(edge, node_map):
-            continue
-        upstream = node_map.get(edge.source)
-        if upstream is None:
-            continue
-        location = manager.consumable_location(edge.source, cache_keys.get(edge.source))
-        if location is None:
-            missing.append(upstream.table_name)
-        else:
-            resolution[upstream.table_name] = location
-    return resolution, missing
 
 
 @router.post("/start")
@@ -84,43 +62,52 @@ async def start_preview_session(payload: PreviewSessionStartRequest, request: Re
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Unable to start preview: {exc}") from exc
 
+    # Transform and database-export nodes both preview a DuckDB query over their
+    # upstreams; only the source of the SQL differs. An export preview never
+    # touches the destination database — validation is a separate, explicit call.
     if node.type == NodeType.TRANSFORM:
         sql = (node.config or {}).get("sql")
         if not sql or not str(sql).strip():
             raise HTTPException(status_code=400, detail="Transform has no SQL to preview")
-        # Gate on upstream availability: the SQL reads upstream tables, so every
-        # upstream needs a consumable (in-memory or materialized) copy first.
-        resolution, missing = await asyncio.to_thread(
-            _transform_upstream_gate, pipeline, node.id, cache_keys, manager
-        )
-        if missing:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "upstreams_unavailable",
-                    "message": "Some upstream tables are not loaded or materialized yet.",
-                    "missing_tables": missing,
-                },
-            )
+    elif node.type == NodeType.EXPORT and (node.config or {}).get("destination") == "database":
         try:
-            return await _get_sessions(request).start_transform(
-                project_id=pipeline.id,
-                node=node,
-                cache_key=cache_keys.get(node.id),
-                duckdb=manager,
-                sql=sql,
-                upstream_resolution=resolution,
-                chunk_rows=settings.preview_chunk_rows,
-                max_buffer_rows=settings.preview_max_buffer_rows,
-                ttl_seconds=settings.preview_session_ttl_seconds,
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Unable to start preview: {exc}") from exc
+            sql = effective_export_sql(node, upstream_table_name(pipeline, node.id))
+        except DatabaseExportError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Live preview is only available for database source, transform and database export nodes",
+        )
 
-    raise HTTPException(
-        status_code=400,
-        detail="Live preview is only available for database source and transform nodes",
+    # Gate on upstream availability: the SQL reads upstream tables, so every
+    # upstream needs a consumable (in-memory or materialized) copy first.
+    resolution, missing = await asyncio.to_thread(
+        resolve_direct_upstreams, pipeline, node.id, cache_keys, manager
     )
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "upstreams_unavailable",
+                "message": "Some upstream tables are not loaded or materialized yet.",
+                "missing_tables": missing,
+            },
+        )
+    try:
+        return await _get_sessions(request).start_transform(
+            project_id=pipeline.id,
+            node=node,
+            cache_key=cache_keys.get(node.id),
+            duckdb=manager,
+            sql=sql,
+            upstream_resolution=resolution,
+            chunk_rows=settings.preview_chunk_rows,
+            max_buffer_rows=settings.preview_max_buffer_rows,
+            ttl_seconds=settings.preview_session_ttl_seconds,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Unable to start preview: {exc}") from exc
 
 
 @router.post("/{session_id}/fetch")

@@ -221,6 +221,234 @@ async def test_export_to_path_rejects_missing_table(populated_client, tmp_path):
     assert resp.status_code == 400
 
 
+ORACLE_CONNECTION = {
+    "name": "Oracle Prod",
+    "db_type": "oracle",
+    "host": "ora.internal",
+    "port": 1521,
+    "service_name": "KM",
+    "user": "app",
+    "password": "secret",
+}
+
+
+async def _create_connection(client, **overrides):
+    resp = await client.post(
+        "/api/settings/database-connections", json={**ORACLE_CONNECTION, **overrides}
+    )
+    assert resp.status_code == 200
+    return resp.json()
+
+
+def _pipeline_with_export(pipeline_def, export_config: dict) -> dict:
+    """The CSV source fixture plus an export node wired to it."""
+    return {
+        **pipeline_def,
+        "nodes": [
+            *pipeline_def["nodes"],
+            {
+                "id": "export-1",
+                "type": "export",
+                "table_name": "export_1",
+                "label": "Export",
+                "position": {"x": 200, "y": 0},
+                "config": export_config,
+            },
+        ],
+        "edges": [{"id": "e1", "source": pipeline_def["nodes"][0]["id"], "target": "export-1"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_export_to_database_refuses_a_connection_without_permission(
+    populated_client, pipeline_def
+):
+    """Client-side filtering is UX; a hand-edited or stale node config must
+    still be refused by the server."""
+    connection = await _create_connection(populated_client, allow_export=False)
+    pipeline = _pipeline_with_export(
+        pipeline_def,
+        {
+            "destination": "database",
+            "connection_source_id": connection["id"],
+            "target_table": "SALES.ORDERS",
+        },
+    )
+
+    resp = await populated_client.post(
+        f"/api/data/{PROJECT_ID}/export-to-database",
+        json={"pipeline": pipeline, "node_id": "export-1"},
+    )
+    assert resp.status_code == 400
+    assert "not enabled" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_export_to_database_refuses_a_postgres_connection(populated_client, pipeline_def):
+    resp = await populated_client.post(
+        "/api/settings/database-connections",
+        json={
+            "name": "PG",
+            "db_type": "postgres",
+            "host": "db.internal",
+            "port": 5432,
+            "database": "analytics",
+            "user": "readonly",
+            "password": "secret",
+        },
+    )
+    connection = resp.json()
+    pipeline = _pipeline_with_export(
+        pipeline_def,
+        {
+            "destination": "database",
+            "connection_source_id": connection["id"],
+            "target_table": "SALES.ORDERS",
+        },
+    )
+
+    resp = await populated_client.post(
+        f"/api/data/{PROJECT_ID}/export-to-database",
+        json={"pipeline": pipeline, "node_id": "export-1"},
+    )
+    assert resp.status_code == 400
+    assert "postgres" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_export_to_database_rejects_a_malformed_target_table(populated_client, pipeline_def):
+    connection = await _create_connection(populated_client, allow_export=True)
+    pipeline = _pipeline_with_export(
+        pipeline_def,
+        {
+            "destination": "database",
+            "connection_source_id": connection["id"],
+            "target_table": "orders",
+        },
+    )
+
+    resp = await populated_client.post(
+        f"/api/data/{PROJECT_ID}/export-to-database",
+        json={"pipeline": pipeline, "node_id": "export-1"},
+    )
+    assert resp.status_code == 400
+    assert "SCHEMA.TABLE_NAME" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_export_to_database_rejects_a_missing_connection(populated_client, pipeline_def):
+    pipeline = _pipeline_with_export(
+        pipeline_def,
+        {"destination": "database", "target_table": "SALES.ORDERS"},
+    )
+
+    resp = await populated_client.post(
+        f"/api/data/{PROJECT_ID}/export-to-database",
+        json={"pipeline": pipeline, "node_id": "export-1"},
+    )
+    assert resp.status_code == 400
+    assert "no database connection" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_export_to_database_rejects_a_non_database_destination(
+    populated_client, pipeline_def
+):
+    pipeline = _pipeline_with_export(pipeline_def, {"destination": "local", "output_path": "/tmp/x"})
+
+    resp = await populated_client.post(
+        f"/api/data/{PROJECT_ID}/export-to-database",
+        json={"pipeline": pipeline, "node_id": "export-1"},
+    )
+    assert resp.status_code == 400
+    assert "not configured to export to a database" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_export_to_database_reports_unloaded_upstreams(client, pipeline_def):
+    """Nothing has been executed, so the upstream has no copy in either DuckDB
+    location and the export cannot read it."""
+    connection = await _create_connection(client, allow_export=True)
+    pipeline = _pipeline_with_export(
+        pipeline_def,
+        {
+            "destination": "database",
+            "connection_source_id": connection["id"],
+            "target_table": "SALES.ORDERS",
+        },
+    )
+
+    resp = await client.post(
+        f"/api/data/{PROJECT_ID}/export-to-database",
+        json={"pipeline": pipeline, "node_id": "export-1"},
+    )
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["error"] == "upstreams_unavailable"
+    assert detail["missing_tables"] == ["my_table"]
+
+
+@pytest.mark.asyncio
+async def test_export_node_live_preview_stays_in_duckdb(populated_client, pipeline_def):
+    """Preview must not need (or touch) the destination database — the fake
+    Oracle host here would fail the moment a connection were attempted."""
+    connection = await _create_connection(populated_client, allow_export=True)
+    pipeline = _pipeline_with_export(
+        pipeline_def,
+        {
+            "destination": "database",
+            "connection_source_id": connection["id"],
+            "target_table": "SALES.ORDERS",
+        },
+    )
+
+    resp = await populated_client.post(
+        "/api/data/preview-session/start",
+        json={"pipeline": pipeline, "node_id": "export-1"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "id" in body["columns"]
+    assert len(body["rows"]) == 5
+
+
+@pytest.mark.asyncio
+async def test_export_node_live_preview_uses_the_node_sql_when_enabled(
+    populated_client, pipeline_def
+):
+    connection = await _create_connection(populated_client, allow_export=True)
+    pipeline = _pipeline_with_export(
+        pipeline_def,
+        {
+            "destination": "database",
+            "connection_source_id": connection["id"],
+            "target_table": "SALES.ORDERS",
+            "use_sql": True,
+            "sql": "SELECT name FROM my_table WHERE id <= 2",
+        },
+    )
+
+    resp = await populated_client.post(
+        "/api/data/preview-session/start",
+        json={"pipeline": pipeline, "node_id": "export-1"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["columns"] == ["name"]
+    assert len(body["rows"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_local_export_node_has_no_live_preview(populated_client, pipeline_def):
+    pipeline = _pipeline_with_export(pipeline_def, {"destination": "local", "output_path": "/tmp/x"})
+
+    resp = await populated_client.post(
+        "/api/data/preview-session/start",
+        json={"pipeline": pipeline, "node_id": "export-1"},
+    )
+    assert resp.status_code == 400
+
+
 @pytest.mark.asyncio
 async def test_delete_table_removes_materialized_table(populated_client):
     delete_resp = await populated_client.delete(f"/api/data/{PROJECT_ID}/table/my_table")

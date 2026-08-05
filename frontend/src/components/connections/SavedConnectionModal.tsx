@@ -1,3 +1,4 @@
+import { Switch } from '@shori/design-system'
 import ConnectionForm from '../panels/ConnectionForm'
 import {
   getDraftConnectionConfig,
@@ -91,6 +92,26 @@ export default function SavedConnectionModal({
             onChange={(config) => onDraftChange(config)}
             dbType={draft.db_type}
           />
+
+          {draft.db_type === 'oracle' && (
+            <div className="flex items-start justify-between gap-3 rounded-2xl border border-stone-200 bg-stone-50 px-3 py-3">
+              <div className="min-w-0">
+                <label htmlFor="database-connection-allow-export" className="text-xs font-semibold uppercase tracking-wide text-stone-500">
+                  Allow exports
+                </label>
+                <p className="mt-1 text-xs text-stone-500">
+                  Let export nodes append rows to tables in this database. Off by default —
+                  being able to read a database does not make it writable.
+                </p>
+              </div>
+              <Switch
+                id="database-connection-allow-export"
+                label="Allow exports to this database"
+                checked={draft.allow_export === true}
+                onChange={(allow_export) => onDraftChange({ allow_export } as Partial<SavedDatabaseConnectionInput>)}
+              />
+            </div>
+          )}
 
           {error && <div className="text-xs text-red-600">{error}</div>}
 

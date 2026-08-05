@@ -195,6 +195,160 @@ def test_delete_global_connection_blocks_if_project_references_it(store):
         store.delete_global_connection(created.id)
 
 
+def test_allow_export_round_trips_for_oracle_connections(store):
+    created = store.create_global_connection(
+        {
+            "name": "Oracle Prod",
+            "db_type": "oracle",
+            "host": "ora.internal",
+            "port": 1521,
+            "service_name": "KM",
+            "user": "app",
+            "password": "secret",
+            "allow_export": True,
+        }
+    )
+    assert created.allow_export is True
+    assert store.load_global_connection(created.id).allow_export is True
+
+    revoked = store.update_global_connection(
+        created.id,
+        {
+            "name": "Oracle Prod",
+            "db_type": "oracle",
+            "host": "ora.internal",
+            "port": 1521,
+            "service_name": "KM",
+            "user": "app",
+            "password": "secret",
+            "allow_export": False,
+        },
+    )
+    assert revoked.allow_export is False
+
+
+def test_allow_export_defaults_to_false(store):
+    created = store.create_global_connection(
+        {
+            "name": "Oracle Prod",
+            "db_type": "oracle",
+            "host": "ora.internal",
+            "port": 1521,
+            "service_name": "KM",
+            "user": "app",
+            "password": "secret",
+        }
+    )
+    assert created.allow_export is False
+
+
+def test_delete_global_connection_blocks_if_an_export_node_references_it(store):
+    """An export node points at a connection through `destination`, with no
+    connection_mode — the in-use guard has to catch that shape too."""
+    created = store.create_global_connection(
+        {
+            "name": "Oracle Prod",
+            "db_type": "oracle",
+            "host": "ora.internal",
+            "port": 1521,
+            "service_name": "KM",
+            "user": "app",
+            "password": "secret",
+            "allow_export": True,
+        }
+    )
+    pipeline = _make_pipeline()
+    pipeline.nodes = [
+        NodeDefinition(
+            id="e1",
+            type=NodeType.EXPORT,
+            table_name="e1",
+            label="Export",
+            position=Position(x=0, y=0),
+            config={
+                "destination": "database",
+                "connection_source_id": created.id,
+                "target_table": "SALES.ORDERS",
+            },
+        )
+    ]
+    store.save(pipeline)
+
+    with pytest.raises(ValueError, match="Test Pipeline"):
+        store.delete_global_connection(created.id)
+
+
+def test_export_node_to_a_different_destination_does_not_block_deletion(store):
+    created = store.create_global_connection(
+        {
+            "name": "Oracle Prod",
+            "db_type": "oracle",
+            "host": "ora.internal",
+            "port": 1521,
+            "service_name": "KM",
+            "user": "app",
+            "password": "secret",
+        }
+    )
+    pipeline = _make_pipeline()
+    pipeline.nodes = [
+        NodeDefinition(
+            id="e1",
+            type=NodeType.EXPORT,
+            table_name="e1",
+            label="Export",
+            position=Position(x=0, y=0),
+            config={"destination": "local", "connection_source_id": created.id},
+        )
+    ]
+    store.save(pipeline)
+
+    assert store.delete_global_connection(created.id) is True
+
+
+def test_existing_connection_table_is_migrated_to_include_allow_export(monkeypatch, tmp_path):
+    """Databases created before export permission existed must gain the column
+    with everything defaulting to not-approved."""
+    project_db_path = tmp_path / "projects.sqlite3"
+    conn = sqlite3.connect(project_db_path)
+    conn.execute(
+        """
+        CREATE TABLE global_database_connections (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            db_type TEXT NOT NULL,
+            host TEXT NOT NULL,
+            port INTEGER NOT NULL,
+            database_name TEXT,
+            service_name TEXT,
+            user TEXT NOT NULL,
+            password TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO global_database_connections
+            (id, name, db_type, host, port, database_name, service_name, user, password, created_at, updated_at)
+        VALUES ('c1', 'Legacy Oracle', 'oracle', 'ora.internal', 1521, NULL, 'KM', 'app', 'secret',
+                '2026-03-01T00:00:00+00:00', '2026-03-01T00:00:00+00:00')
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    import app.storage.pipeline_store as pipeline_store_module
+
+    monkeypatch.setattr(pipeline_store_module, "PROJECT_DB_PATH", project_db_path)
+    migrated_store = PipelineStore()
+
+    loaded = migrated_store.load_global_connection("c1")
+    assert loaded.name == "Legacy Oracle"
+    assert loaded.allow_export is False
+
+
 def test_existing_database_is_migrated_to_include_starred(monkeypatch, tmp_path):
     project_db_path = tmp_path / "projects.sqlite3"
     conn = sqlite3.connect(project_db_path)

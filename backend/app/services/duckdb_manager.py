@@ -83,6 +83,24 @@ class ProjectBusyError(RuntimeError):
     pass
 
 
+def install_temp_views(cur, manager: "DuckDBManager", resolution: dict[str, str] | None) -> None:
+    """Shadow each resolved upstream table with a connection-local TEMP VIEW
+    over its precedence-chosen copy.
+
+    TEMP views resolve before the search path and are isolated per cursor — no
+    shared-catalog DDL, so no lock contention with concurrent loads — and they
+    vanish when the cursor closes. Used by anything that reads upstream tables
+    by name off a held cursor: the transform live preview and the database
+    export reader.
+    """
+    for table_name, location in (resolution or {}).items():
+        catalog = manager._catalog_for(location == LOCATION_MEMORY)
+        cur.execute(
+            f"CREATE TEMP VIEW {_quote_identifier(table_name)} AS "
+            f"SELECT * FROM {_qualified(catalog, table_name)}"
+        )
+
+
 class DuckDBManager:
     """Storage for one project: a persistent DuckDB file plus node metadata.
 
@@ -559,6 +577,20 @@ class DuckDBManager:
                 "offset": offset,
                 "limit": limit,
             }
+
+    @contextmanager
+    def pinned_query(self, sql: str, resolution: dict[str, str] | None = None):
+        """Execute `sql` with each resolved upstream pinned to its consumable
+        copy, yielding the open cursor so the caller can stream rows out.
+
+        The cursor (and with it the temp views and the op-tracker slot) is
+        released on exit, so a long export can't be swapped out from under by
+        a `compact()`.
+        """
+        with self._cursor() as cur:
+            install_temp_views(cur, self, resolution)
+            cur.execute(f"SELECT * FROM ({sql})")
+            yield cur
 
     def export_to_csv(self, table_name: str, output_path: str):
         with self._cursor() as cur:

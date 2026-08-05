@@ -200,7 +200,11 @@ export default function DataPreviewPanel() {
     // DB sources hold a remote cursor: draining it (materializeLivePreview) avoids
     // re-querying the source. Any other live preview (e.g. a transform) is
     // view-only — promoting it re-runs the node through the normal path instead.
-    const isDbLive = getNodeById(activeLive.nodeId)?.type === 'db_source'
+    const liveNodeType = getNodeById(activeLive.nodeId)?.type
+    const isDbLive = liveNodeType === 'db_source'
+    // An export node owns no table, so there is nothing to promote the preview
+    // into — it only ever shows what would be written.
+    const canPromote = liveNodeType !== 'export'
 
     return (
       <div className="flex h-full min-h-0 flex-col bg-white">
@@ -216,7 +220,7 @@ export default function DataPreviewPanel() {
             </span>
           </div>
           <div className="flex items-center gap-2 text-xs">
-            {isDbLive ? (
+            {!canPromote ? null : isDbLive ? (
               <button
                 disabled={activeLive.materializing || !activeLive.sessionId}
                 onClick={() => materializeLivePreview(activeLive.nodeId)}

@@ -92,3 +92,99 @@ async def test_delete_global_connection_in_use_returns_conflict(client, pipeline
     delete_resp = await client.delete(f"/api/settings/database-connections/{connection['id']}")
     assert delete_resp.status_code == 409
     assert "Test Pipeline" in delete_resp.json()["detail"]
+
+
+ORACLE_CONNECTION = {
+    "name": "Oracle Prod",
+    "db_type": "oracle",
+    "host": "ora.internal",
+    "port": 1521,
+    "service_name": "KM",
+    "user": "app",
+    "password": "secret",
+}
+
+
+@pytest.mark.asyncio
+async def test_oracle_connection_is_not_export_approved_by_default(client):
+    resp = await client.post("/api/settings/database-connections", json=ORACLE_CONNECTION)
+    assert resp.status_code == 200
+    assert resp.json()["allow_export"] is False
+
+
+@pytest.mark.asyncio
+async def test_allow_export_round_trips_through_create_and_update(client):
+    created = (
+        await client.post(
+            "/api/settings/database-connections",
+            json={**ORACLE_CONNECTION, "allow_export": True},
+        )
+    ).json()
+    assert created["allow_export"] is True
+
+    listed = (await client.get("/api/settings/database-connections")).json()
+    assert listed[0]["allow_export"] is True
+
+    # Revoking is always allowed, even while export nodes reference it.
+    revoked = (
+        await client.put(
+            f"/api/settings/database-connections/{created['id']}",
+            json={**ORACLE_CONNECTION, "allow_export": False},
+        )
+    ).json()
+    assert revoked["allow_export"] is False
+
+
+@pytest.mark.asyncio
+async def test_postgres_connections_have_no_export_permission(client):
+    resp = await client.post(
+        "/api/settings/database-connections",
+        json={
+            "name": "PG",
+            "db_type": "postgres",
+            "host": "db.internal",
+            "port": 5432,
+            "database": "analytics",
+            "user": "readonly",
+            "password": "secret",
+            "allow_export": True,
+        },
+    )
+    assert resp.status_code == 200
+    assert "allow_export" not in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_delete_conflicts_when_an_export_node_uses_the_connection(client, pipeline_def):
+    """Export nodes reference a connection without connection_mode, so the
+    in-use guard has to recognise their shape too."""
+    connection = (
+        await client.post(
+            "/api/settings/database-connections",
+            json={**ORACLE_CONNECTION, "allow_export": True},
+        )
+    ).json()
+
+    pipeline = {
+        **pipeline_def,
+        "nodes": [
+            *pipeline_def["nodes"],
+            {
+                "id": "export-1",
+                "type": "export",
+                "table_name": "export_1",
+                "label": "Export",
+                "position": {"x": 200, "y": 0},
+                "config": {
+                    "destination": "database",
+                    "connection_source_id": connection["id"],
+                    "target_table": "SALES.ORDERS",
+                },
+            },
+        ],
+    }
+    await client.post("/api/pipelines", json=pipeline)
+
+    delete_resp = await client.delete(f"/api/settings/database-connections/{connection['id']}")
+    assert delete_resp.status_code == 409
+    assert "Test Pipeline" in delete_resp.json()["detail"]

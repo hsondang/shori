@@ -10,7 +10,7 @@ from app.models.pipeline import (
     PipelineDefinition,
     Position,
 )
-from app.routers.preview_sessions import _transform_upstream_gate
+from app.services.pipeline_graph import resolve_direct_upstreams
 from app.services.duckdb_manager import DuckDBManager, LOCATION_MEMORY
 from app.services.preview_sessions import PreviewSessionManager
 
@@ -94,12 +94,12 @@ def test_transform_upstream_gate_flags_missing(file_mgr):
     )
 
     # Upstream has no data anywhere → flagged as missing.
-    resolution, missing = _transform_upstream_gate(pipeline, "tx", {}, file_mgr)
+    resolution, missing = resolve_direct_upstreams(pipeline, "tx", {}, file_mgr)
     assert missing == ["src_t"]
     assert resolution == {}
 
     # Load the upstream in memory → resolves, no longer missing.
     file_mgr.register_dataframe("src_t", pd.DataFrame({"x": [1]}), node_id="src", cache_key="k", into_memory=True)
-    resolution2, missing2 = _transform_upstream_gate(pipeline, "tx", {"src": "k"}, file_mgr)
+    resolution2, missing2 = resolve_direct_upstreams(pipeline, "tx", {"src": "k"}, file_mgr)
     assert missing2 == []
     assert resolution2 == {"src_t": LOCATION_MEMORY}

@@ -4,6 +4,7 @@ import SavedConnectionModal from '../connections/SavedConnectionModal'
 import {
   defaultConnectionConfig,
   getConnectionSummary,
+  isExportableConnection,
   makeSavedConnectionDraft,
   savedConnectionToInput,
 } from '../../lib/databaseConnections'
@@ -67,10 +68,15 @@ export default function PlatformSettingsPage() {
   }
 
   const handleDbTypeChange = (dbType: DbType) => {
+    // Rebuilding from the defaults drops every field the new type doesn't have,
+    // so export permission has to be re-seeded rather than carried over — a
+    // postgres connection has no such concept, and switching back must not
+    // silently restore an approval the user granted to a different database.
     setDraft({
       name: draft.name,
       db_type: dbType,
       ...defaultConnectionConfig(dbType),
+      ...(dbType === 'oracle' ? { allow_export: false } : {}),
     } as SavedDatabaseConnectionInput)
   }
 
@@ -160,6 +166,11 @@ export default function PlatformSettingsPage() {
                       <span className="rounded bg-stone-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-stone-600">
                         Global
                       </span>
+                      {isExportableConnection(connection) && (
+                        <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+                          Export enabled
+                        </span>
+                      )}
                     </div>
                     <div className="mt-1 text-sm text-stone-600">{getConnectionSummary(connection.db_type, connection)}</div>
                   </div>

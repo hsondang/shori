@@ -59,4 +59,70 @@ describe('PlatformSettingsPage', () => {
     await user.click(screen.getByRole('button', { name: 'Delete' }))
     expect(mockDeleteGlobalDatabaseConnection).toHaveBeenCalledWith('global-1')
   })
+
+  it('offers the export permission toggle for oracle connections only', async () => {
+    const user = userEvent.setup()
+    render(<PlatformSettingsPage />)
+
+    await user.click(await screen.findByRole('button', { name: 'Add Global Connection' }))
+    const modal = screen.getByTestId('global-connection-modal')
+
+    // Postgres is the default type and has no export concept.
+    expect(within(modal).queryByRole('switch', { name: /allow exports/i })).not.toBeInTheDocument()
+
+    fireEvent.change(within(modal).getByLabelText(/database type/i), { target: { value: 'oracle' } })
+    expect(within(modal).getByRole('switch', { name: /allow exports/i })).toBeInTheDocument()
+  })
+
+  it('defaults the export permission to off and saves it when granted', async () => {
+    const user = userEvent.setup()
+    render(<PlatformSettingsPage />)
+
+    await user.click(await screen.findByRole('button', { name: 'Add Global Connection' }))
+    const modal = screen.getByTestId('global-connection-modal')
+    fireEvent.change(within(modal).getByLabelText(/connection name/i), { target: { value: 'Oracle Prod' } })
+    fireEvent.change(within(modal).getByLabelText(/database type/i), { target: { value: 'oracle' } })
+
+    const toggle = within(modal).getByRole('switch', { name: /allow exports/i })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+
+    await user.click(toggle)
+    await user.click(within(modal).getByRole('button', { name: 'Save' }))
+
+    expect(mockCreateGlobalDatabaseConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ db_type: 'oracle', allow_export: true }),
+    )
+  })
+
+  it('does not carry export permission across a database type switch', async () => {
+    const user = userEvent.setup()
+    render(<PlatformSettingsPage />)
+
+    await user.click(await screen.findByRole('button', { name: 'Add Global Connection' }))
+    const modal = screen.getByTestId('global-connection-modal')
+    fireEvent.change(within(modal).getByLabelText(/database type/i), { target: { value: 'oracle' } })
+    await user.click(within(modal).getByRole('switch', { name: /allow exports/i }))
+    expect(within(modal).getByRole('switch', { name: /allow exports/i })).toHaveAttribute('aria-checked', 'true')
+
+    // Away to postgres and back: the approval was granted to a different
+    // database, so it must not silently survive.
+    fireEvent.change(within(modal).getByLabelText(/database type/i), { target: { value: 'postgres' } })
+    fireEvent.change(within(modal).getByLabelText(/database type/i), { target: { value: 'oracle' } })
+
+    expect(within(modal).getByRole('switch', { name: /allow exports/i })).toHaveAttribute('aria-checked', 'false')
+  })
+
+  it('badges connections that are approved as export destinations', async () => {
+    mockListGlobalDatabaseConnections.mockResolvedValue([
+      { id: 'g1', name: 'Oracle Prod', db_type: 'oracle', host: 'h', port: 1521, service_name: 'KM', user: 'u', password: 'p', allow_export: true },
+      { id: 'g2', name: 'Oracle Dev', db_type: 'oracle', host: 'h', port: 1521, service_name: 'KM', user: 'u', password: 'p', allow_export: false },
+    ])
+    render(<PlatformSettingsPage />)
+
+    const approved = (await screen.findByText('Oracle Prod')).closest('div.flex') as HTMLElement
+    expect(within(approved).getByText('Export enabled')).toBeInTheDocument()
+
+    const notApproved = screen.getByText('Oracle Dev').closest('div.flex') as HTMLElement
+    expect(within(notApproved).queryByText('Export enabled')).not.toBeInTheDocument()
+  })
 })

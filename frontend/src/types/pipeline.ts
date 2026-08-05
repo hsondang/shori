@@ -116,13 +116,23 @@ export type DatabaseSourceConfig =
   | GlobalPostgresDatabaseSourceConfig
   | GlobalOracleDatabaseSourceConfig
 
+/** Opt-in write permission on an Oracle connection. Readable does not imply
+ * writable: only connections with this on appear as export destinations.
+ *
+ * Optional because it is a *global* connection concept — project-local
+ * connections live in the pipeline JSON, are never export destinations, and
+ * carry no such field. Absent always means not approved. */
+export interface ExportPermission {
+  allow_export?: boolean
+}
+
 export type SavedDatabaseConnection =
   | ({ id: string; name: string; db_type: 'postgres' } & PostgresConnectionConfig)
-  | ({ id: string; name: string; db_type: 'oracle' } & OracleConnectionConfig)
+  | ({ id: string; name: string; db_type: 'oracle' } & OracleConnectionConfig & ExportPermission)
 
 export type SavedDatabaseConnectionInput =
   | ({ name: string; db_type: 'postgres' } & PostgresConnectionConfig)
-  | ({ name: string; db_type: 'oracle' } & OracleConnectionConfig)
+  | ({ name: string; db_type: 'oracle' } & OracleConnectionConfig & ExportPermission)
 
 export type ScopedDatabaseConnection = SavedDatabaseConnection & { scope: ConnectionScope }
 
@@ -131,11 +141,48 @@ export interface TransformConfig {
   load_mode?: NodeLoadMode
 }
 
+export type ExportDestination = 'local' | 'ai_workspace' | 'database'
+
 export interface ExportConfig {
   format: string
-  /** 'local' writes a file; 'ai_workspace' clones the table into the project's AI workspace. */
-  destination?: 'local' | 'ai_workspace'
+  /** 'local' writes a file; 'ai_workspace' clones the table into the project's
+   * AI workspace; 'database' appends rows to an approved Oracle connection. */
+  destination?: ExportDestination
   output_path?: string
+  /** Global Oracle connection id, when destination === 'database'. */
+  connection_source_id?: string
+  /** "SCHEMA.TABLE_NAME" append target, when destination === 'database'. */
+  target_table?: string
+  /** Off (the default) exports the whole upstream table; on uses `sql`. */
+  use_sql?: boolean
+  sql?: string
+}
+
+export interface DatabaseExportColumnCheck {
+  source_column: string
+  source_type: string
+  target_column: string | null
+  target_type: string | null
+  status: 'ok' | 'type_warning' | 'missing_in_target'
+  message: string | null
+}
+
+export interface DatabaseExportValidation {
+  target_table: string
+  target_exists: boolean
+  columns: DatabaseExportColumnCheck[]
+  unmapped_target_columns: string[]
+  errors: string[]
+  warnings: string[]
+  ok: boolean
+}
+
+/** Per-node validation report, with its own in-flight/failed states — the call
+ * reaches the destination database, so it can be slow or fail on its own. */
+export interface DatabaseExportValidationState {
+  status: 'running' | 'done' | 'error'
+  report?: DatabaseExportValidation
+  error?: string
 }
 
 export interface NodeEditorDraft {

@@ -118,6 +118,7 @@ export function makeSavedConnectionDraft(dbType: DbType = 'postgres'): SavedData
       service_name: '',
       user: '',
       password: '',
+      allow_export: false,
     }
   }
 
@@ -162,6 +163,7 @@ export function savedConnectionToInput(connection: SavedDatabaseConnection): Sav
       service_name: connection.service_name,
       user: connection.user,
       password: connection.password,
+      allow_export: connection.allow_export ?? false,
     }
   }
 
@@ -196,6 +198,19 @@ export function getDatabaseSourceConnectionSourceId(config: Record<string, unkno
   return typeof config.connection_source_id === 'string' && config.connection_source_id
     ? config.connection_source_id
     : null
+}
+
+/** Whether a saved connection has been approved as an export destination.
+ * Export permission is Oracle-only for now, so postgres never qualifies. */
+export function isExportableConnection(connection: SavedDatabaseConnection): boolean {
+  return connection.db_type === 'oracle' && connection.allow_export === true
+}
+
+/** The connections an export node may offer as destinations. */
+export function getExportableConnections(
+  connections: SavedDatabaseConnection[],
+): SavedDatabaseConnection[] {
+  return connections.filter(isExportableConnection)
 }
 
 export function findSavedConnectionById(

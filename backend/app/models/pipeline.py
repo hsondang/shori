@@ -62,10 +62,6 @@ class TransformConfig(BaseModel):
     sql: str
 
 
-class ExportConfig(BaseModel):
-    format: str = "csv"
-
-
 class Position(BaseModel):
     x: float
     y: float
@@ -86,6 +82,9 @@ class SavedPostgresConnection(SavedConnectionBase, PostgresConnectionConfig):
 
 class SavedOracleConnection(SavedConnectionBase, OracleConnectionConfig):
     db_type: Literal["oracle"] = "oracle"
+    # Opt-in write permission: readable does not imply writable. Export nodes
+    # only offer connections with this on, and the export service re-checks it.
+    allow_export: bool = False
 
 
 DatabaseConnectionDefinition = Annotated[
@@ -100,6 +99,7 @@ class SavedPostgresConnectionInput(SavedConnectionInputBase, PostgresConnectionC
 
 class SavedOracleConnectionInput(SavedConnectionInputBase, OracleConnectionConfig):
     db_type: Literal["oracle"] = "oracle"
+    allow_export: bool = False
 
 
 DatabaseConnectionInputDefinition = Annotated[
