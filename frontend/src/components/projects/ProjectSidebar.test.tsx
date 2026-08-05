@@ -9,12 +9,14 @@ import { PROJECT_BROWSER_TRIGGER_SLOT_PX } from './projectLayout'
 
 const mockListPipelines = vi.fn()
 const mockSavePipeline = vi.fn()
+const mockLoadPipeline = vi.fn()
 const mockDeletePipeline = vi.fn()
 const mockSetPipelineStar = vi.fn()
 
 vi.mock('../../api/client', () => ({
   listPipelines: (...args: unknown[]) => mockListPipelines(...args),
   savePipeline: (...args: unknown[]) => mockSavePipeline(...args),
+  loadPipeline: (...args: unknown[]) => mockLoadPipeline(...args),
   deletePipeline: (...args: unknown[]) => mockDeletePipeline(...args),
   setPipelineStar: (...args: unknown[]) => mockSetPipelineStar(...args),
 }))
@@ -163,6 +165,57 @@ describe('ProjectSidebar', () => {
     await user.click(screen.getByRole('button', { name: 'Star' }))
 
     expect(mockSetPipelineStar).toHaveBeenCalledWith('p1', true)
+  })
+
+  it('duplicates a project from the more options menu', async () => {
+    const user = userEvent.setup()
+    mockListPipelines.mockResolvedValue([
+      { id: 'p1', name: 'Warehouse', starred: false, created_at: '2026-03-24T10:00:00Z', updated_at: '2026-03-24T10:00:00Z' },
+    ])
+    mockLoadPipeline.mockResolvedValueOnce({
+      id: 'p1',
+      name: 'Warehouse',
+      database_connections: [],
+      nodes: [
+        { id: 'n1', type: 'csv_source', table_name: 't', label: 'Source', position: { x: 0, y: 0 }, config: {} },
+      ],
+      edges: [],
+    })
+    mockSavePipeline.mockResolvedValue(undefined)
+
+    renderSidebar()
+
+    await user.click(await screen.findByRole('button', { name: /more options for warehouse/i }))
+    await user.click(screen.getByRole('button', { name: 'Duplicate' }))
+
+    await waitFor(() => {
+      expect(mockLoadPipeline).toHaveBeenCalledWith('p1')
+      expect(mockSavePipeline).toHaveBeenCalledWith(expect.objectContaining({
+        name: 'Copy of Warehouse',
+        nodes: [expect.objectContaining({ id: 'n1' })],
+        edges: [],
+      }))
+    })
+
+    expect(mockSavePipeline.mock.calls[0][0].id).not.toBe('p1')
+  })
+
+  it('closes the more options menu when clicking away', async () => {
+    const user = userEvent.setup()
+    mockListPipelines.mockResolvedValueOnce([
+      { id: 'p1', name: 'Warehouse', starred: false, created_at: '2026-03-24T10:00:00Z', updated_at: '2026-03-24T10:00:00Z' },
+    ])
+
+    renderSidebar()
+
+    await user.click(await screen.findByRole('button', { name: /more options for warehouse/i }))
+    expect(screen.getByRole('button', { name: 'Duplicate' })).toBeInTheDocument()
+
+    await user.click(screen.getByTestId('location'))
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Duplicate' })).not.toBeInTheDocument()
+    })
   })
 
   it('deletes the active project and returns to the home route', async () => {
